@@ -10,3 +10,4 @@ sentence-transformers>=3.3.0
 einops>=0.8.0
 llama-cpp-python>=0.3.0
 mcp>=1.0.0
+huggingface-hub>=0.25.0

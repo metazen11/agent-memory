@@ -13,7 +13,7 @@ async def init_pool():
     """Create asyncpg connection pool. Call during FastAPI startup."""
     global pool
     # Convert SQLAlchemy-style URL to asyncpg format
-    dsn = settings.database_url
+    dsn = settings.effective_database_url
     if dsn.startswith("postgresql://"):
         dsn = dsn.replace("postgresql://", "postgres://", 1)
     pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)

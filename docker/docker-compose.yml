@@ -4,20 +4,22 @@ services:
   db:
     image: pgvector/pgvector:pg16
     container_name: agent-memory-db
+    env_file:
+      - ../.env
     environment:
-      POSTGRES_USER: wfhub
-      POSTGRES_PASSWORD: ""
-      POSTGRES_DB: agentic
+      POSTGRES_USER: ${POSTGRES_USER:-agentmem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_memory}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - agent_memory_pgdata:/var/lib/postgresql/data
       - ../scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wfhub -d agentic"]
-      interval: 30s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentmem} -d ${POSTGRES_DB:-agent_memory}"]
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
     restart: unless-stopped
 
 volumes:

@@ -2,7 +2,39 @@
 
 Persistent cross-session memory for AI coding agents. Records what was learned, built, fixed, and decided during each session, then makes it searchable via semantic + full-text hybrid search.
 
-Built as a standalone replacement for the `claude-mem` plugin (which crashed due to ChromaDB/Rust segfaults on macOS ARM64).
+Works with Claude Code out of the box. Designed to support any AI coding agent via REST API or MCP.
+
+## Quick Start
+
+```bash
+git clone https://github.com/metazen11/agent-memory.git
+cd agent-memory
+node install.js
+```
+
+The installer handles everything:
+- Creates Python venv and installs dependencies
+- Downloads embedding model (~400MB) and observation LLM (~1GB)
+- Generates `.env` with random Postgres password
+- Starts Docker (PostgreSQL + pgvector)
+- Starts FastAPI server on port 3377
+- Registers MCP server, hooks, and skills in Claude Code
+
+### Commands
+
+```bash
+node install.js              # Full setup + install
+node install.js --status     # Show what's installed and running
+node install.js --start      # Start services (Docker + FastAPI)
+node install.js --stop       # Stop services
+node install.js --uninstall  # Remove hooks, MCP, skills
+```
+
+### Prerequisites
+
+- **Docker** — macOS: `brew install --cask docker` | Linux: `sudo apt install docker.io docker-compose-plugin`
+- **Python 3.12+** — macOS: `brew install python@3.12` | Linux: `sudo apt install python3.12 python3.12-venv`
+- **Node.js** — for the installer and hooks
 
 ## Architecture
 
@@ -10,7 +42,8 @@ Built as a standalone replacement for the `claude-mem` plugin (which crashed due
 ┌─────────────────────────────────────────────────────────┐
 │  Claude Code Session                                    │
 │                                                         │
-│  session-start hook ──► GET context + inject hints      │
+│  session-start hook ──► Health check → auto-start       │
+│                     └──► Inject MCP guide + context     │
 │  post-tool-use hook ──► POST /api/queue (fire & forget) │
 │  session-end hook   ──► PATCH /api/sessions/:id         │
 └──────────────┬──────────────────────────────────────────┘
@@ -39,126 +72,98 @@ Built as a standalone replacement for the `claude-mem` plugin (which crashed due
 └──────────────┬──────────────────────────────────────────┘
                │
 ┌──────────────▼──────────────────────────────────────────┐
-│  PostgreSQL 16 + pgvector (Docker, port 5433)           │
-│  Database: agentic  │  User: wfhub                      │
+│  PostgreSQL 16 + pgvector (Docker)                      │
 │  Tables: mem_* prefixed (avoids collisions)             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Database Schema
+## How It Works
 
-All tables use the `mem_` prefix to coexist with other services in the shared `agentic` database.
+### Recording (write path)
 
-### Tables
+Every tool call in your coding session is captured:
 
-| Table | Purpose |
-|-------|---------|
-| `embedding_models` | Registry of embedding models (supports model switching) |
-| `mem_projects` | Auto-created from working directory basename |
-| `mem_sessions` | One per Claude Code session (active/completed/failed) |
-| `mem_observations` | Core memory unit — structured LLM-extracted knowledge |
-| `mem_observation_queue` | Async processing queue (never blocks hooks) |
-| `mem_user_prompts` | Optional user prompt timeline |
+1. **PostToolUse hook** fires (fire-and-forget, ~40ms)
+2. Tool call data queued to `/api/queue`
+3. Background worker dequeues with `FOR UPDATE SKIP LOCKED`
+4. Local LLM extracts structured observation (title, type, narrative, facts)
+5. Sentence-transformers generates 768-dim embedding
+6. Inserted into PostgreSQL with pgvector index
 
-### mem_observations (core table)
+### Retrieval (read path)
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | `SERIAL` | Primary key |
-| `session_id` | `INTEGER` | FK to `mem_sessions` |
-| `project_id` | `INTEGER` | FK to `mem_projects` |
-| `title` | `TEXT` | Short descriptive title |
-| `subtitle` | `TEXT` | One-line context |
-| `type` | `TEXT` | `decision\|bugfix\|feature\|refactor\|discovery\|change\|pattern\|gotcha` |
-| `narrative` | `TEXT` | 2-3 sentence description |
-| `facts` | `JSONB` | Extracted facts array |
-| `concepts` | `JSONB` | Concept tags array |
-| `files_read` | `JSONB` | Files that were read |
-| `files_modified` | `JSONB` | Files that were modified |
-| `raw_text` | `TEXT` | Combined text for re-embedding (never lose this) |
-| `embedding` | `vector(768)` | pgvector embedding |
-| `embedding_model_id` | `INTEGER` | FK to `embedding_models` |
-| `tool_name` | `TEXT` | Source tool that triggered this observation |
-| `created_at` | `TIMESTAMPTZ` | When the observation was created |
-| `tsv` | `tsvector` | Auto-generated full-text search column (weighted A/B/C/D) |
+Search past sessions via MCP tools (3-layer workflow):
 
-### Indexes
+1. `search(query)` — hybrid vector + full-text search, returns IDs (~50-100 tokens/result)
+2. `timeline(anchor=ID)` — context around interesting results
+3. `get_observations([IDs])` — full details only for filtered IDs
 
-- `idx_mem_obs_project` — project_id
-- `idx_mem_obs_type` — observation type
-- `idx_mem_obs_created` — created_at DESC
-- `idx_mem_obs_tsv` — GIN index on tsvector
-- `idx_mem_obs_embedding` — HNSW index (m=16, ef_construction=64) for cosine similarity
+Never skip to step 3. Always filter first. 10x token savings.
 
-### Search Strategy
+### Auto-start
 
-Hybrid search using **Reciprocal Rank Fusion (RRF)** with k=60:
-1. **Vector search** — cosine similarity via pgvector HNSW index
-2. **Full-text search** — PostgreSQL tsvector with weighted fields (title=A, subtitle=B, narrative=C, raw_text=D)
-3. **RRF fusion** — `score = sum(1/(60+rank))` across both result sets
+The session-start hook automatically starts services if they're not running. No manual intervention needed after initial install.
+
+## Configuration
+
+### .env
+
+Generated by `install.js`. Key settings:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `agentmem` | PostgreSQL user |
+| `POSTGRES_PASSWORD` | *(generated)* | PostgreSQL password |
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
+| `POSTGRES_PORT` | `5433` | PostgreSQL port |
+| `POSTGRES_DB` | `agent_memory` | Database name |
+| `DATABASE_URL` | *(built from above)* | Full URL override |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Sentence-transformers model |
+| `OBSERVATION_LLM_MODEL` | *(path to .gguf)* | Local LLM for observation extraction |
+| `ANTHROPIC_API_KEY` | *(empty)* | Haiku fallback if no local LLM |
+| `PORT` | `3377` | FastAPI server port |
+
+### Existing Database
+
+If you already have a PostgreSQL + pgvector instance, set `DATABASE_URL` in `.env`:
+
+```bash
+DATABASE_URL=postgresql://user:pass@host:5433/dbname
+```
+
+The `mem_` table prefix avoids collisions with other applications sharing the database.
 
 ## Components
 
 ### FastAPI Server (`app/`)
-
-The HTTP API for hooks and direct access.
 
 | File | Purpose |
 |------|---------|
 | `main.py` | App lifecycle (pool init, schema migration, queue worker) |
 | `config.py` | Pydantic settings from `.env` |
 | `db.py` | asyncpg connection pool |
-| `models.py` | Pydantic schemas (QueueItem, Observation, Session, Search) |
-| `embeddings.py` | sentence-transformers in-process embeddings (768-dim) |
+| `models.py` | Pydantic schemas |
+| `embeddings.py` | Sentence-transformers in-process embeddings (768-dim) |
 | `observation_llm.py` | Local GGUF (Qwen2.5-1.5B) with Anthropic Haiku fallback |
 | `queue_worker.py` | Background asyncio task, processes queue items |
-| `routes/health.py` | `GET /api/health` — DB, embeddings, queue status |
-| `routes/observations.py` | Queue ingest, CRUD, hybrid search |
-| `routes/sessions.py` | Session lifecycle (create, update, list) |
-| `routes/admin.py` | Stats, background re-embed job |
+| `routes/` | Health, observations, sessions, admin endpoints |
 
 ### MCP Server (`mcp_server.py`)
 
-Self-contained stdio MCP server for Claude Code. Has its own DB pool and embedding model — zero dependency on the FastAPI server.
+Self-contained stdio MCP server. Own DB pool and embedding model — zero dependency on FastAPI.
 
-**Tools:**
+### Hooks (`hooks/`)
 
-| Tool | Description |
-|------|-------------|
-| `search` | Semantic + FTS hybrid search. Returns index with IDs. |
-| `timeline` | Get observations around an anchor (by ID or query) |
-| `get_observations` | Fetch full details for specific IDs |
-| `save_memory` | Manually save a memory/observation |
+| Hook | Event | Timeout | Description |
+|------|-------|---------|-------------|
+| `session-start.js` | SessionStart | 60s | Health check, auto-start services, inject context |
+| `post-tool-use.js` | PostToolUse | 5s | Fire-and-forget observation capture |
+| `session-end.js` | Stop | 10s | Mark session completed |
+| `ensure-services.js` | *(internal)* | — | Starts Docker + FastAPI when called by session-start |
 
-**3-layer workflow** (optimized for token savings):
-1. `search(query)` — get index with IDs (~50-100 tokens/result)
-2. `timeline(anchor=ID)` — get context around interesting results
-3. `get_observations([IDs])` — fetch full details only for filtered IDs
+### Skills (`skills/`)
 
-### Observation LLM (`app/observation_llm.py`)
-
-Extracts structured observations from tool calls. Two-tier strategy:
-
-1. **Primary**: Local GGUF model via `llama-cpp-python` — Qwen2.5-1.5B-Instruct (Q4_K_M, ~1GB RAM)
-2. **Fallback**: Anthropic Claude Haiku (if `ANTHROPIC_API_KEY` is set)
-
-Low-value tools are skipped automatically (task management, plan mode, skill invocations).
-
-### Embeddings (`app/embeddings.py`)
-
-In-process embeddings via `sentence-transformers`:
-- **Model**: `nomic-ai/nomic-embed-text-v1.5` (768 dimensions)
-- Runs in thread pool to avoid blocking the event loop
-- Supports batch embedding for re-embed operations
-- No external service dependency (no Ollama needed)
-
-### Scripts (`scripts/`)
-
-| Script | Purpose |
-|--------|---------|
-| `init_db.sql` | Schema DDL (idempotent, runs on server startup) |
-| `migrate_claude_mem.py` | One-time migration from claude-mem SQLite DB |
-| `re_embed.py` | Standalone re-embed script (cursor-based pagination) |
+`/mem-search` — User-invocable skill for searching past sessions.
 
 ## API Endpoints
 
@@ -167,199 +172,80 @@ In-process embeddings via `sentence-transformers`:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | DB, embeddings, queue depth |
-| `GET` | `/api/admin/stats` | Observation/session/project counts, type breakdown |
-| `POST` | `/api/admin/re-embed` | Start background re-embed job (`?only_missing=true`) |
-| `GET` | `/api/admin/re-embed/status` | Check re-embed progress |
-| `POST` | `/api/admin/re-embed/cancel` | Cancel running re-embed |
+| `GET` | `/api/admin/stats` | Counts and type breakdown |
+| `POST` | `/api/admin/re-embed` | Background re-embed job |
 
 ### Observations
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/queue` | Queue tool call for async observation extraction |
-| `POST` | `/api/observations` | Create observation directly (bypasses queue) |
-| `GET` | `/api/observations` | List observations (`?project=&type=&limit=&offset=`) |
-| `GET` | `/api/observations/{id}` | Get single observation |
-| `POST` | `/api/observations/search` | Hybrid search (body: `{query, project, type[], limit, mode}`) |
+| `POST` | `/api/queue` | Queue tool call for async extraction |
+| `POST` | `/api/observations` | Create observation directly |
+| `GET` | `/api/observations` | List with filters |
+| `POST` | `/api/observations/search` | Hybrid search |
 
 ### Sessions
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/sessions` | Start new session |
-| `PATCH` | `/api/sessions/{id}` | Update session (status, summary) |
-| `GET` | `/api/sessions` | List sessions (`?project=&status=&limit=`) |
+| `PATCH` | `/api/sessions/{id}` | Update session status |
+| `GET` | `/api/sessions` | List sessions |
 
-## Setup
+## Database Schema
 
-### Prerequisites
+All tables use the `mem_` prefix.
 
-- Python 3.12+ (3.13 has ChromaDB issues — avoid if migrating from claude-mem)
-- Docker (for PostgreSQL + pgvector)
+| Table | Purpose |
+|-------|---------|
+| `embedding_models` | Registry of embedding models |
+| `mem_projects` | Auto-created from working directory |
+| `mem_sessions` | One per coding session |
+| `mem_observations` | Core memory unit with embeddings |
+| `mem_observation_queue` | Async processing queue |
 
-### 1. Start the database
+### Search Strategy
 
-```bash
-cd docker
-docker compose up -d
-```
+Hybrid search using **Reciprocal Rank Fusion (RRF)** with k=60:
+1. **Vector search** — cosine similarity via pgvector HNSW index
+2. **Full-text search** — PostgreSQL tsvector with weighted fields
+3. **RRF fusion** — `score = sum(1/(60+rank))` across both result sets
 
-This starts PostgreSQL 16 with pgvector on port 5433. The `init_db.sql` schema runs automatically on first start via Docker's entrypoint.
+## Multi-Agent Support
 
-### 2. Create Python environment
+The system is agent-agnostic. The hooks are the Claude-specific integration layer.
 
-```bash
-cd /path/to/agentMemory
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+**REST API** — Any agent can POST to `/api/queue` and GET from `/api/observations`.
 
-### 3. Configure environment
+**MCP** — Register `mcp_server.py` in any MCP-compatible agent's config.
 
-```bash
-cp .env.example .env
-# Edit .env — the defaults work for local Docker setup
-```
-
-Key settings:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://wfhub:@localhost:5433/agentic` | PostgreSQL connection |
-| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | sentence-transformers model |
-| `OBSERVATION_LLM_MODEL` | *(path to .gguf)* | Local LLM for observation extraction |
-| `ANTHROPIC_API_KEY` | *(empty)* | Optional: Haiku fallback for observations |
-| `PORT` | `3377` | FastAPI server port |
-
-### 4. Start the server
-
-```bash
-source .venv/bin/activate
-uvicorn app.main:app --port 3377
-```
-
-The server will:
-- Initialize the asyncpg connection pool
-- Run `init_db.sql` (idempotent schema migration)
-- Start the background queue worker
-- Load the embedding model on first use (lazy)
-
-### 5. Register MCP server
-
-Add to `~/.claude/.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "agent-memory": {
-      "type": "stdio",
-      "command": "/path/to/agentMemory/.venv/bin/python",
-      "args": ["/path/to/agentMemory/mcp_server.py"]
-    }
-  }
-}
-```
-
-### 6. Install hooks
-
-The Claude Code hooks live in the companion repo at `hooks/agent-memory/`. See that repo's README for hook installation.
+**Direct SQL** — Query `mem_observations` with pgvector operators.
 
 ## Migration from claude-mem
 
-One-time migration from the claude-mem SQLite database:
-
 ```bash
 source .venv/bin/activate
-
-# Dry run — see what would be migrated
-python scripts/migrate_claude_mem.py --dry-run
-
-# Migrate without embeddings (fast, re-embed later)
-python scripts/migrate_claude_mem.py
-
-# Migrate with embeddings (slow but complete)
-python scripts/migrate_claude_mem.py --embed --batch-size 50
+python scripts/migrate_claude_mem.py       # migrate without embeddings
+python scripts/migrate_claude_mem.py --embed  # migrate with embeddings
+python scripts/re_embed.py --only-missing  # embed missing observations
 ```
 
-Re-embed existing observations after migration:
+## Debug
+
+| Hook | Default | Toggle |
+|------|---------|--------|
+| session-start | ON | `AGENT_MEMORY_DEBUG=0` |
+| post-tool-use | OFF | `AGENT_MEMORY_DEBUG=1` |
+| session-end | ON | `AGENT_MEMORY_DEBUG=0` |
 
 ```bash
-# Only observations missing embeddings
-python scripts/re_embed.py --only-missing
-
-# Re-embed everything (e.g. after model change)
-python scripts/re_embed.py --batch-size 100
-```
-
-Or via the API while the server is running:
-
-```bash
-curl -X POST http://localhost:3377/api/admin/re-embed?only_missing=true
-curl http://localhost:3377/api/admin/re-embed/status
-```
-
-## Data Flow
-
-### Recording (write path)
-
-```
-Tool executes in Claude Code
-    │
-    ▼
-post-tool-use hook fires (5s timeout, fire-and-forget)
-    │
-    ▼
-POST /api/queue  ──►  mem_observation_queue (status=pending)
-    │
-    ▼
-Queue Worker dequeues (FOR UPDATE SKIP LOCKED)
-    │
-    ▼
-Observation LLM extracts structured data (title, type, narrative, facts...)
-    │
-    ▼
-sentence-transformers generates 768-dim embedding
-    │
-    ▼
-INSERT into mem_observations with embedding vector
-```
-
-### Retrieval (read path)
-
-```
-Claude Code invokes MCP tool (search/timeline/get_observations)
-    │
-    ▼
-MCP server embeds query via sentence-transformers
-    │
-    ▼
-Parallel: pgvector cosine search + PostgreSQL FTS
-    │
-    ▼
-RRF fusion ranks results
-    │
-    ▼
-Returns JSON to Claude Code
+AGENT_MEMORY_DEBUG=1 claude   # enable all
 ```
 
 ## Docker
 
-The `docker/` directory contains a self-contained compose file for the database:
-
 ```bash
-# Start
-cd docker && docker compose up -d
-
-# Stop
-cd docker && docker compose down
-
-# Reset (destroys data)
-cd docker && docker compose down -v
+cd docker && docker compose up -d     # start
+cd docker && docker compose down      # stop
+cd docker && docker compose down -v   # reset (destroys data)
 ```
-
-**Image**: `pgvector/pgvector:pg16` — PostgreSQL 16 with the pgvector extension pre-installed.
-
-The compose file mounts `scripts/init_db.sql` into `/docker-entrypoint-initdb.d/` so the schema is created automatically on first run.
-
-**Note**: If you're already running the `wfhub-v2` Docker stack (agentmz project), the database is shared — both use `wfhub` user on port 5433, database `agentic`. You only need one running.

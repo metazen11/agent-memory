@@ -5,16 +5,7 @@ agent-memory MCP server — self-contained stdio MCP server.
 Connects directly to Postgres, loads its own embedding model.
 No dependency on the FastAPI server or app modules.
 
-Usage in ~/.claude/.mcp.json:
-  {
-    "mcpServers": {
-      "agent-memory": {
-        "type": "stdio",
-        "command": "/Users/mz/Dropbox/_CODING/agentMemory/.venv/bin/python",
-        "args": ["/Users/mz/Dropbox/_CODING/agentMemory/mcp_server.py"]
-      }
-    }
-  }
+Registered by install.js in ~/.claude/.mcp.json.
 """
 
 import asyncio
@@ -22,6 +13,12 @@ import json
 import logging
 import os
 import sys
+
+from dotenv import load_dotenv
+
+# Load .env from the same directory as this script
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_script_dir, ".env"))
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -32,13 +29,25 @@ logger = logging.getLogger(__name__)
 
 # ── Config (from env or defaults) ─────────────────────────────
 
-DATABASE_URL = os.environ.get(
-    "AGENT_MEMORY_DATABASE_URL",
-    "postgresql://wfhub:@localhost:5433/agentic",
-)
+
+def _build_database_url():
+    """Build DATABASE_URL from components or use explicit override."""
+    explicit = os.environ.get("DATABASE_URL") or os.environ.get("AGENT_MEMORY_DATABASE_URL")
+    if explicit:
+        return explicit
+    user = os.environ.get("POSTGRES_USER", "agentmem")
+    password = os.environ.get("POSTGRES_PASSWORD", "")
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5433")
+    db = os.environ.get("POSTGRES_DB", "agent_memory")
+    pw = f":{password}" if password else ""
+    return f"postgresql://{user}{pw}@{host}:{port}/{db}"
+
+
+DATABASE_URL = _build_database_url()
 EMBEDDING_MODEL = os.environ.get(
-    "AGENT_MEMORY_EMBEDDING_MODEL",
-    "nomic-ai/nomic-embed-text-v1.5",
+    "EMBEDDING_MODEL",
+    os.environ.get("AGENT_MEMORY_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5"),
 )
 
 # ── DB pool (lazy) ────────────────────────────────────────────
