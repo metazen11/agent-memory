@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-memory": {
+      "type": "stdio",
+      "command": "/Users/mz/Dropbox/_CODING/agentMemory/.venv/bin/python",
+      "args": ["/Users/mz/Dropbox/_CODING/agentMemory/mcp_server.py"]
+    }
+  }
+}
