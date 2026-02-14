@@ -19,7 +19,7 @@ const { execSync, spawn } = require('child_process');
 
 // ── Constants ─────────────────────────────────────────────────
 
-const INSTALL_DIR = __dirname;
+const INSTALL_DIR = path.resolve(__dirname);
 const HOME        = os.homedir();
 const PLATFORM    = os.platform();       // darwin | linux | win32
 const IS_WSL      = PLATFORM === 'linux' && (() => {
