@@ -7,7 +7,7 @@ Persistent cross-session memory for AI coding agents. Records what was learned, 
 | Layer | Protocol | Agents | Effort |
 |-------|----------|--------|--------|
 | **REST API** | HTTP POST/GET | Any agent, any language | Lowest — just HTTP calls |
-| **MCP Server** | stdio (Model Context Protocol) | Claude Code, Cursor, Windsurf, Cline, any MCP-compatible | Medium — config file only |
+| **MCP Server** | stdio (Model Context Protocol) | Claude Code, Cursor, Windsurf, Cline, Codex CLI, Zed, VS Code Copilot, any MCP-compatible | Medium — config file only |
 | **Hooks** | Lifecycle scripts | Claude Code (built-in), others via adapter | Highest — write scripts per agent |
 
 Most agents should start with the **REST API** (works everywhere) and add **MCP** if their platform supports it. Hooks are optional automation — they capture tool calls and manage session lifecycle automatically.
@@ -342,14 +342,16 @@ Add this to your agent's MCP configuration file. Replace `/absolute/path/to/agen
 
 ### MCP config file locations
 
-| Agent | Config File |
-|-------|-------------|
-| **Claude Code** | `~/.claude/.mcp.json` |
-| **Cursor** | `<project>/.cursor/mcp.json` (per-project) or `~/.cursor/mcp.json` (global) |
-| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
-| **Cline** | `~/.cline/mcp_settings.json` |
-| **VS Code + Continue** | `~/.continue/config.json` (under `mcpServers`) |
-| **Zed** | `~/.config/zed/settings.json` (under `language_models.mcp`) |
+| Agent | Config File | Format |
+|-------|-------------|--------|
+| **Claude Code** | `~/.claude/.mcp.json` | `{ "mcpServers": { ... } }` |
+| **Cursor** | `<project>/.cursor/mcp.json` or `~/.cursor/mcp.json` | `{ "mcpServers": { ... } }` |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | `{ "mcpServers": { ... } }` |
+| **Cline** | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS) | `{ "mcpServers": { ... } }` |
+| **Codex CLI** | `~/.codex/config.toml` | TOML `[mcp_servers.agent-memory]` |
+| **VS Code Copilot** | `<project>/.vscode/mcp.json` | `{ "servers": { ... } }` |
+| **Zed** | `~/.config/zed/settings.json` | JSON under `"context_servers"` |
+| **Continue** | `~/.continue/config.json` | `{ "mcpServers": { ... } }` |
 
 ### MCP Tools Reference
 
@@ -578,6 +580,74 @@ MCP supported. Add to `~/.codeium/windsurf/mcp_config.json`:
 }
 ```
 
+### Cline (VS Code Extension)
+
+MCP supported with auto-approval. Add to your Cline MCP settings file:
+
+**macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+**Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+**Windows**: `%APPDATA%/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+
+```json
+{
+  "mcpServers": {
+    "agent-memory": {
+      "command": "/absolute/path/to/agent-memory/.venv/bin/python",
+      "args": ["/absolute/path/to/agent-memory/mcp_server.py"],
+      "alwaysAllow": ["search", "timeline", "get_observations", "save_memory", "memory_search_guide"]
+    }
+  }
+}
+```
+
+The `alwaysAllow` field auto-approves memory tools so they don't interrupt your workflow.
+
+### Codex CLI
+
+MCP supported via TOML config. Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.agent-memory]
+type = "stdio"
+command = "/absolute/path/to/agent-memory/.venv/bin/python"
+args = ["/absolute/path/to/agent-memory/mcp_server.py"]
+```
+
+### Zed
+
+MCP supported via context servers. Add to `~/.config/zed/settings.json`:
+
+```json
+{
+  "context_servers": {
+    "agent-memory": {
+      "command": {
+        "path": "/absolute/path/to/agent-memory/.venv/bin/python",
+        "args": ["/absolute/path/to/agent-memory/mcp_server.py"]
+      }
+    }
+  }
+}
+```
+
+### VS Code Copilot (1.96+)
+
+Native MCP support. Create `<project>/.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "agent-memory": {
+      "type": "stdio",
+      "command": "/absolute/path/to/agent-memory/.venv/bin/python",
+      "args": ["/absolute/path/to/agent-memory/mcp_server.py"]
+    }
+  }
+}
+```
+
+Note: VS Code Copilot uses `"servers"` not `"mcpServers"`.
+
 ### Aider / CLI Tools
 
 REST API only (no MCP support). Use wrapper scripts:
@@ -632,7 +702,137 @@ on_user_asks_about_past_work(query):
 
 ---
 
-## 6. Queue Payload Reference
+## 6. System Prompt Injection Patterns
+
+Memory is most useful when recent context is automatically injected at session start. Each agent has a different mechanism for injecting text into the system prompt or initial context.
+
+| Agent | Mechanism | File / Hook |
+|-------|-----------|-------------|
+| **Claude Code** | SessionStart hook returns `{ "systemMessage": "..." }` | `hooks/session-start.js` |
+| **Cursor** | Rules files loaded at session start | `.cursor/rules` or Cursor Settings > Rules |
+| **Windsurf** | Rules file loaded at session start | `.windsurfrules` in project root |
+| **Cline** | Custom instructions or rules file | `.clinerules` in project root |
+| **Codex CLI** | Agent instructions file | `AGENTS.md` or `codex.md` in project root |
+| **Zed** | System prompt in assistant panel | Zed assistant configuration |
+| **Aider** | Read-only context files | `--read` flag or `.aider.conf.yml` |
+
+### Wrapper script pattern (agents without hooks)
+
+For agents that don't support lifecycle hooks, use a wrapper script that fetches recent memories, writes them to the agent's rules/context file, then launches the agent:
+
+```bash
+#!/bin/bash
+# inject-memory.sh — Run before starting your agent
+PROJECT=$(basename "$PWD")
+
+# Fetch recent memories
+MEMORIES=$(curl -s -X POST localhost:3377/api/observations/search \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\": \"recent work\", \"project\": \"$PROJECT\", \"limit\": 10}" \
+  | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+lines = ['# Recent Memory']
+for obs in data.get('observations', []):
+    lines.append(f'- [{obs[\"type\"]}] {obs[\"title\"]}')
+    if obs.get('narrative'):
+        lines.append(f'  {obs[\"narrative\"][:200]}')
+print('\n'.join(lines))
+")
+
+# Inject into agent's rules file (example: Cursor)
+RULES_FILE=".cursor/rules"
+mkdir -p .cursor
+
+# Preserve existing rules, append memory section
+if [ -f "$RULES_FILE" ]; then
+  # Remove old memory section if present
+  sed -i '' '/^# Recent Memory$/,/^# /{ /^# Recent Memory$/d; /^# /!d; }' "$RULES_FILE" 2>/dev/null
+fi
+echo "$MEMORIES" >> "$RULES_FILE"
+
+echo "Injected ${#MEMORIES} bytes of memory context into $RULES_FILE"
+```
+
+Adapt the `RULES_FILE` path for your agent:
+- Cursor: `.cursor/rules`
+- Windsurf: `.windsurfrules`
+- Cline: `.clinerules`
+- Codex: `AGENTS.md`
+
+---
+
+## 7. Extending the Installer for New Agents
+
+The installer (`install.js`) uses an extensible `AGENTS` object to support multiple agent targets. Currently it only configures Claude Code, but adding new agents follows a simple pattern.
+
+### AGENTS object structure
+
+```javascript
+const AGENTS = {
+  claude: {
+    detect: () => fs.existsSync(path.join(HOME, '.claude')),
+    hooksDir: path.join(HOME, '.claude', 'hooks'),
+    settingsFile: path.join(HOME, '.claude', 'settings.json'),
+    mcpFile: path.join(HOME, '.claude', '.mcp.json'),
+    skillsDir: path.join(HOME, '.claude', 'skills'),
+    hookEntries: [
+      {
+        event: 'PostToolUse',
+        entry: {
+          matcher: 'Read|Edit|Write|Bash|Grep|Glob|NotebookEdit|WebFetch|WebSearch',
+          hooks: [{
+            type: 'command',
+            command: 'node ~/.claude/hooks/agent-memory-post-tool-use.js',
+            timeout: 5,
+          }],
+        },
+      },
+      // SessionStart and Stop entries follow the same shape
+    ],
+  },
+};
+```
+
+### Field reference
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `detect` | yes | `() => boolean` | Returns true if agent is installed on this machine |
+| `mcpFile` | yes | `string` | Path to MCP config file (JSON) |
+| `hooksDir` | no | `string` | Directory where hook scripts are symlinked |
+| `settingsFile` | no | `string` | Agent settings file for registering hooks |
+| `skillsDir` | no | `string` | Directory for skills/commands |
+| `hookEntries` | no | `array` | Hook registrations (event + matcher + command) |
+
+### Adding a new agent (template)
+
+Agents that only support MCP (no hooks) need just `detect` and `mcpFile`:
+
+```javascript
+const AGENTS = {
+  // ... existing agents ...
+
+  cursor: {
+    detect: () => fs.existsSync(path.join(HOME, '.cursor')),
+    mcpFile: path.join(HOME, '.cursor', 'mcp.json'),
+    // No hooks, skills, or settings — Cursor only supports MCP
+  },
+
+  windsurf: {
+    detect: () => fs.existsSync(path.join(HOME, '.codeium')),
+    mcpFile: path.join(HOME, '.codeium', 'windsurf', 'mcp_config.json'),
+  },
+};
+```
+
+The installer's `registerMCP()` function reads the target `mcpFile`, merges in the `agent-memory` server entry, and writes it back. The JSON format (`{ "mcpServers": { ... } }`) works for most agents.
+
+**Note**: Codex CLI uses TOML format and VS Code Copilot uses `"servers"` instead of `"mcpServers"`. Adding these agents requires custom `registerMCP()` logic (not yet implemented — contributions welcome).
+
+---
+
+## 8. Queue Payload Reference
 
 The `/api/queue` endpoint accepts tool call data for asynchronous processing. The background worker:
 1. Dequeues items atomically (`FOR UPDATE SKIP LOCKED`)
@@ -679,7 +879,7 @@ Low-value tool calls (listing tools, task management, plan mode) are automatical
 
 ---
 
-## 7. Observation Types Reference
+## 9. Observation Types Reference
 
 The system classifies observations into these types:
 
@@ -710,7 +910,7 @@ Observations can also have conceptual tags:
 
 ---
 
-## 8. Database Schema
+## 10. Database Schema
 
 All tables use the `mem_` prefix to avoid collisions in shared databases.
 
@@ -752,7 +952,7 @@ LIMIT 10;
 
 ---
 
-## 9. Troubleshooting
+## 11. Troubleshooting
 
 ### Server won't start
 
@@ -795,3 +995,10 @@ curl localhost:3377/api/admin/stats | python3 -m json.tool
 # Server logs show worker activity
 tail -f /path/to/agent-memory/logs/server.log | grep -i queue
 ```
+
+### Explore the API interactively
+
+The FastAPI server includes auto-generated API documentation:
+
+- **Swagger UI**: [localhost:3377/docs](http://localhost:3377/docs) — interactive API explorer with "Try it out" buttons
+- **ReDoc**: [localhost:3377/redoc](http://localhost:3377/redoc) — clean reference documentation

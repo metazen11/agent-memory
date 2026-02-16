@@ -251,6 +251,8 @@ The system is agent-agnostic. The hooks are the Claude-specific integration laye
 
 **Direct SQL** — Query `mem_observations` with pgvector operators.
 
+See **[docs/PRIMER.md](docs/PRIMER.md)** for the full multi-agent integration guide with config snippets for Claude Code, Cursor, Windsurf, Cline, Codex CLI, Zed, VS Code Copilot, and custom agents.
+
 ## Migration from claude-mem
 
 ```bash
