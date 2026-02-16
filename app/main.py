@@ -6,7 +6,8 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.config import settings
-from app.db import init_pool, close_pool, execute_sql_file
+from app.db import init_pool, close_pool, get_pool
+from app.migrate import run_migrations_with_pool
 from app.queue_worker import start_worker, stop_worker
 from app.routes.health import router as health_router
 from app.routes.observations import router as observations_router
@@ -26,14 +27,14 @@ async def lifespan(app: FastAPI):
     logger.info("agent-memory starting up")
     await init_pool()
 
-    # Run schema migration on startup (idempotent)
-    sql_path = Path(__file__).parent.parent / "scripts" / "init_db.sql"
-    if sql_path.exists():
-        try:
-            await execute_sql_file(str(sql_path))
-            logger.info("Schema initialized")
-        except Exception as e:
-            logger.error(f"Schema init failed: {e}")
+    # Run versioned migrations on startup
+    try:
+        pool = await get_pool()
+        applied = await run_migrations_with_pool(pool)
+        if applied:
+            logger.info(f"Applied migrations: {', '.join(applied)}")
+    except Exception as e:
+        logger.error(f"Migration failed: {e}")
 
     # Start background queue worker
     start_worker()

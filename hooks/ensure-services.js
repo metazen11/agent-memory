@@ -76,7 +76,25 @@ const PID_FILE    = path.join(INSTALL_DIR, '.server.pid');
 const LOG_DIR     = path.join(INSTALL_DIR, 'logs');
 const SERVER_LOG  = path.join(LOG_DIR, 'server.log');
 
+const ENV_FILE    = path.join(INSTALL_DIR, '.env');
+
 debug(`Install dir: ${INSTALL_DIR}`);
+
+function readEnvVar(key) {
+  try {
+    const content = fs.readFileSync(ENV_FILE, 'utf8');
+    const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
+    if (!match) return '';
+    return match[1].trim().replace(/^["']|["']$/g, '');
+  } catch {
+    return '';
+  }
+}
+
+function isExternalDatabase() {
+  const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
+  return !!dbUrl;
+}
 
 // ── Health checks ─────────────────────────────────────────────
 
@@ -175,10 +193,14 @@ function ensureServer() {
 
 // ── Main ──────────────────────────────────────────────────────
 
-const dbOk = ensureDocker();
-if (!dbOk) {
-  console.error('Failed to start PostgreSQL');
-  process.exit(1);
+if (isExternalDatabase()) {
+  debug('Using external database — skipping Docker');
+} else {
+  const dbOk = ensureDocker();
+  if (!dbOk) {
+    console.error('Failed to start PostgreSQL');
+    process.exit(1);
+  }
 }
 
 const serverOk = ensureServer();

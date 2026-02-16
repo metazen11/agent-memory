@@ -38,6 +38,8 @@ const ENV_FILE    = path.join(INSTALL_DIR, '.env');
 const ENV_EXAMPLE = path.join(INSTALL_DIR, '.env.example');
 const COMPOSE_FILE = path.join(INSTALL_DIR, 'docker', 'docker-compose.yml');
 
+const TOTAL_STEPS = 11;
+
 const HOOK_FILES = [
   'post-tool-use.js',
   'session-start.js',
@@ -100,6 +102,8 @@ const fail = (msg) => console.log(`${LOG_PREFIX}\x1b[31m✗\x1b[0m  ${msg}`);
 const info = (msg) => console.log(`${LOG_PREFIX}   ${msg}`);
 const skip = (msg) => console.log(`${LOG_PREFIX}\x1b[33m-\x1b[0m  ${msg}`);
 const head = (msg) => console.log(`\n\x1b[1m  ${msg}\x1b[0m`);
+const step = (n, total, msg) => console.log(`\n\x1b[36m  [${n}/${total}]\x1b[0m \x1b[1m${msg}\x1b[0m`);
+const dots = (msg) => process.stdout.write(`${LOG_PREFIX}   ${msg}`);
 
 function run(cmd, opts = {}) {
   try {
@@ -147,6 +151,19 @@ function generatePassword(length = 24) {
   return Array.from(bytes).map(b => chars[b % chars.length]).join('');
 }
 
+function readEnvVar(key) {
+  if (!fs.existsSync(ENV_FILE)) return '';
+  const content = fs.readFileSync(ENV_FILE, 'utf8');
+  const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
+  if (!match) return '';
+  return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+function isExternalDatabase() {
+  const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
+  return !!dbUrl;
+}
+
 function httpGet(url, timeoutMs = 3000) {
   try {
     return run(`curl -s --max-time ${Math.ceil(timeoutMs/1000)} "${url}"`, { ignoreError: true });
@@ -178,36 +195,54 @@ function isContainerRunning() {
 
 function checkPrereqs() {
   head('Checking prerequisites');
+  info('Scanning your system for required tools...');
+  console.log('');
 
   const errors = [];
+  const externalDb = fs.existsSync(ENV_FILE) && isExternalDatabase();
 
-  // Docker
-  try {
-    const ver = run('docker --version', { ignoreError: true });
-    if (ver) {
-      ok(`Docker: ${ver.replace('Docker version ', '').split(',')[0]}`);
-    } else {
-      throw new Error();
+  // Docker (skip if using external database)
+  if (externalDb) {
+    skip('Docker — not required (using external DATABASE_URL)');
+  } else {
+    dots('Looking for Docker... ');
+    try {
+      const ver = run('docker --version', { ignoreError: true });
+      if (ver) {
+        console.log('');
+        ok(`Found Docker ${ver.replace('Docker version ', '').split(',')[0]}`);
+      } else {
+        throw new Error();
+      }
+    } catch {
+      console.log('');
+      fail('Docker not found — required for PostgreSQL database');
+      info('  Or set DATABASE_URL in .env to use an external PostgreSQL');
+      if (PLATFORM === 'darwin') info('  Install Docker: brew install --cask docker');
+      else if (IS_WSL) info('  Install Docker: Docker Desktop for Windows with WSL2 backend');
+      else info('  Install Docker: sudo apt install docker.io docker-compose-plugin');
+      errors.push('docker');
     }
-  } catch {
-    fail('Docker not found');
-    if (PLATFORM === 'darwin') info('Install: brew install --cask docker');
-    else if (IS_WSL) info('Install Docker Desktop for Windows with WSL2 backend');
-    else info('Install: sudo apt install docker.io docker-compose-plugin');
-    errors.push('docker');
-  }
 
-  // Docker daemon
-  try {
-    run('docker info', { ignoreError: false, timeout: 5000 });
-    ok('Docker daemon running');
-  } catch {
-    fail('Docker daemon not running');
-    if (PLATFORM === 'darwin') info('Start Docker Desktop from Applications');
-    errors.push('docker-daemon');
+    // Docker daemon
+    if (!errors.includes('docker')) {
+      dots('Checking Docker daemon... ');
+      try {
+        run('docker info', { ignoreError: false, timeout: 5000 });
+        console.log('');
+        ok('Docker daemon is running');
+      } catch {
+        console.log('');
+        fail('Docker daemon is not running');
+        if (PLATFORM === 'darwin') info('  Start Docker Desktop from Applications');
+        else info('  Run: sudo systemctl start docker');
+        errors.push('docker-daemon');
+      }
+    }
   }
 
   // Python
+  dots('Looking for Python 3.12+... ');
   let pythonCmd = '';
   for (const cmd of ['python3.12', 'python3', 'python']) {
     try {
@@ -216,32 +251,38 @@ function checkPrereqs() {
         const match = ver.match(/(\d+)\.(\d+)/);
         if (match && parseInt(match[1]) >= 3 && parseInt(match[2]) >= 12) {
           pythonCmd = cmd;
-          ok(`Python: ${ver.replace('Python ', '')}`);
+          console.log('');
+          ok(`Found Python ${ver.replace('Python ', '')} (${cmd})`);
           break;
         }
       }
     } catch {}
   }
   if (!pythonCmd) {
-    fail('Python 3.12+ not found');
-    if (PLATFORM === 'darwin') info('Install: brew install python@3.12');
-    else info('Install: sudo apt install python3.12 python3.12-venv');
+    console.log('');
+    fail('Python 3.12+ not found — required for the memory server');
+    if (PLATFORM === 'darwin') info('  Install: brew install python@3.12');
+    else info('  Install: sudo apt install python3.12 python3.12-venv');
     errors.push('python');
   }
 
-  // Node.js (we're already running, but check version)
-  const nodeVer = process.version;
-  ok(`Node.js: ${nodeVer}`);
+  // Node.js (we're already running, but show version)
+  ok(`Found Node.js ${process.version}`);
 
   // Claude Code
+  dots('Looking for Claude Code... ');
   const claudeDir = path.join(HOME, '.claude');
   if (fs.existsSync(claudeDir)) {
-    ok('Claude Code detected');
+    console.log('');
+    ok('Found Claude Code (~/.claude/)');
   } else {
-    skip('Claude Code not detected (hooks will not be installed)');
+    console.log('');
+    skip('Claude Code not detected — hooks and MCP will not be installed');
+    info('  Install Claude Code first, then re-run this installer');
   }
 
-  if (errors.includes('docker') || errors.includes('python')) {
+  const dockerRequired = !externalDb && (errors.includes('docker') || errors.includes('docker-daemon'));
+  if (dockerRequired || errors.includes('python')) {
     console.log('');
     fail('Missing critical prerequisites. Install them and retry.');
     process.exit(1);
@@ -253,26 +294,27 @@ function checkPrereqs() {
 // ── Install steps ─────────────────────────────────────────────
 
 function createVenv(pythonCmd) {
-  head('Python environment');
+  step(1, TOTAL_STEPS, 'Python virtual environment');
 
   if (fs.existsSync(PYTHON)) {
-    const ver = run(`${PYTHON} --version`, { ignoreError: true });
-    ok(`venv exists: ${ver || 'ready'}`);
+    const ver = run(`"${PYTHON}" --version`, { ignoreError: true });
+    ok(`Virtual environment already exists (${ver || 'ready'})`);
     return;
   }
 
-  info('Creating virtual environment...');
+  info('Creating isolated Python environment in .venv/...');
   run(`${pythonCmd} -m venv "${VENV_DIR}"`);
-  ok('Created .venv/');
+  ok('Created virtual environment at .venv/');
 }
 
 function installDeps() {
-  head('Python dependencies');
+  step(2, TOTAL_STEPS, 'Python dependencies');
 
-  info('Installing from requirements.txt...');
+  info('Installing packages: FastAPI, sentence-transformers, asyncpg, llama-cpp-python...');
+  info('This may take a few minutes on first run.');
   try {
     run(`"${PIP}" install -q -r "${path.join(INSTALL_DIR, 'requirements.txt')}"`, { timeout: 300000 });
-    ok('Dependencies installed');
+    ok('All Python dependencies installed');
   } catch (e) {
     fail('pip install failed');
     info(e.message.split('\n').slice(-3).join('\n'));
@@ -281,62 +323,65 @@ function installDeps() {
 }
 
 function downloadEmbeddingModel() {
-  head('Embedding model');
+  step(4, TOTAL_STEPS, 'Embedding model (for semantic search)');
 
-  info('Downloading nomic-ai/nomic-embed-text-v1.5 (~400MB)...');
-  info('(This only happens once — model is cached locally)');
+  info('Model: nomic-ai/nomic-embed-text-v1.5 (768 dimensions)');
+  info('Downloading from Hugging Face (~400MB, cached after first download)...');
+  info('This converts your text into vectors for similarity search.');
   try {
     run(
       `"${PYTHON}" -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True); print(f'Loaded: {m.get_sentence_embedding_dimension()}d')"`,
       { timeout: 600000 }
     );
-    ok('Embedding model cached');
+    ok('Embedding model downloaded and cached');
   } catch (e) {
-    fail('Embedding model download failed');
-    info('Will download automatically on first use');
+    skip('Embedding model download failed — will retry automatically on first use');
   }
 }
 
 function downloadGGUFModel() {
-  head('Observation LLM (GGUF)');
+  step(5, TOTAL_STEPS, 'Observation LLM (for extracting memories from tool calls)');
 
   // Check if already configured in .env
   if (fs.existsSync(ENV_FILE)) {
     const envContent = fs.readFileSync(ENV_FILE, 'utf8');
     const match = envContent.match(/^OBSERVATION_LLM_MODEL=(.+)$/m);
     if (match && match[1].trim() && fs.existsSync(match[1].trim())) {
-      ok(`GGUF model already configured: ${path.basename(match[1].trim())}`);
+      ok(`Local LLM already configured: ${path.basename(match[1].trim())}`);
       return;
     }
   }
 
-  info('Downloading Qwen2.5-1.5B-Instruct (~1GB)...');
-  info('(This only happens once — model is cached locally)');
+  info('Model: Qwen2.5-1.5B-Instruct (quantized Q4_K_M)');
+  info('Downloading from Hugging Face (~1GB, cached after first download)...');
+  info('This small local LLM reads each tool call and extracts structured observations.');
+  info('No API key needed — runs entirely on your machine.');
   try {
     const modelPath = run(
       `"${PYTHON}" -c "from huggingface_hub import hf_hub_download; print(hf_hub_download('Qwen/Qwen2.5-1.5B-Instruct-GGUF', 'qwen2.5-1.5b-instruct-q4_k_m.gguf'))"`,
       { timeout: 600000 }
     );
     if (modelPath && fs.existsSync(modelPath)) {
-      ok(`GGUF model cached: ${path.basename(modelPath)}`);
+      ok(`Local LLM downloaded and cached`);
       // Write path into .env
       updateEnvVar('OBSERVATION_LLM_MODEL', modelPath);
-      ok('Set OBSERVATION_LLM_MODEL in .env');
+      ok('Configured OBSERVATION_LLM_MODEL in .env');
     }
   } catch (e) {
-    skip('GGUF download failed — will use Anthropic Haiku fallback');
-    info('Set ANTHROPIC_API_KEY in .env for observation extraction');
+    skip('Local LLM download failed — will fall back to Anthropic Haiku API');
+    info('Set ANTHROPIC_API_KEY in .env to use the cloud fallback');
   }
 }
 
 function generateEnv() {
-  head('Environment configuration');
+  step(3, TOTAL_STEPS, 'Environment configuration');
 
   if (fs.existsSync(ENV_FILE)) {
-    ok('.env already exists');
+    ok('.env already exists — keeping current configuration');
     return;
   }
 
+  info('Generating .env from template...');
   // Read template
   let content = fs.readFileSync(ENV_EXAMPLE, 'utf8');
 
@@ -348,7 +393,9 @@ function generateEnv() {
   );
 
   fs.writeFileSync(ENV_FILE, content, 'utf8');
-  ok('Generated .env with random Postgres password');
+  ok('Generated .env with secure random Postgres password');
+  info('Edit .env to customize database settings or add API keys');
+  info('To use an external PostgreSQL, set DATABASE_URL in .env and re-run');
 }
 
 function updateEnvVar(key, value) {
@@ -364,52 +411,95 @@ function updateEnvVar(key, value) {
 }
 
 function startDocker() {
-  head('Docker (PostgreSQL + pgvector)');
+  step(6, TOTAL_STEPS, 'Database (PostgreSQL + pgvector)');
 
-  if (isContainerRunning()) {
-    ok('Container agent-memory-db already running');
+  if (isExternalDatabase()) {
+    const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
+    const safeUrl = dbUrl.replace(/:([^@]+)@/, ':***@');
+    ok(`Using external database: ${safeUrl}`);
+    info('Skipping Docker — your DATABASE_URL will be used directly');
+    info('Migrations will run in the next step to ensure schema is up to date');
     return;
   }
 
-  info('Starting container...');
+  if (isContainerRunning()) {
+    ok('Database container agent-memory-db is already running');
+    return;
+  }
+
+  info('Starting PostgreSQL 16 with pgvector extension via Docker...');
+  info('Image: pgvector/pgvector:pg16 (will pull if not cached)');
   try {
-    run(`docker compose -f "${COMPOSE_FILE}" up -d`, { timeout: 60000 });
+    run(`docker compose -f "${COMPOSE_FILE}" up -d`, { timeout: 120000 });
   } catch (e) {
-    fail('docker compose up failed');
+    fail('Failed to start database container');
     info(e.message.split('\n').slice(-3).join('\n'));
     process.exit(1);
   }
 
+  // Read user/db from .env for pg_isready
+  const pgUser = readEnvVar('POSTGRES_USER') || 'agentmem';
+  const pgDb = readEnvVar('POSTGRES_DB') || 'agent_memory';
+
   // Wait for healthcheck
-  info('Waiting for PostgreSQL...');
+  dots('Waiting for PostgreSQL to accept connections');
   for (let i = 0; i < 30; i++) {
     try {
       const result = run(
-        'docker exec agent-memory-db pg_isready -U ${POSTGRES_USER:-agentmem} -d ${POSTGRES_DB:-agent_memory}',
+        `docker exec agent-memory-db pg_isready -U ${pgUser} -d ${pgDb}`,
         { ignoreError: true }
       );
       if (result.includes('accepting connections')) {
-        ok('PostgreSQL ready');
+        console.log('');
+        ok('PostgreSQL is ready and accepting connections');
         return;
       }
     } catch {}
+    process.stdout.write('.');
     run('sleep 1');
   }
+  console.log('');
   fail('PostgreSQL did not become ready in 30s');
+  info('Check Docker logs: docker logs agent-memory-db');
   process.exit(1);
 }
 
+function runMigrations() {
+  step(7, TOTAL_STEPS, 'Database schema (migrations)');
+
+  info('Running versioned SQL migrations against the database...');
+  info('Migrations create tables, indexes, and the pgvector extension.');
+  info('Already-applied migrations are skipped automatically.');
+  try {
+    const output = run(
+      `"${PYTHON}" "${path.join(INSTALL_DIR, 'scripts', 'run_migrations.py')}"`,
+      { timeout: 60000 }
+    );
+    if (output) {
+      for (const line of output.split('\n')) {
+        if (line.trim()) ok(line.trim());
+      }
+    }
+  } catch (e) {
+    fail('Migration failed');
+    info(e.message.split('\n').slice(-5).join('\n'));
+    info('Check database connectivity and try again');
+    process.exit(1);
+  }
+}
+
 function startServer() {
-  head('FastAPI server');
+  step(8, TOTAL_STEPS, 'Memory server (FastAPI)');
 
   if (isServerRunning()) {
-    ok('Server already running on port 3377');
+    ok('Memory server already running on http://localhost:3377');
     return;
   }
 
   ensureDir(LOG_DIR);
 
-  info('Starting uvicorn...');
+  info('Starting FastAPI server on port 3377...');
+  info('The server processes tool calls, extracts observations, and handles search.');
   const logStream = fs.openSync(SERVER_LOG, 'a');
   const child = spawn(UVICORN, ['app.main:app', '--port', '3377', '--host', '0.0.0.0'], {
     cwd: INSTALL_DIR,
@@ -422,24 +512,29 @@ function startServer() {
   fs.closeSync(logStream);
 
   // Wait for health endpoint
-  info('Waiting for server...');
+  dots('Waiting for health check to pass');
   for (let i = 0; i < 15; i++) {
     if (isServerRunning()) {
-      ok(`Server running (PID ${child.pid})`);
+      console.log('');
+      ok(`Memory server running (PID ${child.pid}) at http://localhost:3377`);
       return;
     }
+    process.stdout.write('.');
     run('sleep 1');
   }
+  console.log('');
   fail('Server did not become ready in 15s');
   info(`Check logs: ${SERVER_LOG}`);
 }
 
 function registerMCP() {
-  head('MCP server registration');
+  step(9, TOTAL_STEPS, 'MCP server (for in-session memory search)');
+
+  info('The MCP server gives your agent tools: search, timeline, get_observations, save_memory');
 
   for (const [name, agent] of Object.entries(AGENTS)) {
     if (!agent.detect()) {
-      skip(`${name} not detected — skipping MCP`);
+      skip(`${name} not detected — skipping MCP registration`);
       continue;
     }
 
@@ -453,20 +548,22 @@ function registerMCP() {
     };
 
     writeJSON(agent.mcpFile, mcpConfig);
-    ok(`Registered MCP server in ${name}`);
+    ok(`Registered MCP server in ${name} (${agent.mcpFile})`);
   }
 }
 
 function installHooks() {
-  head('Hook installation');
+  step(10, TOTAL_STEPS, 'Lifecycle hooks (auto-capture tool calls)');
+
+  info('Hooks capture every tool call and auto-start services on session begin.');
 
   for (const [name, agent] of Object.entries(AGENTS)) {
     if (!agent.detect()) {
-      skip(`${name} not detected — skipping hooks`);
+      skip(`${name} not detected — skipping hook installation`);
       continue;
     }
 
-    info(`${name}:`);
+    info(`Installing hooks for ${name}...`);
     ensureDir(agent.hooksDir);
 
     // Symlink hook files
@@ -474,10 +571,11 @@ function installHooks() {
       const src  = path.join(INSTALL_DIR, 'hooks', file);
       const dest = path.join(agent.hooksDir, `agent-memory-${file}`);
       symlink(src, dest);
-      ok(`  ${path.basename(dest)} → hooks/${file}`);
+      ok(`Linked ${path.basename(dest)}`);
     }
 
     // Register in settings
+    info('Registering hooks in settings.json...');
     const settings = readJSON(agent.settingsFile);
     if (!settings.hooks) settings.hooks = {};
 
@@ -490,12 +588,12 @@ function installHooks() {
         (e) => e.hooks && e.hooks.some((h) => h.command === cmd)
       );
       if (exists) {
-        skip(`  ${event} hook already registered`);
+        skip(`${event} hook already registered`);
         continue;
       }
 
       settings.hooks[event].push(entry);
-      ok(`  Registered ${event} hook`);
+      ok(`Registered ${event} hook (timeout: ${entry.hooks[0].timeout}s)`);
       changed = true;
     }
 
@@ -504,7 +602,9 @@ function installHooks() {
 }
 
 function installSkills() {
-  head('Skills');
+  step(11, TOTAL_STEPS, 'Skills (/mem-search command)');
+
+  info('The /mem-search command lets you search past sessions from the chat.');
 
   for (const [name, agent] of Object.entries(AGENTS)) {
     if (!agent.detect() || !agent.skillsDir) continue;
@@ -514,7 +614,7 @@ function installSkills() {
       const dest = path.join(agent.skillsDir, skill.dest);
       ensureDir(path.dirname(dest));
       symlink(src, dest);
-      ok(`${skill.dest} → ${name}`);
+      ok(`Installed /mem-search skill for ${name}`);
     }
   }
 }
@@ -689,8 +789,12 @@ function stopServices() {
 
 function install() {
   console.log('');
-  console.log('\x1b[1magent-memory — installing\x1b[0m');
-  console.log('─'.repeat(50));
+  console.log('\x1b[1m  ╔══════════════════════════════════════════════╗\x1b[0m');
+  console.log('\x1b[1m  ║  agent-memory installer                     ║\x1b[0m');
+  console.log('\x1b[1m  ║  Persistent cross-session memory for AI     ║\x1b[0m');
+  console.log('\x1b[1m  ╚══════════════════════════════════════════════╝\x1b[0m');
+  console.log('');
+  info(`${TOTAL_STEPS} steps: prereqs → venv → deps → config → models → database → migrations → server → MCP → hooks → skills`);
 
   const { pythonCmd } = checkPrereqs();
   createVenv(pythonCmd);
@@ -699,23 +803,84 @@ function install() {
   downloadEmbeddingModel();
   downloadGGUFModel();
   startDocker();
+  runMigrations();
   startServer();
   registerMCP();
   installHooks();
   installSkills();
 
   console.log('');
+  console.log('\x1b[32m  ╔══════════════════════════════════════════════╗\x1b[0m');
+  console.log('\x1b[32m  ║  Installation complete!                     ║\x1b[0m');
+  console.log('\x1b[32m  ╚══════════════════════════════════════════════╝\x1b[0m');
+  console.log('');
+  ok('Memory server running on http://localhost:3377');
+  ok('MCP tools registered — search, timeline, get_observations, save_memory');
+  ok('Hooks installed — tool calls will be recorded automatically');
+  ok('Restart your agent to activate everything');
+  console.log('');
+  info('Manage services:');
+  info('  node install.js --status     Show what\'s running');
+  info('  node install.js --start      Start Docker + FastAPI');
+  info('  node install.js --stop       Stop everything');
+  info('  node install.js --uninstall  Remove hooks, MCP, skills');
+  console.log('');
+}
+
+// ── Migrate / Backup ────────────────────────────────────────
+
+function migrateOnly() {
+  console.log('');
+  console.log('\x1b[1magent-memory — database migrations\x1b[0m');
   console.log('─'.repeat(50));
-  console.log('\x1b[1m  Installation complete!\x1b[0m');
+
+  const flags = [];
+  if (args.includes('--dry-run')) flags.push('--dry-run');
+  if (args.includes('--backup')) flags.push('--backup');
+
+  const flagStr = flags.length ? ` ${flags.join(' ')}` : '';
+  const desc = args.includes('--dry-run') ? 'DRY RUN — showing pending migrations (no changes)' : 'Running database migrations...';
+  info(desc);
+
+  try {
+    const output = run(
+      `"${PYTHON}" "${path.join(INSTALL_DIR, 'scripts', 'run_migrations.py')}"${flagStr}`,
+      { timeout: 120000 }
+    );
+    if (output) {
+      for (const line of output.split('\n')) {
+        if (line.trim()) ok(line.trim());
+      }
+    }
+  } catch (e) {
+    fail('Migration failed');
+    info(e.message.split('\n').slice(-5).join('\n'));
+    process.exit(1);
+  }
   console.log('');
-  ok('Services running on http://localhost:3377');
-  ok('Restart your agent to activate hooks');
+}
+
+function backupOnly() {
   console.log('');
-  info('Commands:');
-  info('  node install.js --status     Show status');
-  info('  node install.js --start      Start services');
-  info('  node install.js --stop       Stop services');
-  info('  node install.js --uninstall  Remove everything');
+  console.log('\x1b[1magent-memory — database backup\x1b[0m');
+  console.log('─'.repeat(50));
+  info('Creating timestamped backup of all mem_* tables...');
+
+  try {
+    const output = run(
+      `"${PYTHON}" "${path.join(INSTALL_DIR, 'scripts', 'run_migrations.py')}" --backup-only`,
+      { timeout: 120000 }
+    );
+    if (output) {
+      for (const line of output.split('\n')) {
+        if (line.trim()) ok(line.trim());
+      }
+    }
+  } catch (e) {
+    fail('Backup failed');
+    info(e.message.split('\n').slice(-5).join('\n'));
+    process.exit(1);
+  }
   console.log('');
 }
 
@@ -731,6 +896,10 @@ if (args.includes('--uninstall') || args.includes('-u')) {
   startServices();
 } else if (args.includes('--stop')) {
   stopServices();
+} else if (args.includes('--migrate')) {
+  migrateOnly();
+} else if (args.includes('--backup')) {
+  backupOnly();
 } else if (args.includes('--help') || args.includes('-h')) {
   console.log(`
 agent-memory installer
@@ -741,6 +910,10 @@ Usage:
   node install.js --status     Show what's installed and running
   node install.js --start      Start services (Docker + FastAPI)
   node install.js --stop       Stop services
+  node install.js --migrate    Run pending database migrations
+  node install.js --migrate --dry-run  Show what migrations would run (no changes)
+  node install.js --migrate --backup   Backup tables before migrating
+  node install.js --backup     Backup mem_* tables (no migration)
   node install.js --help       Show this help
 `);
 } else {
