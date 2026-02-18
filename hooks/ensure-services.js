@@ -91,9 +91,12 @@ function readEnvVar(key) {
   }
 }
 
+function getExternalDatabaseUrl() {
+  return readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL') || '';
+}
+
 function isExternalDatabase() {
-  const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
-  return !!dbUrl;
+  return !!getExternalDatabaseUrl();
 }
 
 // ── Health checks ─────────────────────────────────────────────
@@ -191,10 +194,93 @@ function ensureServer() {
   return false;
 }
 
+// ── External database (BYOP) ─────────────────────────────────
+
+function ensureExternalDb() {
+  const dbUrl = getExternalDatabaseUrl();
+  // Parse port from DATABASE_URL (postgresql://user:pass@host:port/db)
+  const portMatch = dbUrl.match(/:(\d+)\//);
+  const port = portMatch ? portMatch[1] : '5432';
+
+  // Check if something is listening on that port
+  const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { timeout: 3000 });
+  if (listening) {
+    debug(`External database port ${port} is listening`);
+    return true;
+  }
+
+  debug(`External database port ${port} not listening — looking for Docker container`);
+
+  // Check if Docker daemon is running
+  const dockerOk = run('docker info', { timeout: 5000 });
+  if (!dockerOk) {
+    debug('Docker daemon not running — cannot start external DB container');
+    return false;
+  }
+
+  // Find a stopped container that maps to this port
+  const containers = run(
+    `docker ps -a --filter "status=exited" --filter "status=created" --format "{{.ID}} {{.Names}} {{.Ports}}" 2>/dev/null`
+  );
+  // Also check running containers with port mapping (might be restarting)
+  const allContainers = run(
+    `docker ps -a --format "{{.ID}} {{.Names}}" 2>/dev/null`
+  );
+
+  // Try to find container by inspecting port bindings for all containers
+  const ids = allContainers.split('\n').filter(Boolean).map(l => l.split(' ')[0]);
+  let targetContainer = '';
+
+  for (const id of ids) {
+    const portBindings = run(`docker inspect --format='{{json .HostConfig.PortBindings}}' ${id}`, { timeout: 3000 });
+    if (portBindings.includes(`"HostPort":"${port}"`)) {
+      const name = run(`docker inspect --format='{{.Name}}' ${id}`, { timeout: 3000 }).replace(/^\//, '');
+      const status = run(`docker inspect --format='{{.State.Status}}' ${id}`, { timeout: 3000 });
+      debug(`Found container '${name}' (${id}) mapped to port ${port}, status: ${status}`);
+      if (status !== 'running') {
+        targetContainer = id;
+      } else {
+        // Running but port not yet ready — just wait
+        debug(`Container already running, waiting for port ${port}`);
+        return waitForPort(port);
+      }
+      break;
+    }
+  }
+
+  if (!targetContainer) {
+    debug(`No Docker container found for port ${port}`);
+    return false;
+  }
+
+  debug(`Starting container ${targetContainer}...`);
+  run(`docker start ${targetContainer}`, { timeout: 30000 });
+
+  return waitForPort(port);
+}
+
+function waitForPort(port) {
+  for (let i = 0; i < 30; i++) {
+    const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { timeout: 3000 });
+    if (listening) {
+      debug(`Port ${port} is now listening`);
+      return true;
+    }
+    run('sleep 1');
+  }
+  debug(`Port ${port} did not become available in 30s`);
+  return false;
+}
+
 // ── Main ──────────────────────────────────────────────────────
 
 if (isExternalDatabase()) {
-  debug('Using external database — skipping Docker');
+  debug('Using external database (BYOP)');
+  const dbOk = ensureExternalDb();
+  if (!dbOk) {
+    console.error('Failed to ensure external database is running');
+    process.exit(1);
+  }
 } else {
   const dbOk = ensureDocker();
   if (!dbOk) {
