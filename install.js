@@ -151,6 +151,53 @@ function generatePassword(length = 24) {
   return Array.from(bytes).map(b => chars[b % chars.length]).join('');
 }
 
+function prompt(question) {
+  const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => rl.question(question, answer => { rl.close(); resolve(answer.trim()); }));
+}
+
+/**
+ * Find running Postgres containers (pgvector or postgres images)
+ * Returns array of { id, name, port, image, status }
+ */
+function findPostgresContainers() {
+  try {
+    const lines = run(
+      `docker ps --format='{{.ID}}\\t{{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}'`,
+      { ignoreError: true, timeout: 5000 }
+    );
+    if (!lines) return [];
+    return lines.split('\n').filter(Boolean).map(line => {
+      const [id, name, image, status, ports] = line.split('\t');
+      if (!image || (!image.includes('postgres') && !image.includes('pgvector'))) return null;
+      // Extract host port from "0.0.0.0:5433->5432/tcp"
+      const portMatch = (ports || '').match(/(\d+)->5432/);
+      const port = portMatch ? portMatch[1] : null;
+      return { id, name, port, image, status };
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Test if we can connect to a Postgres instance and it has pgvector
+ */
+function testPostgresConnection(host, port, user, password, db) {
+  const connStr = password
+    ? `postgresql://${user}:${password}@${host}:${port}/${db}`
+    : `postgresql://${user}@${host}:${port}/${db}`;
+  try {
+    const result = run(
+      `"${PYTHON}" -c "import asyncio, asyncpg; asyncio.run(asyncpg.connect('${connStr}'))"`,
+      { ignoreError: true, timeout: 10000 }
+    );
+    return !result.includes('Error') && !result.includes('Traceback');
+  } catch {
+    return false;
+  }
+}
+
 function readEnvVar(key) {
   if (!fs.existsSync(ENV_FILE)) return '';
   const content = fs.readFileSync(ENV_FILE, 'utf8');
@@ -373,7 +420,7 @@ function downloadGGUFModel() {
   }
 }
 
-function generateEnv() {
+async function generateEnv() {
   step(3, TOTAL_STEPS, 'Environment configuration');
 
   if (fs.existsSync(ENV_FILE)) {
@@ -382,10 +429,54 @@ function generateEnv() {
   }
 
   info('Generating .env from template...');
-  // Read template
   let content = fs.readFileSync(ENV_EXAMPLE, 'utf8');
 
-  // Generate random password
+  // Check for existing Postgres containers before setting up a new one
+  const existingContainers = findPostgresContainers();
+
+  if (existingContainers.length > 0) {
+    console.log('');
+    info('Found existing PostgreSQL containers:');
+    existingContainers.forEach((c, i) => {
+      info(`  [${i + 1}] ${c.name} (${c.image}, port ${c.port || '?'}, ${c.status})`);
+    });
+    console.log('');
+
+    const answer = await prompt('  Reuse an existing container? Enter number, or press Enter to create a new one: ');
+    const choice = parseInt(answer) - 1;
+
+    if (choice >= 0 && choice < existingContainers.length) {
+      const container = existingContainers[choice];
+      const port = container.port || '5432';
+
+      // Ask for connection details
+      const dbUser = await prompt(`  Database user [default: agentmem]: `) || 'agentmem';
+      const dbPassword = await prompt(`  Database password [default: empty]: `) || '';
+      const dbName = await prompt(`  Database name [default: agent_memory]: `) || 'agent_memory';
+
+      const dbUrl = dbPassword
+        ? `postgresql://${dbUser}:${dbPassword}@localhost:${port}/${dbName}`
+        : `postgresql://${dbUser}@localhost:${port}/${dbName}`;
+
+      // Set DATABASE_URL to use BYOP mode — skips agent-memory's own Docker container
+      content = content.replace(
+        /^# DATABASE_URL=.*$/m,
+        `DATABASE_URL=${dbUrl}`
+      );
+      // Also ensure we don't have a bare DATABASE_URL= line
+      if (!content.includes(`DATABASE_URL=${dbUrl}`)) {
+        content += `\nDATABASE_URL=${dbUrl}\n`;
+      }
+
+      fs.writeFileSync(ENV_FILE, content, 'utf8');
+      ok(`Configured to reuse ${container.name} on port ${port}`);
+      ok(`DATABASE_URL set — Docker step will be skipped`);
+      info('The mem_* tables will be created during the migration step');
+      return;
+    }
+  }
+
+  // No reuse — generate fresh config with password for a new container
   const password = generatePassword();
   content = content.replace(
     /^POSTGRES_PASSWORD=.*$/m,
@@ -417,7 +508,40 @@ function startDocker() {
     const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
     const safeUrl = dbUrl.replace(/:([^@]+)@/, ':***@');
     ok(`Using external database: ${safeUrl}`);
-    info('Skipping Docker — your DATABASE_URL will be used directly');
+
+    // Parse port and check if the external DB is reachable
+    const portMatch = dbUrl.match(/:(\d+)\//);
+    const port = portMatch ? portMatch[1] : '5432';
+
+    const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { ignoreError: true, timeout: 3000 });
+    if (listening) {
+      ok(`Database port ${port} is listening`);
+    } else {
+      info(`Database port ${port} is not listening — checking Docker containers...`);
+      // Find and start the container bound to that port
+      const allIds = run(`docker ps -a --format='{{.ID}}'`, { ignoreError: true, timeout: 5000 });
+      if (allIds) {
+        for (const id of allIds.split('\n').filter(Boolean)) {
+          const pb = run(`docker inspect --format='{{json .HostConfig.PortBindings}}' ${id}`, { ignoreError: true, timeout: 3000 });
+          if (pb && pb.includes(`"HostPort":"${port}"`)) {
+            const name = run(`docker inspect --format='{{.Name}}' ${id}`, { ignoreError: true, timeout: 3000 }).replace(/^\//, '');
+            info(`Found container '${name}' — starting it...`);
+            run(`docker start ${id}`, { ignoreError: true, timeout: 30000 });
+            // Wait for port
+            dots(`Waiting for port ${port}`);
+            for (let i = 0; i < 30; i++) {
+              const up = run(`lsof -i :${port} -sTCP:LISTEN -t`, { ignoreError: true, timeout: 3000 });
+              if (up) { console.log(''); ok(`Container '${name}' is now listening on port ${port}`); break; }
+              process.stdout.write('.');
+              run('sleep 1');
+              if (i === 29) { console.log(''); fail(`Port ${port} did not become available`); process.exit(1); }
+            }
+            break;
+          }
+        }
+      }
+    }
+
     info('Migrations will run in the next step to ensure schema is up to date');
     return;
   }
@@ -691,7 +815,14 @@ function status() {
   console.log('─'.repeat(50));
 
   head('Services');
-  if (isContainerRunning()) ok('PostgreSQL: running');
+  if (isExternalDatabase()) {
+    const dbUrl = readEnvVar('DATABASE_URL') || readEnvVar('AGENT_MEMORY_DATABASE_URL');
+    const portMatch = dbUrl.match(/:(\d+)\//);
+    const port = portMatch ? portMatch[1] : '5432';
+    const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { ignoreError: true, timeout: 3000 });
+    if (listening) ok(`PostgreSQL: running (external, port ${port})`);
+    else fail(`PostgreSQL: not listening (external, port ${port})`);
+  } else if (isContainerRunning()) ok('PostgreSQL: running (agent-memory-db)');
   else fail('PostgreSQL: stopped');
 
   if (isServerRunning()) ok('FastAPI: running on port 3377');
@@ -787,7 +918,7 @@ function stopServices() {
 
 // ── Full install ──────────────────────────────────────────────
 
-function install() {
+async function install() {
   console.log('');
   console.log('\x1b[1m  ╔══════════════════════════════════════════════╗\x1b[0m');
   console.log('\x1b[1m  ║  agent-memory installer                     ║\x1b[0m');
@@ -799,7 +930,7 @@ function install() {
   const { pythonCmd } = checkPrereqs();
   createVenv(pythonCmd);
   installDeps();
-  generateEnv();
+  await generateEnv();
   downloadEmbeddingModel();
   downloadGGUFModel();
   startDocker();
@@ -917,5 +1048,5 @@ Usage:
   node install.js --help       Show this help
 `);
 } else {
-  install();
+  install().catch(e => { console.error(e); process.exit(1); });
 }
