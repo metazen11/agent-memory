@@ -134,7 +134,7 @@ def read_sqlite_sessions(db_path: str) -> list[dict]:
 
 
 async def migrate(embed: bool = False, batch_size: int = 50, dry_run: bool = False):
-    """Run the migration."""
+    """Run the migration, skipping observations that already exist in Postgres."""
     import asyncpg
 
     observations = read_sqlite_observations(CLAUDE_MEM_DB)
@@ -144,22 +144,57 @@ async def migrate(embed: bool = False, batch_size: int = 50, dry_run: bool = Fal
 
     sessions = read_sqlite_sessions(CLAUDE_MEM_DB)
 
-    if dry_run:
-        logger.info(f"DRY RUN: Would migrate {len(observations)} observations from {len(sessions)} sessions")
-        # Show project breakdown
-        projects = {}
-        for obs in observations:
-            p = obs.get("project", "unknown")
-            projects[p] = projects.get(p, 0) + 1
-        for p, count in sorted(projects.items(), key=lambda x: -x[1]):
-            logger.info(f"  {p}: {count} observations")
-        return
-
-    # Connect to Postgres
+    # Connect to Postgres early so we can check for existing data
     dsn = settings.database_url.replace("postgresql://", "postgres://", 1)
     conn = await asyncpg.connect(dsn)
 
     try:
+        # Build set of existing observation keys for dedup: (title, created_at_str, project)
+        existing_rows = await conn.fetch("""
+            SELECT o.title, o.created_at, p.name as project_name
+            FROM mem_observations o
+            JOIN mem_projects p ON p.id = o.project_id
+        """)
+        existing_keys = set()
+        for row in existing_rows:
+            ts = row["created_at"].strftime("%Y-%m-%dT%H:%M:%S") if row["created_at"] else ""
+            existing_keys.add((row["title"], ts, row["project_name"]))
+
+        logger.info(f"Found {len(existing_keys)} existing observations in Postgres")
+
+        # Filter out duplicates
+        new_observations = []
+        for obs in observations:
+            ts = _parse_ts(obs.get("created_at"))
+            ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S") if ts else ""
+            key = (obs.get("title", "Untitled"), ts_str, obs.get("project", "unknown"))
+            if key not in existing_keys:
+                new_observations.append(obs)
+
+        logger.info(f"SQLite: {len(observations)} total, Postgres: {len(existing_keys)} existing, "
+                    f"New to migrate: {len(new_observations)}")
+
+        if dry_run:
+            logger.info(f"DRY RUN: Would migrate {len(new_observations)} new observations from {len(sessions)} sessions")
+            if new_observations:
+                projects = {}
+                for obs in new_observations:
+                    p = obs.get("project", "unknown")
+                    projects[p] = projects.get(p, 0) + 1
+                for p, count in sorted(projects.items(), key=lambda x: -x[1]):
+                    logger.info(f"  {p}: {count} new observations")
+            else:
+                logger.info("  Everything is already synced!")
+            await conn.close()
+            return
+
+        if not new_observations:
+            logger.info("All observations already exist in Postgres — nothing to migrate")
+            await conn.close()
+            return
+
+        observations = new_observations
+
         # Create projects
         project_ids = {}
         for session in sessions:
