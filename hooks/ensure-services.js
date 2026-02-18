@@ -18,6 +18,11 @@ function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:ensure-services] ${msg}`);
 }
 
+// User-visible notices (captured by session-start.js via stdout)
+function notice(msg) {
+  console.log(`[agent-memory] ${msg}`);
+}
+
 function run(cmd, opts = {}) {
   try {
     return execSync(cmd, {
@@ -158,10 +163,12 @@ function ensureServer() {
 
   // Check if venv exists
   if (!fs.existsSync(UVICORN)) {
+    notice('Memory server not installed — run `node install.js` first');
     debug(`uvicorn not found at ${UVICORN} — run install.js first`);
     return false;
   }
 
+  notice('Starting memory server (FastAPI)...');
   debug('Starting FastAPI server...');
 
   // Ensure log directory
@@ -185,11 +192,13 @@ function ensureServer() {
   for (let i = 0; i < 15; i++) {
     run('sleep 1');
     if (isServerHealthy()) {
+      notice('Memory server ready on port 3377');
       debug('FastAPI server healthy');
       return true;
     }
   }
 
+  notice('Memory server failed to start within 15s');
   debug('FastAPI server did not become healthy in 15s');
   return false;
 }
@@ -209,11 +218,13 @@ function ensureExternalDb() {
     return true;
   }
 
+  notice(`Database port ${port} is not listening — looking for Docker container...`);
   debug(`External database port ${port} not listening — looking for Docker container`);
 
   // Check if Docker daemon is running
   const dockerOk = run('docker info', { timeout: 5000 });
   if (!dockerOk) {
+    notice('Docker daemon is not running — cannot start database');
     debug('Docker daemon not running — cannot start external DB container');
     return false;
   }
@@ -230,6 +241,7 @@ function ensureExternalDb() {
   // Try to find container by inspecting port bindings for all containers
   const ids = allContainers.split('\n').filter(Boolean).map(l => l.split(' ')[0]);
   let targetContainer = '';
+  let targetName = '';
 
   for (const id of ids) {
     const portBindings = run(`docker inspect --format='{{json .HostConfig.PortBindings}}' ${id}`, { timeout: 3000 });
@@ -238,17 +250,21 @@ function ensureExternalDb() {
       const status = run(`docker inspect --format='{{.State.Status}}' ${id}`, { timeout: 3000 });
       debug(`Found container '${name}' (${id}) mapped to port ${port}, status: ${status}`);
       if (status !== 'running') {
+        notice(`Found stopped container '${name}' — restarting...`);
         targetContainer = id;
+        targetName = name;
       } else {
         // Running but port not yet ready — just wait
+        notice(`Container '${name}' is running but port ${port} not ready — waiting...`);
         debug(`Container already running, waiting for port ${port}`);
-        return waitForPort(port);
+        return waitForPort(port, name);
       }
       break;
     }
   }
 
   if (!targetContainer) {
+    notice(`No Docker container found for port ${port} — database is unavailable`);
     debug(`No Docker container found for port ${port}`);
     return false;
   }
@@ -256,18 +272,21 @@ function ensureExternalDb() {
   debug(`Starting container ${targetContainer}...`);
   run(`docker start ${targetContainer}`, { timeout: 30000 });
 
-  return waitForPort(port);
+  return waitForPort(port, targetName);
 }
 
-function waitForPort(port) {
+function waitForPort(port, containerName) {
   for (let i = 0; i < 30; i++) {
     const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { timeout: 3000 });
     if (listening) {
+      const label = containerName ? `'${containerName}' is` : `Port ${port} is`;
+      notice(`${label} ready`);
       debug(`Port ${port} is now listening`);
       return true;
     }
     run('sleep 1');
   }
+  notice(`Database did not become available on port ${port} after 30s`);
   debug(`Port ${port} did not become available in 30s`);
   return false;
 }

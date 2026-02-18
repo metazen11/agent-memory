@@ -114,6 +114,8 @@ function resolveEnsureServicesPath() {
   return path.join(realDir, 'ensure-services.js');
 }
 
+let startupNotices = [];
+
 function startServices() {
   const script = resolveEnsureServicesPath();
   if (!fs.existsSync(script)) {
@@ -122,15 +124,27 @@ function startServices() {
   }
   debug(`Running ensure-services.js...`);
   try {
-    execFileSync('node', [script], {
+    const stdout = execFileSync('node', [script], {
       timeout: 45000,
       stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
       env: { ...process.env, AGENT_MEMORY_DEBUG: DEBUG ? '1' : '0' },
     });
+    // Capture notice lines from ensure-services.js
+    if (stdout) {
+      startupNotices = stdout.split('\n')
+        .filter(l => l.startsWith('[agent-memory]'))
+        .map(l => l.replace('[agent-memory] ', ''));
+    }
     debug('ensure-services.js completed successfully');
     return true;
   } catch (e) {
     debug(`ensure-services.js failed: ${e.message}`);
+    if (e.stdout) {
+      startupNotices = e.stdout.toString().split('\n')
+        .filter(l => l.startsWith('[agent-memory]'))
+        .map(l => l.replace('[agent-memory] ', ''));
+    }
     return false;
   }
 }
@@ -239,9 +253,14 @@ debug(`project=${project} cwd=${cwd}`);
   // Step 5: Fetch recent observations
   const observations = await fetchObservations(project);
 
+  // Build startup notice block (if services had to be started)
+  const noticeBlock = startupNotices.length > 0
+    ? `**Startup:** ${startupNotices.join(' → ')}\n\n`
+    : '';
+
   if (!Array.isArray(observations) || observations.length === 0) {
     debug('No recent observations, injecting MCP hint only');
-    output({ systemMessage: MCP_HINT });
+    output({ systemMessage: `${noticeBlock}${MCP_HINT}` });
     return;
   }
 
@@ -254,7 +273,7 @@ debug(`project=${project} cwd=${cwd}`);
   });
 
   const recentCtx = `Recent memory for "${project}" (${observations.length} entries):\n${lines.join('\n')}`;
-  const msg = `${MCP_HINT}\n\n${recentCtx}`;
+  const msg = `${noticeBlock}${MCP_HINT}\n\n${recentCtx}`;
   debug(`Injecting hint + ${observations.length} observations`);
   output({ systemMessage: msg });
 })();
