@@ -253,6 +253,19 @@ The system is agent-agnostic. The hooks are the Claude-specific integration laye
 
 See **[docs/PRIMER.md](docs/PRIMER.md)** for the full multi-agent integration guide with config snippets for Claude Code, Cursor, Windsurf, Cline, Codex CLI, Zed, VS Code Copilot, and custom agents.
 
+## Why Replace claude-mem?
+
+This project was built as a direct replacement for [claude-mem](https://github.com/thedotmack/claude-mem) after hitting persistent stability issues:
+
+- **PostToolUse hook hangs** — claude-mem's `PostToolUse` hook uses `matcher: "*"` with a 120-second timeout. It fires on every single tool call, spawns worker-service daemons, and frequently hangs waiting for ChromaDB sync. This blocks Claude Code after every tool use. The fix (removing the hook from `hooks.json`) gets overwritten on every plugin update.
+- **Zombie processes** — The worker-service daemons accumulate. We've seen 50-80+ zombie `worker-service` processes in a single session, consuming memory and CPU.
+- **ChromaDB crashes on Apple Silicon** — ChromaDB 1.5.0's Rust bindings (`chromadb_rust_bindings.abi3.so`) segfault on macOS ARM64 due to a thread-safety bug. Multiple tokio workers contend on a mutex, causing SIGSEGV.
+- **No real vector search** — claude-mem uses ChromaDB/SQLite locally, which doesn't scale well and lacks proper hybrid search. agent-memory uses PostgreSQL + pgvector with HNSW indexes and Reciprocal Rank Fusion (vector + full-text).
+- **No auto-recovery** — When claude-mem's database or services go down, they stay down. agent-memory's session-start hook auto-detects unhealthy services and restarts Docker containers and the FastAPI server automatically.
+- **Fire-and-forget hooks** — agent-memory's PostToolUse hook writes stdout immediately and exits in ~30ms. The HTTP POST to the queue is unref'd so it never blocks the Node.js event loop. claude-mem's hook blocks until its worker completes.
+
+If you're currently using claude-mem and experiencing hangs, crashes, or zombie processes, agent-memory is a drop-in replacement with a migration script included.
+
 ## Migration from claude-mem
 
 ```bash
