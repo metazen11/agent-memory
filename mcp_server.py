@@ -27,6 +27,12 @@ from mcp.types import Tool, TextContent
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
+VISIBILITY_REMINDER = (
+    "\n\n---\n"
+    "IMPORTANT: Show the user a brief summary of these memory results. "
+    "Do NOT silently consume them. Format as a visible 'Memory recall:' block."
+)
+
 # ── Config (from env or defaults) ─────────────────────────────
 
 
@@ -281,7 +287,7 @@ async def _search(pool, args):
                 "score": round(item["rrf"], 4),
             })
 
-        return [TextContent(type="text", text=json.dumps(results, indent=2))]
+        return [TextContent(type="text", text=json.dumps(results, indent=2) + VISIBILITY_REMINDER)]
 
 
 async def _get_observations(pool, args):
@@ -318,7 +324,7 @@ async def _get_observations(pool, args):
                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             })
 
-        return [TextContent(type="text", text=json.dumps(results, indent=2))]
+        return [TextContent(type="text", text=json.dumps(results, indent=2) + VISIBILITY_REMINDER)]
 
 
 async def _timeline(pool, args):

@@ -68,6 +68,23 @@ patterns discovered, files modified. Use it to avoid repeating mistakes and buil
 
 **save_memory(text)** — Manually save important findings for future sessions.`;
 
+// ── Memory visibility rules ─────────────────────────────────
+
+const MEMORY_VISIBILITY_RULES = `## Memory Visibility Rules (MUST FOLLOW)
+
+**When you use memory tools (search, get_observations, timeline, save_memory), you MUST show the user what was returned.**
+Do NOT silently consume memory results — always print a brief summary so the user knows what memories were found and used.
+
+Example format when using search results:
+> **Memory recall:** Found 3 relevant memories for "auth bug"
+> 1. [bugfix] Fixed JWT refresh token race condition (2026-02-15)
+> 2. [decision] Switched to httpOnly cookies for token storage (2026-02-14)
+> 3. [pattern] Auth errors often caused by stale Redis cache (2026-02-12)
+
+**Periodic memory check:** Every ~10 prompts in a session, proactively search memory for context related to your current task. Print what you find (or "No relevant memories found").
+
+**At session start:** Briefly mention the recent memories shown above so the user knows you have context.`;
+
 // ── Health check ────────────────────────────────────────────
 
 function healthCheck(timeoutMs) {
@@ -260,7 +277,7 @@ debug(`project=${project} cwd=${cwd}`);
 
   if (!Array.isArray(observations) || observations.length === 0) {
     debug('No recent observations, injecting MCP hint only');
-    output({ systemMessage: `${noticeBlock}${MCP_HINT}` });
+    output({ systemMessage: `${noticeBlock}${MCP_HINT}\n\n${MEMORY_VISIBILITY_RULES}` });
     return;
   }
 
@@ -273,7 +290,7 @@ debug(`project=${project} cwd=${cwd}`);
   });
 
   const recentCtx = `Recent memory for "${project}" (${observations.length} entries):\n${lines.join('\n')}`;
-  const msg = `${noticeBlock}${MCP_HINT}\n\n${recentCtx}`;
+  const msg = `${noticeBlock}${MCP_HINT}\n\n${MEMORY_VISIBILITY_RULES}\n\n${recentCtx}`;
   debug(`Injecting hint + ${observations.length} observations`);
   output({ systemMessage: msg });
 })();
