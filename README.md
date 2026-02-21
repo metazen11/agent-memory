@@ -1,6 +1,10 @@
 # agent-memory
 
-Persistent cross-session memory for AI coding agents. Records what was learned, built, fixed, and decided during each session, then makes it searchable via semantic + full-text hybrid search.
+Persistent memory for AI coding agents that build, maintain, and enhance long-lived projects.
+
+Most memory solutions assume your relationship with a project ends at `git push`. This one doesn't. If you maintain production systems, ship continuous improvements, and need your agent to remember why that Docker port was changed 4 months ago — agent-memory is built for you.
+
+Records what was learned, built, fixed, and decided during each session, then makes it searchable via semantic + full-text hybrid search. Claude Code's built-in `MEMORY.md` gives you 200 lines of pinned notes. agent-memory gives you a searchable journal across thousands of observations — so accumulated context becomes a competitive advantage, not a truncated file.
 
 Works with Claude Code out of the box. Designed to support any AI coding agent via REST API or MCP.
 
