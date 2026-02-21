@@ -47,11 +47,20 @@ If the tool call has no meaningful learning value, respond:
 # ── Local LLM (llama-cpp-python, lazy singleton) ──────────────
 
 _llm = None
+_llm_inference_count = 0
+_LLM_RECYCLE_INTERVAL = 500  # Recreate model every N inferences to prevent memory leaks
 
 
 def _get_llm():
-    """Lazy-load the GGUF model (cached singleton)."""
-    global _llm
+    """Lazy-load the GGUF model (cached singleton). Recycles periodically."""
+    global _llm, _llm_inference_count
+    if _llm is not None and _llm_inference_count >= _LLM_RECYCLE_INTERVAL:
+        logger.info(f"Recycling observation LLM after {_llm_inference_count} inferences")
+        del _llm
+        _llm = None
+        _llm_inference_count = 0
+        import gc
+        gc.collect()
     if _llm is None:
         from llama_cpp import Llama
         logger.info(f"Loading observation LLM: {settings.observation_llm_model}")
@@ -67,8 +76,12 @@ def _get_llm():
 
 def _generate_local_sync(prompt: str) -> str | None:
     """Run inference synchronously (called from thread pool)."""
+    global _llm_inference_count
     llm = _get_llm()
     out = llm(prompt, max_tokens=300, stop=["<|im_end|>"], temperature=0)
+    _llm_inference_count += 1
+    # Reset KV cache to prevent per-inference memory accumulation
+    llm.reset()
     return out["choices"][0]["text"]
 
 
