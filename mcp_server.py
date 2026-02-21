@@ -11,8 +11,10 @@ Registered by install.js in ~/.claude/.mcp.json.
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -219,50 +221,60 @@ async def _search(pool, args):
     emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     async with pool.acquire() as conn:
-        params = [emb_str, query, limit * 2]
-        filters = []
-        pidx = 4
-
+        # Build shared filter clauses (applied to both queries)
+        # Each query builds its own params with its own $N numbering
+        shared_filters = []
+        shared_values = []
         if project:
-            filters.append(f"p.name = ${pidx}")
-            params.append(project)
-            pidx += 1
+            shared_filters.append(("p.name = ${}", project))
         if obs_type:
-            filters.append(f"o.type = ${pidx}")
-            params.append(obs_type)
-            pidx += 1
+            shared_filters.append(("o.type = ${}", obs_type))
         if date_start:
-            filters.append(f"o.created_at >= ${pidx}::timestamp")
-            params.append(date_start)
-            pidx += 1
+            shared_filters.append(("o.created_at >= ${}::timestamp", date_start))
         if date_end:
-            filters.append(f"o.created_at <= ${pidx}::timestamp")
-            params.append(date_end)
-            pidx += 1
+            shared_filters.append(("o.created_at <= ${}::timestamp", date_end))
 
-        where = ("AND " + " AND ".join(filters)) if filters else ""
+        # --- Vector search ---
+        vec_params = [emb_str, limit * 2]  # $1=embedding, $2=limit
+        vec_pidx = 3
+        vec_where_parts = []
+        for tmpl, val in shared_filters:
+            vec_where_parts.append(tmpl.format(vec_pidx))
+            vec_params.append(val)
+            vec_pidx += 1
+        vec_where = ("AND " + " AND ".join(vec_where_parts)) if vec_where_parts else ""
 
         vec_rows = await conn.fetch(f"""
             SELECT o.id, o.title, o.type, o.created_at, p.name as project_name,
                    1 - (o.embedding <=> $1::vector) as vec_score
             FROM mem_observations o
             JOIN mem_projects p ON p.id = o.project_id
-            WHERE o.embedding IS NOT NULL {where}
+            WHERE o.embedding IS NOT NULL {vec_where}
             ORDER BY o.embedding <=> $1::vector
-            LIMIT $3
-        """, *params)
+            LIMIT $2
+        """, *vec_params)
+
+        # --- Full-text search ---
+        fts_params = [query, limit * 2]  # $1=query, $2=limit
+        fts_pidx = 3
+        fts_where_parts = []
+        for tmpl, val in shared_filters:
+            fts_where_parts.append(tmpl.format(fts_pidx))
+            fts_params.append(val)
+            fts_pidx += 1
+        fts_where = ("AND " + " AND ".join(fts_where_parts)) if fts_where_parts else ""
 
         fts_rows = await conn.fetch(f"""
             SELECT o.id, o.title, o.type, o.created_at, p.name as project_name,
-                   ts_rank(o.tsv, plainto_tsquery('english', $2)) as fts_score
+                   ts_rank(o.tsv, plainto_tsquery('english', $1)) as fts_score
             FROM mem_observations o
             JOIN mem_projects p ON p.id = o.project_id
-            WHERE o.tsv @@ plainto_tsquery('english', $2) {where}
+            WHERE o.tsv @@ plainto_tsquery('english', $1) {fts_where}
             ORDER BY fts_score DESC
-            LIMIT $3
-        """, *params)
+            LIMIT $2
+        """, *fts_params)
 
-        # Reciprocal Rank Fusion
+        # Reciprocal Rank Fusion with recency boost
         scores = {}
         for rank, row in enumerate(vec_rows):
             scores[row["id"]] = {"row": row, "rrf": 1.0 / (60 + rank)}
@@ -272,6 +284,18 @@ async def _search(pool, args):
                 scores[oid]["rrf"] += 1.0 / (60 + rank)
             else:
                 scores[oid] = {"row": row, "rrf": 1.0 / (60 + rank)}
+
+        # Apply recency boost: recent observations score higher
+        now_utc = datetime.now(timezone.utc)
+        for item in scores.values():
+            created = item["row"]["created_at"]
+            if created:
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_days = max((now_utc - created).total_seconds() / 86400, 0)
+                # Exponential decay: today=2x, 7d=1.5x, 30d=1.1x, 90d+=1.0x
+                boost = 1.0 + math.exp(-age_days / 10.0)
+                item["rrf"] *= boost
 
         ranked = sorted(scores.values(), key=lambda x: -x["rrf"])[:limit]
 

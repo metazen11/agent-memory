@@ -309,6 +309,20 @@ async def search_observations(req: SearchRequest):
             else:
                 score_map[obs_id] = (score, row)
 
+        # Apply recency boost: recent observations score higher
+        import math
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        for obs_id, (score, row) in score_map.items():
+            created = row["created_at"]
+            if created:
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_days = max((now_utc - created).total_seconds() / 86400, 0)
+                # Exponential decay: today=2x, 7d=1.5x, 30d=1.1x, 90d+=1.0x
+                boost = 1.0 + math.exp(-age_days / 10.0)
+                score_map[obs_id] = (score * boost, row)
+
         # Sort by combined score
         ranked = sorted(score_map.values(), key=lambda x: x[0], reverse=True)[:req.limit]
 

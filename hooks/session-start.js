@@ -18,7 +18,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
@@ -166,6 +166,95 @@ function startServices() {
   }
 }
 
+// ── MCP server probe ───────────────────────────────────────
+
+function mcpProbe() {
+  return new Promise((resolve) => {
+    // Read the MCP config to find the server command
+    let mcpConfig;
+    try {
+      const mcpJsonPath = path.join(require('os').homedir(), '.claude', '.mcp.json');
+      mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+    } catch {
+      debug('Cannot read .mcp.json');
+      resolve(false);
+      return;
+    }
+
+    const server = mcpConfig.mcpServers && mcpConfig.mcpServers['agent-memory'];
+    if (!server) {
+      debug('agent-memory not found in .mcp.json');
+      resolve(false);
+      return;
+    }
+
+    const cmd = server.command;
+    const args = server.args || [];
+
+    // Spawn the MCP server and send initialize
+    const proc = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 8000,
+    });
+
+    let stdout = '';
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        debug('MCP probe timed out after 8s');
+        proc.kill();
+        resolve(false);
+      }
+    }, 8000);
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      // Check if we got a valid initialize response
+      if (stdout.includes('"serverInfo"') && !resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        proc.kill();
+        debug(`MCP probe got response: ${stdout.slice(0, 100)}`);
+        resolve(true);
+      }
+    });
+
+    proc.on('error', (e) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        debug(`MCP probe spawn error: ${e.message}`);
+        resolve(false);
+      }
+    });
+
+    proc.on('exit', (code) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        debug(`MCP probe exited with code ${code}`);
+        resolve(false);
+      }
+    });
+
+    // Send initialize request
+    const initMsg = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'agent-memory-probe', version: '1.0' },
+      },
+    });
+
+    proc.stdin.write(initMsg + '\n');
+  });
+}
+
 // ── Register session (fire-and-forget) ──────────────────────
 
 function registerSession(sessionId, project, cwd) {
@@ -264,10 +353,24 @@ debug(`project=${project} cwd=${cwd}`);
 
   debug('Services healthy');
 
-  // Step 4: Register session (fire-and-forget)
+  // Step 4: Verify MCP server can start and respond
+  let mcpHealthy = false;
+  try {
+    mcpHealthy = await mcpProbe();
+  } catch (e) {
+    debug(`MCP probe error: ${e.message}`);
+  }
+  if (!mcpHealthy) {
+    debug('MCP server probe FAILED — read path may be broken');
+    startupNotices.push('WARNING: MCP server failed probe — memory search tools may not be available. Check Python venv and dependencies.');
+  } else {
+    debug('MCP server probe passed');
+  }
+
+  // Step 5: Register session (fire-and-forget)
   registerSession(sessionId, project, cwd);
 
-  // Step 5: Fetch recent observations
+  // Step 6: Fetch recent observations
   const observations = await fetchObservations(project);
 
   // Build startup notice block (if services had to be started)
