@@ -2,9 +2,8 @@
   "mcpServers": {
     "agent-memory": {
       "type": "stdio",
-      "command": ".venv/bin/python",
-      "args": ["mcp_server.py"],
-      "_comment": "install.js registers this with absolute paths in ~/.claude/.mcp.json"
+      "command": "${CLAUDE_PLUGIN_ROOT}/.venv/bin/python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp_server.py"]
     }
   }
 }

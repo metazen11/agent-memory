@@ -1,0 +1,21 @@
+{
+  "name": "agent-memory",
+  "description": "Persistent cross-session memory for AI coding agents. Records what was learned, built, fixed, and decided, then makes it searchable via hybrid vector + full-text search. Drop-in replacement for claude-mem.",
+  "version": "1.0.0",
+  "author": {
+    "name": "metazen11",
+    "email": "metazen@artofmetazen.com"
+  },
+  "homepage": "https://github.com/metazen11/agent-memory",
+  "repository": "https://github.com/metazen11/agent-memory",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "persistent",
+    "cross-session",
+    "pgvector",
+    "embeddings",
+    "observations",
+    "claude-mem-replacement"
+  ]
+}

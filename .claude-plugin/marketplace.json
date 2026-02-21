@@ -1,0 +1,20 @@
+{
+  "name": "metazen11-tools",
+  "owner": {
+    "name": "metazen11",
+    "email": "metazen@artofmetazen.com"
+  },
+  "metadata": {
+    "description": "AI coding agent tools by metazen11"
+  },
+  "plugins": [
+    {
+      "name": "agent-memory",
+      "source": "./",
+      "description": "Persistent cross-session memory for AI coding agents. Drop-in replacement for claude-mem with PostgreSQL + pgvector, auto-recovery, and multi-agent support.",
+      "version": "1.0.0",
+      "category": "memory",
+      "tags": ["memory", "persistent", "pgvector", "embeddings", "cross-session"]
+    }
+  ]
+}
