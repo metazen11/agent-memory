@@ -88,6 +88,61 @@ class SearchResult(BaseModel):
 
 # ── Session schemas ───────────────────────────────────
 
+# ── Lesson schemas ───────────────────────────────────
+
+LESSON_SEVERITIES = ("critical", "warning", "info")
+
+
+class LessonCreate(BaseModel):
+    """Create a new lesson."""
+    title: str
+    rule: str
+    severity: str = "warning"
+    project: str | None = None  # None = global
+    trigger_tool: str | None = None
+    trigger_pattern: str | None = None
+    source_observation_id: int | None = None
+
+
+class LessonUpdate(BaseModel):
+    """Update an existing lesson."""
+    title: str | None = None
+    rule: str | None = None
+    severity: str | None = None
+    trigger_tool: str | None = None
+    trigger_pattern: str | None = None
+    active: bool | None = None
+
+
+class LessonOut(BaseModel):
+    """Lesson returned from API."""
+    id: int
+    project_id: int | None = None
+    project_name: str | None = None
+    title: str
+    rule: str
+    severity: str
+    trigger_tool: str | None = None
+    trigger_pattern: str | None = None
+    source_observation_id: int | None = None
+    trigger_count: int = 0
+    last_triggered_at: datetime | None = None
+    active: bool = True
+    created_at: datetime
+
+
+class LessonMatch(BaseModel):
+    """Lesson match result for PreToolUse hook."""
+    id: int
+    title: str
+    rule: str
+    severity: str
+    project_name: str | None = None
+    trigger_count: int = 0
+
+
+# ── Session schemas ───────────────────────────────────
+
 class SessionCreate(BaseModel):
     """Start a new session."""
     session_id: str

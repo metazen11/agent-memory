@@ -41,6 +41,7 @@ const COMPOSE_FILE = path.join(INSTALL_DIR, 'docker', 'docker-compose.yml');
 const TOTAL_STEPS = 11;
 
 const HOOK_FILES = [
+  'pre-tool-use.js',
   'post-tool-use.js',
   'session-start.js',
   'session-end.js',
@@ -56,9 +57,20 @@ const AGENTS = {
     detect: () => fs.existsSync(path.join(HOME, '.claude')),
     hooksDir: path.join(HOME, '.claude', 'hooks'),
     settingsFile: path.join(HOME, '.claude', 'settings.json'),
-    mcpFile: path.join(HOME, '.claude', '.mcp.json'),
+    mcpFile: path.join(HOME, '.claude.json'),
     skillsDir: path.join(HOME, '.claude', 'skills'),
     hookEntries: [
+      {
+        event: 'PreToolUse',
+        entry: {
+          matcher: 'Edit|Write|Bash|NotebookEdit',
+          hooks: [{
+            type: 'command',
+            command: `node ~/.claude/hooks/agent-memory-pre-tool-use.js`,
+            timeout: 2,
+          }],
+        },
+      },
       {
         event: 'PostToolUse',
         entry: {
@@ -673,6 +685,24 @@ function registerMCP() {
 
     writeJSON(agent.mcpFile, mcpConfig);
     ok(`Registered MCP server in ${name} (${agent.mcpFile})`);
+
+    // Clean up legacy location (~/.claude/.mcp.json) if it has agent-memory
+    const legacyMcpFile = path.join(HOME, '.claude', '.mcp.json');
+    if (legacyMcpFile !== agent.mcpFile && fs.existsSync(legacyMcpFile)) {
+      try {
+        const legacyConfig = readJSON(legacyMcpFile);
+        if (legacyConfig.mcpServers?.['agent-memory']) {
+          delete legacyConfig.mcpServers['agent-memory'];
+          if (Object.keys(legacyConfig.mcpServers).length === 0) {
+            fs.unlinkSync(legacyMcpFile);
+            ok('Removed empty legacy MCP config (~/.claude/.mcp.json)');
+          } else {
+            writeJSON(legacyMcpFile, legacyConfig);
+            ok('Cleaned agent-memory from legacy MCP config (~/.claude/.mcp.json)');
+          }
+        }
+      } catch {}
+    }
   }
 }
 

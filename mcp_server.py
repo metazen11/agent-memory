@@ -119,7 +119,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Semantic search query"},
-                    "project": {"type": "string", "description": "Filter by project name"},
+                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass to scope results to current project"},
                     "type": {"type": "string", "description": "Filter by type: discovery|bugfix|feature|refactor|decision|change|pattern|gotcha"},
                     "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
                     "dateStart": {"type": "string", "description": "Filter from date (ISO format, e.g. 2026-02-01)"},
@@ -142,7 +142,7 @@ async def list_tools():
                     "query": {"type": "string", "description": "Find anchor automatically by searching for this query"},
                     "depth_before": {"type": "integer", "description": "Observations before (default 3)", "default": 3},
                     "depth_after": {"type": "integer", "description": "Observations after (default 3)", "default": 3},
-                    "project": {"type": "string", "description": "Filter by project name"},
+                    "project": {"type": "string", "description": "Project/folder name — pass to scope results to current project"},
                 },
             },
         ),
@@ -173,9 +173,42 @@ async def list_tools():
                 "properties": {
                     "text": {"type": "string", "description": "Content to remember (required)"},
                     "title": {"type": "string", "description": "Short title (auto-generated from text if omitted)"},
-                    "project": {"type": "string", "description": "Project name (uses 'manual' if omitted)"},
+                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass to scope the memory to the current project"},
                 },
                 "required": ["text"],
+            },
+        ),
+        Tool(
+            name="create_lesson",
+            description=(
+                "Create a lesson — a proactive rule that fires BEFORE risky operations. "
+                "Unlike observations (passive), lessons are instructions injected at session start "
+                "and triggered by PreToolUse hooks. Use after learning from a mistake."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rule": {"type": "string", "description": "The instruction/rule (e.g. 'ALWAYS diff dev vs prod config before deploying')"},
+                    "title": {"type": "string", "description": "Short title for the lesson"},
+                    "severity": {"type": "string", "enum": ["critical", "warning", "info"], "description": "How important (default: warning)", "default": "warning"},
+                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass this to scope the lesson to the current project. Omit ONLY for truly global lessons that apply everywhere."},
+                    "trigger_tool": {"type": "string", "description": "Tool to match: Bash, Edit, Write, NotebookEdit (omit for any)"},
+                    "trigger_pattern": {"type": "string", "description": "Regex to match against tool input (e.g. 'amplify.*update-app')"},
+                },
+                "required": ["rule"],
+            },
+        ),
+        Tool(
+            name="search_lessons",
+            description="Search existing lessons (proactive rules). Use to check if a lesson already exists before creating one. ALWAYS pass project to scope results.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass this to scope results to the current project (includes global lessons automatically)"},
+                    "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
+                },
+                "required": ["query"],
             },
         ),
     ]
@@ -201,6 +234,10 @@ async def call_tool(name: str, arguments: dict):
             return await _timeline(pool, arguments)
         elif name == "save_memory":
             return await _save_memory(pool, arguments)
+        elif name == "create_lesson":
+            return await _create_lesson(pool, arguments)
+        elif name == "search_lessons":
+            return await _search_lessons(pool, arguments)
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
         logger.error(f"Tool {name} failed: {e}")
@@ -448,6 +485,144 @@ async def _save_memory(pool, args):
         """, session_db_id, project_id, title, text, emb_str, model_id)
 
         return [TextContent(type="text", text=json.dumps({"saved": True, "id": obs_row["id"], "title": title}))]
+
+
+async def _create_lesson(pool, args):
+    rule = args["rule"]
+    title = args.get("title", rule[:80])
+    severity = args.get("severity", "warning")
+    if severity not in ("critical", "warning", "info"):
+        severity = "warning"
+    project_name = args.get("project")
+    trigger_tool = args.get("trigger_tool")
+    trigger_pattern = args.get("trigger_pattern")
+
+    raw_text = f"{title}\n{rule}"
+
+    # Embed
+    loop = asyncio.get_event_loop()
+    embedding = await loop.run_in_executor(None, embed_sync, raw_text)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+    async with pool.acquire() as conn:
+        # Get or create project
+        project_id = None
+        if project_name:
+            row = await conn.fetchrow("SELECT id FROM mem_projects WHERE name = $1", project_name)
+            if not row:
+                row = await conn.fetchrow("INSERT INTO mem_projects (name) VALUES ($1) RETURNING id", project_name)
+            project_id = row["id"]
+
+        lesson_row = await conn.fetchrow("""
+            INSERT INTO mem_lessons (
+                project_id, title, rule, severity,
+                trigger_tool, trigger_pattern,
+                embedding, raw_text
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8)
+            RETURNING id
+        """, project_id, title, rule, severity,
+            trigger_tool, trigger_pattern,
+            emb_str, raw_text)
+
+        return [TextContent(type="text", text=json.dumps({
+            "saved": True,
+            "id": lesson_row["id"],
+            "title": title,
+            "severity": severity,
+            "project": project_name,
+        }))]
+
+
+async def _search_lessons(pool, args):
+    query = args["query"]
+    project = args.get("project")
+    limit = min(args.get("limit", 10), 50)
+
+    # Embed query
+    loop = asyncio.get_event_loop()
+    embedding = await loop.run_in_executor(None, embed_sync, query)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+    async with pool.acquire() as conn:
+        # Build filters
+        shared_filters = []
+        shared_values = []
+        if project:
+            shared_filters.append(("(l.project_id IS NULL OR p.name = ${})", project))
+
+        # --- Vector search ---
+        vec_params = [emb_str, limit * 2]
+        vec_pidx = 3
+        vec_where_parts = ["l.active = true"]
+        for tmpl, val in shared_filters:
+            vec_where_parts.append(tmpl.format(vec_pidx))
+            vec_params.append(val)
+            vec_pidx += 1
+        vec_where = " AND ".join(vec_where_parts)
+
+        vec_rows = await conn.fetch(f"""
+            SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
+                   l.trigger_pattern, l.trigger_count, l.created_at,
+                   p.name as project_name,
+                   1 - (l.embedding <=> $1::vector) as vec_score
+            FROM mem_lessons l
+            LEFT JOIN mem_projects p ON p.id = l.project_id
+            WHERE l.embedding IS NOT NULL AND {vec_where}
+            ORDER BY l.embedding <=> $1::vector
+            LIMIT $2
+        """, *vec_params)
+
+        # --- Full-text search ---
+        fts_params = [query, limit * 2]
+        fts_pidx = 3
+        fts_where_parts = ["l.active = true"]
+        for tmpl, val in shared_filters:
+            fts_where_parts.append(tmpl.format(fts_pidx))
+            fts_params.append(val)
+            fts_pidx += 1
+        fts_where = " AND ".join(fts_where_parts)
+
+        fts_rows = await conn.fetch(f"""
+            SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
+                   l.trigger_pattern, l.trigger_count, l.created_at,
+                   p.name as project_name,
+                   ts_rank(l.tsv, plainto_tsquery('english', $1)) as fts_score
+            FROM mem_lessons l
+            LEFT JOIN mem_projects p ON p.id = l.project_id
+            WHERE l.tsv @@ plainto_tsquery('english', $1) AND {fts_where}
+            ORDER BY fts_score DESC
+            LIMIT $2
+        """, *fts_params)
+
+        # RRF fusion
+        scores = {}
+        for rank, row in enumerate(vec_rows):
+            scores[row["id"]] = {"row": row, "rrf": 1.0 / (60 + rank)}
+        for rank, row in enumerate(fts_rows):
+            lid = row["id"]
+            if lid in scores:
+                scores[lid]["rrf"] += 1.0 / (60 + rank)
+            else:
+                scores[lid] = {"row": row, "rrf": 1.0 / (60 + rank)}
+
+        ranked = sorted(scores.values(), key=lambda x: -x["rrf"])[:limit]
+
+        results = []
+        for item in ranked:
+            row = item["row"]
+            results.append({
+                "id": row["id"],
+                "title": row["title"],
+                "rule": row["rule"],
+                "severity": row["severity"],
+                "project": row["project_name"],
+                "trigger_tool": row["trigger_tool"],
+                "trigger_pattern": row["trigger_pattern"],
+                "trigger_count": row["trigger_count"],
+                "score": round(item["rrf"], 4),
+            })
+
+        return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
 
 # ── Main ──────────────────────────────────────────────────────

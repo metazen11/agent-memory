@@ -13,6 +13,7 @@ from app.routes.health import router as health_router
 from app.routes.observations import router as observations_router
 from app.routes.sessions import router as sessions_router
 from app.routes.admin import router as admin_router
+from app.routes.lessons import router as lessons_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +58,7 @@ app.include_router(health_router)
 app.include_router(observations_router)
 app.include_router(sessions_router)
 app.include_router(admin_router)
+app.include_router(lessons_router)
 
 
 if __name__ == "__main__":

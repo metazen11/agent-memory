@@ -66,7 +66,11 @@ patterns discovered, files modified. Use it to avoid repeating mistakes and buil
 
 **Never skip to step 3.** Always filter with search first.
 
-**save_memory(text)** — Manually save important findings for future sessions.`;
+**save_memory(text)** — Manually save important findings for future sessions.
+
+**IMPORTANT — Project scoping:**
+When using \`create_lesson\`, \`search_lessons\`, \`search\`, or \`save_memory\`, ALWAYS pass the \`project\` parameter
+to scope results to the current project folder. The current project is provided below.`;
 
 // ── Memory visibility rules ─────────────────────────────────
 
@@ -283,6 +287,36 @@ function registerSession(sessionId, project, cwd) {
   req.end();
 }
 
+// ── Fetch active lessons ────────────────────────────
+
+function fetchLessons(project, severity, limit) {
+  return new Promise((resolve) => {
+    const params = new URLSearchParams({ active: 'true', limit: String(limit) });
+    if (project) params.set('project', project);
+    if (severity) params.set('severity', severity);
+
+    const url = new URL(`${SERVER_BASE}/api/lessons?${params}`);
+    const req = http.get({
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      timeout: 3000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+
 // ── Fetch recent observations ───────────────────────────────
 
 function fetchObservations(project) {
@@ -321,6 +355,7 @@ if (input.reason === 'clear') {
 const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const project = path.basename(cwd);
 const sessionId = input.session_id || `session-${Date.now()}`;
+const projectCtx = `\n\n**Current project:** \`${project}\` (folder: \`${cwd}\`)\nUse \`project="${project}"\` when calling create_lesson, search_lessons, search, or save_memory.`;
 debug(`project=${project} cwd=${cwd}`);
 
 (async () => {
@@ -346,7 +381,7 @@ debug(`project=${project} cwd=${cwd}`);
   if (!healthy) {
     debug('Services still not healthy after retries');
     output({
-      systemMessage: `${MCP_HINT}\n\n⚠ agent-memory services are not running. Run \`node install.js --start\` to start them.`,
+      systemMessage: `${MCP_HINT}${projectCtx}\n\n⚠ agent-memory services are not running. Run \`node install.js --start\` to start them.`,
     });
     return;
   }
@@ -370,30 +405,61 @@ debug(`project=${project} cwd=${cwd}`);
   // Step 5: Register session (fire-and-forget)
   registerSession(sessionId, project, cwd);
 
-  // Step 6: Fetch recent observations
-  const observations = await fetchObservations(project);
+  // Step 6: Fetch recent observations + active lessons in parallel
+  const [observations, projectLessons, globalLessons] = await Promise.all([
+    fetchObservations(project),
+    fetchLessons(project, 'critical', 10),
+    fetchLessons(null, 'critical', 5),
+  ]);
 
   // Build startup notice block (if services had to be started)
   const noticeBlock = startupNotices.length > 0
     ? `**Startup:** ${startupNotices.join(' → ')}\n\n`
     : '';
 
-  if (!Array.isArray(observations) || observations.length === 0) {
-    debug('No recent observations, injecting MCP hint only');
-    output({ systemMessage: `${noticeBlock}${MCP_HINT}\n\n${MEMORY_VISIBILITY_RULES}` });
+  // Deduplicate global + project lessons by id
+  const lessonMap = new Map();
+  const rawLessons = [
+    ...(Array.isArray(globalLessons) ? globalLessons : []),
+    ...(Array.isArray(projectLessons) ? projectLessons : []),
+  ];
+  for (const l of rawLessons) {
+    if (l?.id) lessonMap.set(l.id, l);
+  }
+  const allLessons = [...lessonMap.values()];
+
+  // Format lessons block
+  let lessonsBlock = '';
+  if (allLessons.length > 0) {
+    const severityIcon = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
+    const lessonLines = allLessons.map((l, i) => {
+      const icon = severityIcon[l.severity] || 'LESSON';
+      const scope = l.project_name ? `[${l.project_name}]` : '[global]';
+      return `  ${i + 1}. ${icon} ${scope}: ${l.rule}`;
+    });
+    lessonsBlock = `## Active Lessons\n\nThese lessons were learned from past mistakes. Follow them.\n\n${lessonLines.join('\n')}\n\n`;
+    debug(`Injecting ${allLessons.length} lessons`);
+  }
+
+  if ((!Array.isArray(observations) || observations.length === 0) && allLessons.length === 0) {
+    debug('No recent observations or lessons, injecting MCP hint only');
+    output({ systemMessage: `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}` });
     return;
   }
 
   // Format observations (chronological: oldest first)
-  const sorted = observations.reverse();
-  const lines = sorted.map((obs, i) => {
-    const date = obs.created_at ? obs.created_at.replace('T', ' ').slice(0, 19) : '';
-    const type = obs.type ? `[${obs.type}]` : '';
-    return `  ${i + 1}. ${date} ${type} ${obs.title}`;
-  });
+  let recentCtx = '';
+  if (Array.isArray(observations) && observations.length > 0) {
+    const sorted = observations.reverse();
+    const lines = sorted.map((obs, i) => {
+      const date = obs.created_at ? obs.created_at.replace('T', ' ').slice(0, 19) : '';
+      const type = obs.type ? `[${obs.type}]` : '';
+      return `  ${i + 1}. ${date} ${type} ${obs.title}`;
+    });
+    recentCtx = `Recent memory for "${project}" (${observations.length} entries):\n${lines.join('\n')}`;
+  }
 
-  const recentCtx = `Recent memory for "${project}" (${observations.length} entries):\n${lines.join('\n')}`;
-  const msg = `${noticeBlock}${MCP_HINT}\n\n${MEMORY_VISIBILITY_RULES}\n\n${recentCtx}`;
-  debug(`Injecting hint + ${observations.length} observations`);
+  const msg = `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${recentCtx}`;
+  debug(`Injecting hint + ${allLessons.length} lessons + ${observations.length || 0} observations`);
   output({ systemMessage: msg });
 })();
