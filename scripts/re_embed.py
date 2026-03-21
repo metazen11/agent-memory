@@ -3,7 +3,6 @@
 Re-embed all observations using sentence-transformers (in-process).
 
 Usage:
-    cd /Users/mz/Dropbox/_CODING/agentMemory
     source .venv/bin/activate
     python scripts/re_embed.py [--batch-size 100] [--only-missing]
 

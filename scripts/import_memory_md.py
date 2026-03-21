@@ -6,7 +6,6 @@ Each markdown file becomes one observation with type='discovery'.
 The project path is derived from the directory name.
 
 Usage:
-    cd /Users/mz/Dropbox/_CODING/agentMemory
     .venv/bin/python scripts/import_memory_md.py [--dry-run]
 """
 
@@ -27,21 +26,35 @@ logger = logging.getLogger(__name__)
 
 MEMORY_ROOT = Path.home() / ".claude" / "projects"
 
-# Map directory names back to project paths
-DIR_TO_PATH = {
-    "-Users-mz-Dropbox--CODING-": "/Users/mz/Dropbox/_CODING/",
-    "-Users-mz-": "/Users/mz/",
-}
-
-
 def dir_to_project_path(dirname: str) -> str:
-    """Convert claude project dir name to actual path."""
-    path = dirname
-    for prefix, replacement in DIR_TO_PATH.items():
-        if path.startswith(prefix):
-            path = replacement + path[len(prefix):]
-            break
-    return path.replace("-", "/") if path.startswith("/") else path
+    """Convert claude project dir name back to actual filesystem path.
+
+    Claude encodes paths by replacing /, _, and . with -. This is ambiguous,
+    so we resolve by testing which decoded path exists on the filesystem.
+    """
+    if not dirname.startswith("-"):
+        return dirname
+    return _resolve("/", dirname[1:]) or dirname
+
+
+def _resolve(base: str, remaining: str) -> str | None:
+    """Recursively resolve encoded path segments against the filesystem."""
+    if not remaining:
+        return base
+    for i in range(1, len(remaining) + 1):
+        segment = remaining[:i]
+        rest = remaining[i:]
+        if rest and not rest.startswith("-"):
+            continue
+        rest = rest[1:] if rest.startswith("-") else rest
+        for variant in {segment, segment.replace("-", "_"), segment.replace("-", ".")}:
+            candidate = os.path.join(base, variant)
+            if os.path.exists(candidate):
+                result = _resolve(candidate, rest)
+                if result and os.path.exists(result):
+                    return result
+    # Fallback: return best partial match
+    return base if os.path.exists(base) else None
 
 
 def find_memory_files() -> list[dict]:

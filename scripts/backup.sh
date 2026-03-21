@@ -1,17 +1,23 @@
 #!/bin/bash
 # agent-memory daily pg_dump backup
-# Saves compressed backups to Dropbox-synced directory
-# Retains last 3 daily backups (synced to Dropbox)
+# Retains last 3 daily backups
 #
-# Install: crontab -e → 0 3 * * * /Users/mz/Dropbox/_CODING/agentMemory/scripts/backup.sh
+# Install: crontab -e → 0 3 * * * /path/to/agentMemory/scripts/backup.sh
 
 set -euo pipefail
 
-BACKUP_DIR="/Users/mz/Dropbox/_CODING/agentMemory/data/backups"
-CONTAINER="agent-memory-db"
-DB_USER="agentmem"
-DB_NAME="agent_memory"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BACKUP_DIR="$PROJECT_DIR/data/backups"
+
+# Load .env if present
+[ -f "$PROJECT_DIR/.env" ] && source "$PROJECT_DIR/.env"
+
+CONTAINER="${DOCKER_CONTAINER:-agent-memory-db}"
+DB_USER="${POSTGRES_USER:-agentmem}"
+DB_NAME="${POSTGRES_DB:-agent_memory}"
 DATE=$(date +%Y%m%d_%H%M%S)
+
 mkdir -p "$BACKUP_DIR"
 
 # Check container is running

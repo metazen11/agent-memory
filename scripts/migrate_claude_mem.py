@@ -3,7 +3,6 @@
 Migrate observations from claude-mem SQLite database to agent-memory PostgreSQL.
 
 Usage:
-    cd /Users/mz/Dropbox/_CODING/agentMemory
     source .venv/bin/activate
     python scripts/migrate_claude_mem.py [--embed] [--batch-size 50]
 
