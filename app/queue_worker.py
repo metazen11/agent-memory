@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from app.config import settings
 from app.db import get_pool
 from app.embeddings import embed_text
+from app.models import normalize_observation_type
 from app.observation_llm import generate_observation, SKIP_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ async def process_one(pool) -> bool:
                 project_id,
                 obs_data.get("title", "Untitled"),
                 obs_data.get("subtitle"),
-                obs_data.get("type", "discovery"),
+                normalize_observation_type(obs_data.get("type", "discovery")),
                 obs_data.get("narrative"),
                 json.dumps(obs_data.get("facts", [])),
                 json.dumps(obs_data.get("concepts", [])),

@@ -1,0 +1,15 @@
+{
+  "description": "agent-memory Codex adapter hooks/triggers (manual/wrapper-driven)",
+  "hooks": {
+    "session_start": "node integrations/codex/session-start.js",
+    "pre_tool_trigger": "node integrations/codex/pre-tool-trigger.js --tool <ToolName> --input <preview>",
+    "post_tool_hook": "node integrations/codex/post-tool-hook.js --tool <ToolName> --input <json> --output <preview>",
+    "session_end": "node integrations/codex/session-end.js"
+  },
+  "notes": [
+    "Codex CLI currently supports MCP but not native lifecycle hooks like Claude Code.",
+    "Use scripts/codex-agent-memory.sh to automate session start/end and launch a host watcher.",
+    "Pre-tool trigger checks fall back to lesson snapshots when localhost access is blocked.",
+    "Post-tool capture spools locally and is drained by the host watcher when services recover."
+  ]
+}

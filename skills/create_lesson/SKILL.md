@@ -16,14 +16,14 @@ Create a lesson — a proactive rule that fires BEFORE risky operations. Unlike 
 | `rule` | string | Yes | The instruction/rule (e.g. 'ALWAYS diff dev vs prod config before deploying') |
 | `title` | string | No | Short title for the lesson |
 | `severity` | string | No | How important (default: warning) |
-| `project` | string | **Yes** | Project/folder name — ALWAYS pass the current project name. Omit ONLY for truly global lessons. |
+| `project` | string | **Yes** | Project path (full cwd) — ALWAYS pass the current project path. Omit ONLY for truly global lessons. |
 | `trigger_tool` | string | No | Tool to match: Bash, Edit, Write, NotebookEdit (omit for any) |
 | `trigger_pattern` | string | No | Regex to match against tool input (e.g. 'amplify.*update-app') |
 
 ## Execution
 
 When invoked with `/create_lesson`, call the `create_lesson` MCP tool (server: agent-memory) with rule="$ARGUMENTS".
-IMPORTANT: Always include the `project` parameter set to the current project folder name (from the session-start context).
+IMPORTANT: Always include the `project` parameter set to the current project path (full cwd from the session-start context).
 
 ```
 create_lesson(rule="$ARGUMENTS", project="<current_project>")

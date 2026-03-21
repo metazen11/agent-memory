@@ -70,7 +70,7 @@ patterns discovered, files modified. Use it to avoid repeating mistakes and buil
 
 **IMPORTANT — Project scoping:**
 When using \`create_lesson\`, \`search_lessons\`, \`search\`, or \`save_memory\`, ALWAYS pass the \`project\` parameter
-to scope results to the current project folder. The current project is provided below.`;
+with the full project path (cwd) to scope results. The current project path is provided below.`;
 
 // ── Memory visibility rules ─────────────────────────────────
 
@@ -353,9 +353,10 @@ if (input.reason === 'clear') {
 }
 
 const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const project = path.basename(cwd);
+const project = cwd;
+const projectName = path.basename(cwd);
 const sessionId = input.session_id || `session-${Date.now()}`;
-const projectCtx = `\n\n**Current project:** \`${project}\` (folder: \`${cwd}\`)\nUse \`project="${project}"\` when calling create_lesson, search_lessons, search, or save_memory.`;
+const projectCtx = `\n\n**Current project:** \`${projectName}\` (path: \`${cwd}\`)\nUse \`project="${project}"\` when calling create_lesson, search_lessons, search, or save_memory.`;
 debug(`project=${project} cwd=${cwd}`);
 
 (async () => {
@@ -456,7 +457,7 @@ debug(`project=${project} cwd=${cwd}`);
       const type = obs.type ? `[${obs.type}]` : '';
       return `  ${i + 1}. ${date} ${type} ${obs.title}`;
     });
-    recentCtx = `Recent memory for "${project}" (${observations.length} entries):\n${lines.join('\n')}`;
+    recentCtx = `Recent memory for "${projectName}" (${observations.length} entries):\n${lines.join('\n')}`;
   }
 
   const msg = `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${recentCtx}`;

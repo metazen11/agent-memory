@@ -119,7 +119,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Semantic search query"},
-                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass to scope results to current project"},
+                    "project": {"type": "string", "description": "Filter by project name"},
                     "type": {"type": "string", "description": "Filter by type: discovery|bugfix|feature|refactor|decision|change|pattern|gotcha"},
                     "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
                     "dateStart": {"type": "string", "description": "Filter from date (ISO format, e.g. 2026-02-01)"},
@@ -142,7 +142,7 @@ async def list_tools():
                     "query": {"type": "string", "description": "Find anchor automatically by searching for this query"},
                     "depth_before": {"type": "integer", "description": "Observations before (default 3)", "default": 3},
                     "depth_after": {"type": "integer", "description": "Observations after (default 3)", "default": 3},
-                    "project": {"type": "string", "description": "Project/folder name — pass to scope results to current project"},
+                    "project": {"type": "string", "description": "Filter by project name"},
                 },
             },
         ),
@@ -173,7 +173,7 @@ async def list_tools():
                 "properties": {
                     "text": {"type": "string", "description": "Content to remember (required)"},
                     "title": {"type": "string", "description": "Short title (auto-generated from text if omitted)"},
-                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass to scope the memory to the current project"},
+                    "project": {"type": "string", "description": "Project path (full cwd) to scope the memory"},
                 },
                 "required": ["text"],
             },
@@ -191,7 +191,7 @@ async def list_tools():
                     "rule": {"type": "string", "description": "The instruction/rule (e.g. 'ALWAYS diff dev vs prod config before deploying')"},
                     "title": {"type": "string", "description": "Short title for the lesson"},
                     "severity": {"type": "string", "enum": ["critical", "warning", "info"], "description": "How important (default: warning)", "default": "warning"},
-                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass this to scope the lesson to the current project. Omit ONLY for truly global lessons that apply everywhere."},
+                    "project": {"type": "string", "description": "Project path (full cwd) to scope the lesson. Omit ONLY for truly global lessons."},
                     "trigger_tool": {"type": "string", "description": "Tool to match: Bash, Edit, Write, NotebookEdit (omit for any)"},
                     "trigger_pattern": {"type": "string", "description": "Regex to match against tool input (e.g. 'amplify.*update-app')"},
                 },
@@ -205,7 +205,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "project": {"type": "string", "description": "Project/folder name — ALWAYS pass this to scope results to the current project (includes global lessons automatically)"},
+                    "project": {"type": "string", "description": "Project path (full cwd) to scope results (includes global lessons automatically)"},
                     "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
                 },
                 "required": ["query"],
@@ -259,11 +259,11 @@ async def _search(pool, args):
 
     async with pool.acquire() as conn:
         # Build shared filter clauses (applied to both queries)
-        # Each query builds its own params with its own $N numbering
+        # Each entry is (template_str, [values]) where template uses {pidx} placeholders
+        # For path filter: 3 params with consecutive $N; for simple: 1 param
         shared_filters = []
-        shared_values = []
         if project:
-            shared_filters.append(("p.name = ${}", project))
+            shared_filters.append(("path", project))
         if obs_type:
             shared_filters.append(("o.type = ${}", obs_type))
         if date_start:
@@ -271,14 +271,30 @@ async def _search(pool, args):
         if date_end:
             shared_filters.append(("o.created_at <= ${}::timestamp", date_end))
 
+        def _apply_shared_filters(params, pidx):
+            """Apply shared filters, returns (where_parts, params, pidx)."""
+            parts = []
+            for entry in shared_filters:
+                if entry[0] == "path":
+                    val = entry[1]
+                    clause = (
+                        f"(p.full_path = ${pidx}"
+                        f" OR p.full_path LIKE ${pidx+1} || '/%'"
+                        f" OR ${pidx+2} LIKE p.full_path || '/%')"
+                    )
+                    parts.append(clause)
+                    params.extend([val, val, val])
+                    pidx += 3
+                else:
+                    tmpl, val = entry
+                    parts.append(tmpl.format(pidx))
+                    params.append(val)
+                    pidx += 1
+            return parts, params, pidx
+
         # --- Vector search ---
         vec_params = [emb_str, limit * 2]  # $1=embedding, $2=limit
-        vec_pidx = 3
-        vec_where_parts = []
-        for tmpl, val in shared_filters:
-            vec_where_parts.append(tmpl.format(vec_pidx))
-            vec_params.append(val)
-            vec_pidx += 1
+        vec_where_parts, vec_params, _ = _apply_shared_filters(vec_params, 3)
         vec_where = ("AND " + " AND ".join(vec_where_parts)) if vec_where_parts else ""
 
         vec_rows = await conn.fetch(f"""
@@ -293,12 +309,7 @@ async def _search(pool, args):
 
         # --- Full-text search ---
         fts_params = [query, limit * 2]  # $1=query, $2=limit
-        fts_pidx = 3
-        fts_where_parts = []
-        for tmpl, val in shared_filters:
-            fts_where_parts.append(tmpl.format(fts_pidx))
-            fts_params.append(val)
-            fts_pidx += 1
+        fts_where_parts, fts_params, _ = _apply_shared_filters(fts_params, 3)
         fts_where = ("AND " + " AND ".join(fts_where_parts)) if fts_where_parts else ""
 
         fts_rows = await conn.fetch(f"""
@@ -458,10 +469,17 @@ async def _save_memory(pool, args):
     emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     async with pool.acquire() as conn:
-        # Get or create project
-        row = await conn.fetchrow("SELECT id FROM mem_projects WHERE name = $1", project_name)
+        # Get or create project by full_path
+        row = await conn.fetchrow("SELECT id FROM mem_projects WHERE full_path = $1", project_name)
         if not row:
-            row = await conn.fetchrow("INSERT INTO mem_projects (name) VALUES ($1) RETURNING id", project_name)
+            from pathlib import Path as _Path
+            basename = _Path(project_name).name or project_name
+            row = await conn.fetchrow(
+                "INSERT INTO mem_projects (name, full_path) VALUES ($1, $2) "
+                "ON CONFLICT (full_path) DO UPDATE SET name = EXCLUDED.name "
+                "RETURNING id",
+                basename, project_name,
+            )
         project_id = row["id"]
 
         # Get or create manual session
@@ -505,12 +523,19 @@ async def _create_lesson(pool, args):
     emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     async with pool.acquire() as conn:
-        # Get or create project
+        # Get or create project by full_path
         project_id = None
         if project_name:
-            row = await conn.fetchrow("SELECT id FROM mem_projects WHERE name = $1", project_name)
+            row = await conn.fetchrow("SELECT id FROM mem_projects WHERE full_path = $1", project_name)
             if not row:
-                row = await conn.fetchrow("INSERT INTO mem_projects (name) VALUES ($1) RETURNING id", project_name)
+                from pathlib import Path as _Path
+                basename = _Path(project_name).name or project_name
+                row = await conn.fetchrow(
+                    "INSERT INTO mem_projects (name, full_path) VALUES ($1, $2) "
+                    "ON CONFLICT (full_path) DO UPDATE SET name = EXCLUDED.name "
+                    "RETURNING id",
+                    basename, project_name,
+                )
             project_id = row["id"]
 
         lesson_row = await conn.fetchrow("""
@@ -544,20 +569,25 @@ async def _search_lessons(pool, args):
     emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     async with pool.acquire() as conn:
-        # Build filters
-        shared_filters = []
-        shared_values = []
-        if project:
-            shared_filters.append(("(l.project_id IS NULL OR p.name = ${})", project))
+        # Build path filter helper for lessons
+        def _lesson_path_filter(params, pidx, project_val):
+            """Build (l.project_id IS NULL OR path_match) clause for lessons."""
+            clause = (
+                f"(l.project_id IS NULL"
+                f" OR p.full_path = ${pidx}"
+                f" OR p.full_path LIKE ${pidx+1} || '/%'"
+                f" OR ${pidx+2} LIKE p.full_path || '/%')"
+            )
+            params.extend([project_val, project_val, project_val])
+            return clause, params, pidx + 3
 
         # --- Vector search ---
         vec_params = [emb_str, limit * 2]
         vec_pidx = 3
         vec_where_parts = ["l.active = true"]
-        for tmpl, val in shared_filters:
-            vec_where_parts.append(tmpl.format(vec_pidx))
-            vec_params.append(val)
-            vec_pidx += 1
+        if project:
+            clause, vec_params, vec_pidx = _lesson_path_filter(vec_params, vec_pidx, project)
+            vec_where_parts.append(clause)
         vec_where = " AND ".join(vec_where_parts)
 
         vec_rows = await conn.fetch(f"""
@@ -576,10 +606,9 @@ async def _search_lessons(pool, args):
         fts_params = [query, limit * 2]
         fts_pidx = 3
         fts_where_parts = ["l.active = true"]
-        for tmpl, val in shared_filters:
-            fts_where_parts.append(tmpl.format(fts_pidx))
-            fts_params.append(val)
-            fts_pidx += 1
+        if project:
+            clause, fts_params, fts_pidx = _lesson_path_filter(fts_params, fts_pidx, project)
+            fts_where_parts.append(clause)
         fts_where = " AND ".join(fts_where_parts)
 
         fts_rows = await conn.fetch(f"""

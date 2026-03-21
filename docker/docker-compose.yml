@@ -8,12 +8,15 @@ services:
       - ../.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agentmem}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentmem}
       POSTGRES_DB: ${POSTGRES_DB:-agent_memory}
+      # Local-only: allow passwordless connections from localhost/container network
+      POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
-      - agent_memory_pgdata:/var/lib/postgresql/data
+      # Bind mount to Dropbox-synced directory — survives Docker reinstalls
+      - ../data/pgdata:/var/lib/postgresql/data
       - ../scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentmem} -d ${POSTGRES_DB:-agent_memory}"]
@@ -21,6 +24,3 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-
-volumes:
-  agent_memory_pgdata:

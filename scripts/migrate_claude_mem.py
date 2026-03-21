@@ -145,7 +145,7 @@ async def migrate(embed: bool = False, batch_size: int = 50, dry_run: bool = Fal
     sessions = read_sqlite_sessions(CLAUDE_MEM_DB)
 
     # Connect to Postgres early so we can check for existing data
-    dsn = settings.database_url.replace("postgresql://", "postgres://", 1)
+    dsn = settings.effective_database_url.replace("postgresql://", "postgres://", 1)
     conn = await asyncpg.connect(dsn)
 
     try:
@@ -200,15 +200,19 @@ async def migrate(embed: bool = False, batch_size: int = 50, dry_run: bool = Fal
         for session in sessions:
             project_name = session.get("project", "unknown")
             if project_name not in project_ids:
+                # Use project name as full_path fallback for legacy data
+                full_path = project_name
                 row = await conn.fetchrow(
-                    "SELECT id FROM mem_projects WHERE name = $1", project_name
+                    "SELECT id FROM mem_projects WHERE name = $1 OR full_path = $1", project_name
                 )
                 if row:
                     project_ids[project_name] = row["id"]
                 else:
                     row = await conn.fetchrow(
-                        "INSERT INTO mem_projects (name) VALUES ($1) RETURNING id",
-                        project_name,
+                        "INSERT INTO mem_projects (name, full_path) VALUES ($1, $2) "
+                        "ON CONFLICT (full_path) DO UPDATE SET name = EXCLUDED.name "
+                        "RETURNING id",
+                        project_name, full_path,
                     )
                     project_ids[project_name] = row["id"]
 

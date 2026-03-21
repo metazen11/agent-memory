@@ -9,6 +9,45 @@ OBSERVATION_TYPES = (
     "discovery", "change", "pattern", "gotcha",
 )
 
+# Map common LLM mis-classifications to valid types
+_TYPE_ALIASES = {
+    "fix": "bugfix",
+    "bug": "bugfix",
+    "bug-fix": "bugfix",
+    "debug": "bugfix",
+    "new": "feature",
+    "add": "feature",
+    "addition": "feature",
+    "update": "change",
+    "modify": "change",
+    "modification": "change",
+    "rename": "refactor",
+    "cleanup": "refactor",
+    "clean-up": "refactor",
+    "restructure": "refactor",
+    "finding": "discovery",
+    "learn": "discovery",
+    "insight": "discovery",
+    "warning": "gotcha",
+    "caveat": "gotcha",
+    "pitfall": "gotcha",
+    "convention": "pattern",
+    "rule": "pattern",
+    "choice": "decision",
+}
+
+
+def normalize_observation_type(raw_type: str) -> str:
+    """Normalize an observation type to a valid value.
+
+    Maps common aliases/mis-classifications from LLM output to valid
+    OBSERVATION_TYPES. Falls back to 'discovery' for unknown types.
+    """
+    t = raw_type.strip().lower()
+    if t in OBSERVATION_TYPES:
+        return t
+    return _TYPE_ALIASES.get(t, "discovery")
+
 CONCEPT_TAGS = (
     "how-it-works", "why-it-exists", "what-changed",
     "problem-solution", "gotcha", "pattern", "trade-off",

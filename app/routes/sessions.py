@@ -1,27 +1,15 @@
 import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
 from app.models import SessionCreate, SessionUpdate, SessionOut
+from app.project import ensure_project, project_path_filter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def _ensure_project(conn, name: str, full_path: str | None = None) -> int:
-    """Get or create a project by name."""
-    row = await conn.fetchrow("SELECT id FROM mem_projects WHERE name = $1", name)
-    if row:
-        return row["id"]
-    row = await conn.fetchrow(
-        "INSERT INTO mem_projects (name, full_path) VALUES ($1, $2) RETURNING id",
-        name, full_path,
-    )
-    return row["id"]
 
 
 @router.post("/api/sessions", response_model=SessionOut)
@@ -36,7 +24,9 @@ async def create_session(req: SessionCreate):
         if existing:
             raise HTTPException(status_code=409, detail="Session already exists")
 
-        project_id = await _ensure_project(conn, req.project, req.project_path)
+        # Use project_path (full cwd) if available, fall back to project name
+        full_path = req.project_path or req.project
+        project_id = await ensure_project(conn, full_path)
 
         row = await conn.fetchrow("""
             INSERT INTO mem_sessions (session_id, project_id, agent_type)
@@ -112,9 +102,9 @@ async def list_sessions(
         param_idx = 1
 
         if project:
-            conditions.append(f"p.name = ${param_idx}")
-            params.append(project)
-            param_idx += 1
+            clause, param_idx = project_path_filter(param_idx)
+            conditions.append(clause)
+            params.extend([project, project, project])
 
         if status:
             conditions.append(f"s.status = ${param_idx}")

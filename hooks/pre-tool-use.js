@@ -134,7 +134,7 @@ if (!input) {
 const toolName = input.tool_name || '';
 const toolInput = input.tool_input || {};
 const cwd = input.cwd || process.cwd();
-const project = path.basename(cwd);
+const project = cwd;
 
 debug(`tool=${toolName} project=${project}`);
 

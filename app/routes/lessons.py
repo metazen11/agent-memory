@@ -7,23 +7,13 @@ from fastapi import APIRouter, HTTPException, Query
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
+from app.project import ensure_project, project_path_filter
 
 MAX_PATTERN_LEN = 500
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def _ensure_project(conn, name: str) -> int:
-    """Get or create a project by name. Returns project id."""
-    row = await conn.fetchrow("SELECT id FROM mem_projects WHERE name = $1", name)
-    if row:
-        return row["id"]
-    row = await conn.fetchrow(
-        "INSERT INTO mem_projects (name) VALUES ($1) RETURNING id", name
-    )
-    return row["id"]
 
 
 def _row_to_lesson(row) -> LessonOut:
@@ -66,7 +56,7 @@ async def create_lesson(lesson: LessonCreate):
         project_id = None
         project_name = None
         if lesson.project:
-            project_id = await _ensure_project(conn, lesson.project)
+            project_id = await ensure_project(conn, lesson.project)
             project_name = lesson.project
 
         raw_text = f"{lesson.title}\n{lesson.rule}"
@@ -116,9 +106,9 @@ async def list_lessons(
         pidx = 1
 
         if project is not None:
-            conditions.append(f"p.name = ${pidx}")
-            params.append(project)
-            pidx += 1
+            clause, pidx = project_path_filter(pidx)
+            conditions.append(clause)
+            params.extend([project, project, project])
 
         if severity is not None:
             conditions.append(f"l.severity = ${pidx}")
@@ -170,11 +160,11 @@ async def match_lessons(
         params.append(tool_name)
         pidx += 1
 
-        # Project scope: match project OR global lessons
+        # Project scope: match project (with path prefix matching) OR global lessons
         if project:
-            conditions.append(f"(l.project_id IS NULL OR p.name = ${pidx})")
-            params.append(project)
-            pidx += 1
+            path_clause, pidx = project_path_filter(pidx)
+            conditions.append(f"(l.project_id IS NULL OR {path_clause})")
+            params.extend([project, project, project])
         else:
             conditions.append("l.project_id IS NULL")
 

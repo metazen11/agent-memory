@@ -9,3 +9,6 @@ build/
 .DS_Store
 logs/
 .server.pid
+.agent-memory-codex/
+data/pgdata/
+data/backups/

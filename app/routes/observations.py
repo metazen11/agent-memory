@@ -1,30 +1,16 @@
 import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
-from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult
+from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
+from app.project import ensure_project, project_path_filter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def _ensure_project(conn, name: str, full_path: str | None = None) -> int:
-    """Get or create a project by name. Returns project id."""
-    row = await conn.fetchrow(
-        "SELECT id FROM mem_projects WHERE name = $1", name
-    )
-    if row:
-        return row["id"]
-    row = await conn.fetchrow(
-        "INSERT INTO mem_projects (name, full_path) VALUES ($1, $2) RETURNING id",
-        name, full_path,
-    )
-    return row["id"]
 
 
 async def _ensure_session(conn, session_id: str, project_id: int, agent_type: str = "claude-code") -> int:
@@ -48,9 +34,8 @@ async def queue_observation(item: QueueItem):
     """Accept tool call data for async observation processing."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Derive project name from cwd
-        project_name = Path(item.cwd).name if item.cwd else "unknown"
-        project_id = await _ensure_project(conn, project_name, item.cwd)
+        project_path = item.cwd or "unknown"
+        project_id = await ensure_project(conn, project_path)
         session_db_id = await _ensure_session(conn, item.session_id, project_id)
 
         await conn.execute("""
@@ -76,8 +61,11 @@ async def create_observation(obs: ObservationCreate):
     """Create an observation directly (bypasses queue)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        project_id = await _ensure_project(conn, obs.project)
+        project_id = await ensure_project(conn, obs.project)
         session_db_id = await _ensure_session(conn, obs.session_id, project_id)
+
+        # Normalize type before insert
+        obs.type = normalize_observation_type(obs.type)
 
         raw_text = _build_raw_text(obs)
 
@@ -153,9 +141,9 @@ async def list_observations(
         param_idx = 1
 
         if project:
-            conditions.append(f"p.name = ${param_idx}")
-            params.append(project)
-            param_idx += 1
+            clause, param_idx = project_path_filter(param_idx)
+            conditions.append(clause)
+            params.extend([project, project, project])
 
         if type:
             conditions.append(f"o.type = ${param_idx}")
@@ -229,9 +217,9 @@ async def search_observations(req: SearchRequest):
                 pidx = 3
 
                 if req.project and not req.cross_project:
-                    filters.append(f"p.name = ${pidx}")
-                    params.append(req.project)
-                    pidx += 1
+                    clause, pidx = project_path_filter(pidx)
+                    filters.append(clause)
+                    params.extend([req.project, req.project, req.project])
 
                 if req.type:
                     placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
@@ -271,9 +259,9 @@ async def search_observations(req: SearchRequest):
             pidx = 3
 
             if req.project and not req.cross_project:
-                filters.append(f"p.name = ${pidx}")
-                params.append(req.project)
-                pidx += 1
+                clause, pidx = project_path_filter(pidx)
+                filters.append(clause)
+                params.extend([req.project, req.project, req.project])
 
             if req.type:
                 placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
