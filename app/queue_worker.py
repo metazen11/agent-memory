@@ -27,7 +27,7 @@ async def process_one(pool) -> bool:
             WHERE id = (
                 SELECT id FROM mem_observation_queue
                 WHERE status = 'pending'
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
