@@ -227,18 +227,19 @@ async def generate_observation(
     if tool_name in SKIP_TOOLS:
         return None
 
-    # Primary: Anthropic Haiku (fast, catches up on backlog)
-    # If Haiku skips, fall back to local 7B (better recall)
-    if settings.anthropic_api_key:
-        result = await generate_observation_anthropic(
+    # Primary: Local GGUF 7B (no rate limits, instant throughput)
+    if settings.observation_llm_model:
+        result = await generate_observation_local(
             tool_name, tool_input, tool_response_preview, cwd, last_user_message
         )
         if result is not None:
             return result
-        # Haiku skipped — let local 7B try
-        logger.debug("Haiku skipped, trying local 7B")
+        logger.debug("Local LLM skipped, trying Anthropic fallback")
 
-    # Local GGUF 7B (fallback, or primary if no API key)
-    return await generate_observation_local(
-        tool_name, tool_input, tool_response_preview, cwd, last_user_message
-    )
+    # Fallback: Anthropic Haiku (rate-limited to 5 RPM on free tier)
+    if settings.anthropic_api_key:
+        return await generate_observation_anthropic(
+            tool_name, tool_input, tool_response_preview, cwd, last_user_message
+        )
+
+    return None
