@@ -1,0 +1,56 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2026-03-28",
+  "projects": {
+    "postgis": {
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "1",
+          "task": "Install PostGIS extension for pg16",
+          "status": "pending",
+          "priority": "medium",
+          "notes": "Brew bottle targets pg17/18 — must build from source against pg16 (same as pgvector). Install deps: brew install gdal geos proj json-c protobuf-c sfcgal. Then compile PostGIS 3.5 with PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config. Alternative: upgrade to pg17 first (requires pg_upgrade), then use bottled PostGIS."
+        }
+      ]
+    },
+    "backfill": {
+      "status": "in-progress",
+      "tasks": [
+        {
+          "id": "2",
+          "task": "Complete backfill of ~95 unprocessed JSONL sessions",
+          "status": "in-progress",
+          "priority": "high",
+          "notes": "Running in background with local 7B model. ~3s/observation on Metal GPU. Resume-safe if interrupted."
+        },
+        {
+          "id": "3",
+          "task": "Re-embed 22k observations missing embeddings",
+          "status": "pending",
+          "priority": "medium",
+          "notes": "From pre-migration era (Dec 2025 - Mar 2026). Run: .venv/bin/python scripts/re_embed.py --only-missing"
+        }
+      ]
+    },
+    "improvements": {
+      "status": "pending",
+      "tasks": [
+        {
+          "id": "4",
+          "task": "Save lesson about pgvector + brew on pg16",
+          "status": "pending",
+          "priority": "low",
+          "notes": "Bottled pgvector doesn't support pg16 — must build from source. Same applies to PostGIS."
+        },
+        {
+          "id": "5",
+          "task": "Update migrate_to_native_pg.sh with source build step for pgvector",
+          "status": "pending",
+          "priority": "low",
+          "notes": "Script currently does brew install pgvector which installs wrong version for pg16."
+        }
+      ]
+    }
+  }
+}
