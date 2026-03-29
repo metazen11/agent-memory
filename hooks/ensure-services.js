@@ -121,6 +121,47 @@ function isContainerRunning() {
   return out.toLowerCase().includes('up');
 }
 
+// ── Native Postgres (Homebrew) ────────────────────────────────
+
+function isNativePostgresInstalled() {
+  const out = run('brew list postgresql@16 2>/dev/null', { timeout: 5000 });
+  return !!out;
+}
+
+function isNativePostgresRunning(port) {
+  const out = run(`pg_isready -p ${port} -q 2>/dev/null && echo ok`, { timeout: 3000 });
+  return out.includes('ok');
+}
+
+function ensureNativePostgres(port) {
+  if (isNativePostgresRunning(port)) {
+    debug(`Native PostgreSQL already running on port ${port}`);
+    return true;
+  }
+
+  if (!isNativePostgresInstalled()) {
+    debug('Homebrew postgresql@16 not installed');
+    return false;
+  }
+
+  notice('Starting native PostgreSQL (brew services)...');
+  debug('Starting postgresql@16 via brew services...');
+  run('brew services start postgresql@16', { timeout: 15000 });
+
+  // Wait for ready
+  for (let i = 0; i < 15; i++) {
+    if (isNativePostgresRunning(port)) {
+      notice('Native PostgreSQL ready on port ' + port);
+      debug('Native PostgreSQL ready');
+      return true;
+    }
+    run('sleep 1');
+  }
+
+  debug('Native PostgreSQL did not become ready');
+  return false;
+}
+
 // ── Docker ────────────────────────────────────────────────────
 
 function ensureDocker() {
@@ -151,6 +192,21 @@ function ensureDocker() {
 
   debug('PostgreSQL did not become ready');
   return false;
+}
+
+// ── Database (native → Docker fallback) ───────────────────────
+
+function ensureDatabase() {
+  const port = readEnvVar('POSTGRES_PORT') || '5432';
+
+  // Try 1: Native postgres (pg_isready on configured port)
+  if (ensureNativePostgres(port)) {
+    return true;
+  }
+
+  // Try 2: Docker fallback
+  debug('Native postgres unavailable — falling back to Docker');
+  return ensureDocker();
 }
 
 // ── FastAPI server ────────────────────────────────────────────
@@ -301,7 +357,8 @@ if (isExternalDatabase()) {
     process.exit(1);
   }
 } else {
-  const dbOk = ensureDocker();
+  // Try native postgres first, then Docker fallback
+  const dbOk = ensureDatabase();
   if (!dbOk) {
     console.error('Failed to start PostgreSQL');
     process.exit(1);

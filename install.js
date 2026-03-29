@@ -260,9 +260,11 @@ function checkPrereqs() {
   const errors = [];
   const externalDb = fs.existsSync(ENV_FILE) && isExternalDatabase();
 
-  // Docker (skip if using external database)
+  // Database: native postgres OR Docker (skip if using external database)
   if (externalDb) {
     skip('Docker — not required (using external DATABASE_URL)');
+  } else if (PLATFORM === 'darwin' && run('brew list postgresql@16 2>/dev/null', { ignoreError: true, timeout: 5000 })) {
+    ok('Found native PostgreSQL 16 (Homebrew) — Docker not required');
   } else {
     dots('Looking for Docker... ');
     try {
@@ -275,11 +277,16 @@ function checkPrereqs() {
       }
     } catch {
       console.log('');
-      fail('Docker not found — required for PostgreSQL database');
+      fail('No database backend found');
+      if (PLATFORM === 'darwin') {
+        info('  Option 1 (recommended): brew install postgresql@16 pgvector');
+        info('  Option 2: brew install --cask docker');
+      } else if (IS_WSL) {
+        info('  Install Docker: Docker Desktop for Windows with WSL2 backend');
+      } else {
+        info('  Install Docker: sudo apt install docker.io docker-compose-plugin');
+      }
       info('  Or set DATABASE_URL in .env to use an external PostgreSQL');
-      if (PLATFORM === 'darwin') info('  Install Docker: brew install --cask docker');
-      else if (IS_WSL) info('  Install Docker: Docker Desktop for Windows with WSL2 backend');
-      else info('  Install Docker: sudo apt install docker.io docker-compose-plugin');
       errors.push('docker');
     }
 
@@ -513,7 +520,15 @@ function updateEnvVar(key, value) {
   fs.writeFileSync(ENV_FILE, content, 'utf8');
 }
 
-function startDocker() {
+function isNativePostgresInstalled() {
+  return !!run('brew list postgresql@16 2>/dev/null', { ignoreError: true, timeout: 5000 });
+}
+
+function isNativePostgresRunning(port) {
+  return !!run(`pg_isready -p ${port} -q 2>/dev/null && echo ok`, { ignoreError: true, timeout: 3000 }).includes('ok');
+}
+
+function startDatabase() {
   step(6, TOTAL_STEPS, 'Database (PostgreSQL + pgvector)');
 
   if (isExternalDatabase()) {
@@ -558,6 +573,33 @@ function startDocker() {
     return;
   }
 
+  // Try native Homebrew Postgres first (macOS only)
+  const port = readEnvVar('POSTGRES_PORT') || '5432';
+
+  if (isNativePostgresRunning(port)) {
+    ok(`Native PostgreSQL running on port ${port}`);
+    return;
+  }
+
+  if (PLATFORM === 'darwin' && isNativePostgresInstalled()) {
+    info('Starting native PostgreSQL via brew services...');
+    run('brew services start postgresql@16', { ignoreError: true, timeout: 15000 });
+
+    dots('Waiting for PostgreSQL to accept connections');
+    for (let i = 0; i < 15; i++) {
+      if (isNativePostgresRunning(port)) {
+        console.log('');
+        ok(`Native PostgreSQL ready on port ${port}`);
+        return;
+      }
+      process.stdout.write('.');
+      run('sleep 1');
+    }
+    console.log('');
+    info('Native PostgreSQL did not start — falling back to Docker');
+  }
+
+  // Docker fallback
   if (isContainerRunning()) {
     ok('Database container agent-memory-db is already running');
     return;
@@ -852,8 +894,13 @@ function status() {
     const listening = run(`lsof -i :${port} -sTCP:LISTEN -t`, { ignoreError: true, timeout: 3000 });
     if (listening) ok(`PostgreSQL: running (external, port ${port})`);
     else fail(`PostgreSQL: not listening (external, port ${port})`);
-  } else if (isContainerRunning()) ok('PostgreSQL: running (agent-memory-db)');
-  else fail('PostgreSQL: stopped');
+  } else {
+    const port = readEnvVar('POSTGRES_PORT') || '5432';
+    const nativeRunning = !!run(`pg_isready -p ${port} -q 2>/dev/null && echo ok`, { ignoreError: true, timeout: 3000 }).includes('ok');
+    if (nativeRunning) ok(`PostgreSQL: running (native, port ${port})`);
+    else if (isContainerRunning()) ok('PostgreSQL: running (Docker, agent-memory-db)');
+    else fail('PostgreSQL: stopped');
+  }
 
   if (isServerRunning()) ok('FastAPI: running on port 3377');
   else fail('FastAPI: stopped');
@@ -905,7 +952,7 @@ function status() {
 function startServices() {
   console.log('');
   console.log('\x1b[1magent-memory — starting services\x1b[0m');
-  startDocker();
+  startDatabase();
   startServer();
   console.log('');
   ok('All services running');
@@ -963,7 +1010,7 @@ async function install() {
   await generateEnv();
   downloadEmbeddingModel();
   downloadGGUFModel();
-  startDocker();
+  startDatabase();
   runMigrations();
   startServer();
   registerMCP();

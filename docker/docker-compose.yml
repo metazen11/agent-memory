@@ -13,7 +13,7 @@ services:
       # Local-only: allow passwordless connections from localhost/container network
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       # Bind mount to Dropbox-synced directory — survives Docker reinstalls
       - ../data/pgdata:/var/lib/postgresql/data

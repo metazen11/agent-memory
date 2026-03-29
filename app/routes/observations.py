@@ -289,6 +289,54 @@ async def search_observations(req: SearchRequest):
             for rank, row in enumerate(fts_rows):
                 results.append((row["id"], 1.0 / (rank + 60), row))
 
+        # Keyword (ILIKE) search — catches exact substrings FTS misses
+        if req.mode in ("fts", "hybrid"):
+            keywords = [w for w in req.query.split()[:6] if len(w) >= 3]
+            if keywords:
+                like_params: list = [req.limit * 2]  # $1=limit
+                like_conditions = []
+                pidx = 2
+                for kw in keywords:
+                    like_conditions.append(f"(o.raw_text ILIKE ${pidx})")
+                    like_params.append(f"%{kw}%")
+                    pidx += 1
+                like_score_expr = " + ".join(
+                    f"CASE WHEN o.raw_text ILIKE ${i+2} THEN 1 ELSE 0 END"
+                    for i in range(len(keywords))
+                )
+                like_filters = [f"({' OR '.join(like_conditions)})"]
+
+                if req.project and not req.cross_project:
+                    clause, pidx = project_path_filter(pidx)
+                    like_filters.append(clause)
+                    like_params.extend([req.project, req.project, req.project])
+
+                if req.type:
+                    placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
+                    like_filters.append(f"o.type IN ({placeholders})")
+                    like_params.extend(req.type)
+                    pidx += len(req.type)
+
+                like_where = " AND ".join(like_filters)
+
+                like_rows = await conn.fetch(f"""
+                    SELECT o.id, o.session_id, o.project_id, p.name as project_name,
+                           o.title, o.subtitle, o.type, o.narrative,
+                           o.facts, o.concepts, o.files_read, o.files_modified,
+                           o.tool_name, o.prompt_number,
+                           o.embedding IS NOT NULL as has_embedding,
+                           o.created_at,
+                           ({like_score_expr}) as kw_hits
+                    FROM mem_observations o
+                    JOIN mem_projects p ON p.id = o.project_id
+                    WHERE {like_where}
+                    ORDER BY kw_hits DESC, o.created_at DESC
+                    LIMIT $1
+                """, *like_params)
+
+                for rank, row in enumerate(like_rows):
+                    results.append((row["id"], 1.0 / (rank + 60), row))
+
         # RRF fusion: sum scores per observation id
         score_map: dict[int, tuple[float, dict]] = {}
         for obs_id, score, row in results:

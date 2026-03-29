@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     postgres_user: str = "agentmem"
     postgres_password: str = ""
     postgres_host: str = "localhost"
-    postgres_port: int = 5433
+    postgres_port: int = 5432
     postgres_db: str = "agent_memory"
 
     # Full URL override (takes precedence over components above)

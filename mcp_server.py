@@ -46,7 +46,7 @@ def _build_database_url():
     user = os.environ.get("POSTGRES_USER", "agentmem")
     password = os.environ.get("POSTGRES_PASSWORD", "")
     host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5433")
+    port = os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ.get("POSTGRES_DB", "agent_memory")
     pw = f":{password}" if password else ""
     return f"postgresql://{user}{pw}@{host}:{port}/{db}"
@@ -322,11 +322,46 @@ async def _search(pool, args):
             LIMIT $2
         """, *fts_params)
 
+        # --- Keyword (ILIKE) search — catches exact substrings FTS misses ---
+        keywords = [w for w in query.split()[:6] if len(w) >= 3]
+        like_rows = []
+        if keywords:
+            like_params = [limit * 2]  # $1=limit
+            like_conditions = []
+            pidx = 2
+            for kw in keywords:
+                like_conditions.append(f"(o.raw_text ILIKE ${pidx})")
+                like_params.append(f"%{kw}%")
+                pidx += 1
+            # Score = count of matching keywords
+            like_score_expr = " + ".join(
+                f"CASE WHEN o.raw_text ILIKE ${i+2} THEN 1 ELSE 0 END"
+                for i in range(len(keywords))
+            )
+            like_filter_parts, like_params, _ = _apply_shared_filters(like_params, pidx)
+            like_where = ("AND " + " AND ".join(like_filter_parts)) if like_filter_parts else ""
+
+            like_rows = await conn.fetch(f"""
+                SELECT o.id, o.title, o.type, o.created_at, p.name as project_name,
+                       ({like_score_expr}) as kw_hits
+                FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE ({" OR ".join(like_conditions)}) {like_where}
+                ORDER BY kw_hits DESC, o.created_at DESC
+                LIMIT $1
+            """, *like_params)
+
         # Reciprocal Rank Fusion with recency boost
         scores = {}
         for rank, row in enumerate(vec_rows):
             scores[row["id"]] = {"row": row, "rrf": 1.0 / (60 + rank)}
         for rank, row in enumerate(fts_rows):
+            oid = row["id"]
+            if oid in scores:
+                scores[oid]["rrf"] += 1.0 / (60 + rank)
+            else:
+                scores[oid] = {"row": row, "rrf": 1.0 / (60 + rank)}
+        for rank, row in enumerate(like_rows):
             oid = row["id"]
             if oid in scores:
                 scores[oid]["rrf"] += 1.0 / (60 + rank)

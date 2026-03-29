@@ -62,7 +62,7 @@ def get_dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "agentmem")
     password = os.environ.get("POSTGRES_PASSWORD", "")
     host = os.environ.get("POSTGRES_HOST", "localhost")
-    port = os.environ.get("POSTGRES_PORT", "5433")
+    port = os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ.get("POSTGRES_DB", "agent_memory")
 
     pw = f":{password}" if password else ""

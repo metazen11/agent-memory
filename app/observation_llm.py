@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 # Tools to skip (low-value for memory)
 SKIP_TOOLS = {
     "ListMcpResourcesTool", "SlashCommand", "Skill", "TodoWrite",
-    "AskUserQuestion", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
-    "TaskOutput", "TaskStop", "EnterPlanMode", "ExitPlanMode",
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+    "TaskOutput", "TaskStop", "EnterPlanMode",
 }
 
 SYSTEM_PROMPT = """You are an observation recorder for a coding agent's memory system.
@@ -66,8 +66,9 @@ def _get_llm():
         logger.info(f"Loading observation LLM: {settings.observation_llm_model}")
         _llm = Llama(
             model_path=settings.observation_llm_model,
-            n_ctx=2048,
+            n_ctx=4096,
             n_threads=4,
+            n_gpu_layers=-1,  # offload all layers to Metal GPU
             verbose=False,
         )
         logger.info("Observation LLM loaded")
@@ -160,6 +161,21 @@ async def generate_observation_local(
         return None
 
 
+# ── Anthropic rate limiter (shared across queue worker + backfill) ──
+_ANTHROPIC_MIN_INTERVAL = 13.0  # seconds between requests (free tier = 5 RPM)
+_last_anthropic_call = 0.0
+
+_anthropic_client = None
+
+def _get_anthropic_client():
+    """Reuse a single AsyncAnthropic client."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
+
 async def generate_observation_anthropic(
     tool_name: str,
     tool_input: dict | None,
@@ -168,13 +184,21 @@ async def generate_observation_anthropic(
     last_user_message: str | None,
 ) -> dict | None:
     """Generate observation using Anthropic API (Claude Haiku)."""
-    import anthropic
+    import time
+    global _last_anthropic_call
 
     user_prompt = build_user_prompt(
         tool_name, tool_input, tool_response_preview, cwd, last_user_message
     )
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    # Throttle: wait if we called too recently
+    now = time.monotonic()
+    elapsed = now - _last_anthropic_call
+    if elapsed < _ANTHROPIC_MIN_INTERVAL:
+        await asyncio.sleep(_ANTHROPIC_MIN_INTERVAL - elapsed)
+    _last_anthropic_call = time.monotonic()
+
+    client = _get_anthropic_client()
     try:
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -203,17 +227,18 @@ async def generate_observation(
     if tool_name in SKIP_TOOLS:
         return None
 
-    # Primary: local GGUF model
-    result = await generate_observation_local(
-        tool_name, tool_input, tool_response_preview, cwd, last_user_message
-    )
-    if result is not None:
-        return result
-
-    # Fallback: Anthropic API (if configured)
+    # Primary: Anthropic Haiku (fast, catches up on backlog)
+    # If Haiku skips, fall back to local 7B (better recall)
     if settings.anthropic_api_key:
-        return await generate_observation_anthropic(
+        result = await generate_observation_anthropic(
             tool_name, tool_input, tool_response_preview, cwd, last_user_message
         )
+        if result is not None:
+            return result
+        # Haiku skipped — let local 7B try
+        logger.debug("Haiku skipped, trying local 7B")
 
-    return None
+    # Local GGUF 7B (fallback, or primary if no API key)
+    return await generate_observation_local(
+        tool_name, tool_input, tool_response_preview, cwd, last_user_message
+    )

@@ -343,6 +343,48 @@ function fetchObservations(project) {
   });
 }
 
+// ── Search for high-value project context ────────────────────
+
+function searchProjectContext(project, projectName) {
+  return new Promise((resolve) => {
+    // Search for decisions, patterns, gotchas, and bugfixes — the high-value types
+    const payload = JSON.stringify({
+      query: `${projectName} architecture decisions patterns configuration`,
+      project: project,
+      type: ['decision', 'pattern', 'gotcha', 'bugfix'],
+      limit: 10,
+    });
+
+    const url = new URL(`${SERVER_BASE}/api/observations/search`);
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 5000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          resolve(result.observations || []);
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+    req.write(payload);
+    req.end();
+  });
+}
+
 // ── Main ────────────────────────────────────────────────────
 
 const input = readStdin();
@@ -406,9 +448,10 @@ debug(`project=${project} cwd=${cwd}`);
   // Step 5: Register session (fire-and-forget)
   registerSession(sessionId, project, cwd);
 
-  // Step 6: Fetch recent observations + active lessons in parallel
-  const [observations, projectLessons, globalLessons] = await Promise.all([
+  // Step 6: Fetch recent observations + search context + active lessons in parallel
+  const [observations, projectContext, projectLessons, globalLessons] = await Promise.all([
     fetchObservations(project),
+    searchProjectContext(project, projectName),
     fetchLessons(project, 'critical', 10),
     fetchLessons(null, 'critical', 5),
   ]);
@@ -442,25 +485,52 @@ debug(`project=${project} cwd=${cwd}`);
     debug(`Injecting ${allLessons.length} lessons`);
   }
 
-  if ((!Array.isArray(observations) || observations.length === 0) && allLessons.length === 0) {
-    debug('No recent observations or lessons, injecting MCP hint only');
+  const hasObservations = Array.isArray(observations) && observations.length > 0;
+  const hasContext = Array.isArray(projectContext) && projectContext.length > 0;
+
+  if (!hasObservations && !hasContext && allLessons.length === 0) {
+    debug('No recent observations, context, or lessons — injecting MCP hint only');
     output({ systemMessage: `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}` });
     return;
   }
 
-  // Format observations (chronological: oldest first)
+  // Format recent activity (chronological: oldest first, titles only)
   let recentCtx = '';
-  if (Array.isArray(observations) && observations.length > 0) {
+  if (hasObservations) {
     const sorted = observations.reverse();
     const lines = sorted.map((obs, i) => {
       const date = obs.created_at ? obs.created_at.replace('T', ' ').slice(0, 19) : '';
       const type = obs.type ? `[${obs.type}]` : '';
       return `  ${i + 1}. ${date} ${type} ${obs.title}`;
     });
-    recentCtx = `Recent memory for "${projectName}" (${observations.length} entries):\n${lines.join('\n')}`;
+    recentCtx = `## Recent Activity\n\n${lines.join('\n')}\n\n`;
   }
 
-  const msg = `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${recentCtx}`;
-  debug(`Injecting hint + ${allLessons.length} lessons + ${observations.length || 0} observations`);
+  // Format project knowledge (rich — includes narratives and facts)
+  let knowledgeCtx = '';
+  if (hasContext) {
+    // Deduplicate against recent observations
+    const recentIds = new Set(hasObservations ? observations.map(o => o.id) : []);
+    const unique = projectContext.filter(o => !recentIds.has(o.id));
+
+    if (unique.length > 0) {
+      const lines = unique.map((obs, i) => {
+        const type = obs.type ? `[${obs.type}]` : '';
+        let entry = `  ${i + 1}. ${type} **${obs.title}**`;
+        if (obs.narrative) entry += `\n     ${obs.narrative}`;
+        if (obs.facts && Array.isArray(obs.facts)) {
+          const facts = typeof obs.facts === 'string' ? JSON.parse(obs.facts) : obs.facts;
+          if (facts.length > 0) {
+            entry += '\n     ' + facts.slice(0, 3).map(f => `• ${f}`).join('\n     ');
+          }
+        }
+        return entry;
+      });
+      knowledgeCtx = `## Project Knowledge (from past sessions)\n\nKey decisions, patterns, and gotchas for "${projectName}":\n\n${lines.join('\n\n')}\n\n`;
+    }
+  }
+
+  const msg = `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${knowledgeCtx}${recentCtx}`;
+  debug(`Injecting hint + ${allLessons.length} lessons + ${hasContext ? projectContext.length : 0} knowledge + ${hasObservations ? observations.length : 0} recent`);
   output({ systemMessage: msg });
 })();
