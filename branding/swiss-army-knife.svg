@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="Stylized multitool icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7f7f8"/>
+      <stop offset="100%" stop-color="#eceef2"/>
+    </linearGradient>
+    <linearGradient id="shell" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d5192f"/>
+      <stop offset="100%" stop-color="#b40f24"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d5d9e0"/>
+      <stop offset="50%" stop-color="#f7f9fc"/>
+      <stop offset="100%" stop-color="#b8bec8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="700" fill="url(#bg)"/>
+
+  <g transform="translate(180 210)" filter="url(#shadow)">
+    <rect x="120" y="120" rx="70" ry="70" width="640" height="180" fill="url(#shell)"/>
+    <rect x="148" y="142" rx="52" ry="52" width="584" height="136" fill="none" stroke="#f15b6d" stroke-opacity="0.35" stroke-width="6"/>
+
+    <g transform="translate(340 168)">
+      <rect x="-34" y="-34" width="68" height="68" fill="#ffffff" rx="7"/>
+      <rect x="-10" y="-64" width="20" height="128" fill="#ffffff" rx="5"/>
+      <rect x="-64" y="-10" width="128" height="20" fill="#ffffff" rx="5"/>
+    </g>
+
+    <circle cx="120" cy="210" r="16" fill="#8b0e1f"/>
+    <circle cx="760" cy="210" r="16" fill="#8b0e1f"/>
+    <circle cx="760" cy="210" r="8" fill="#cad1db"/>
+  </g>
+
+  <g transform="translate(750 120)" filter="url(#shadow)">
+    <path d="M0 170 L300 70 Q340 58 360 75 Q380 95 366 128 L318 242 Q304 274 270 272 L0 210 Z" fill="url(#metal)" stroke="#9ea5b0" stroke-width="4"/>
+    <line x1="40" y1="186" x2="300" y2="96" stroke="#a9b0ba" stroke-width="3"/>
+  </g>
+
+  <g transform="translate(680 60)" filter="url(#shadow)">
+    <path d="M0 140 L210 0 L236 16 L62 170 Z" fill="url(#metal)" stroke="#9ea5b0" stroke-width="4"/>
+  </g>
+
+  <g transform="translate(640 300)" filter="url(#shadow)">
+    <path d="M0 20 C120 5 210 45 280 120 L256 144 C190 74 110 40 0 50 Z" fill="url(#metal)" stroke="#9ea5b0" stroke-width="4"/>
+  </g>
+</svg>
