@@ -10,6 +10,7 @@ build/
 logs/
 .server.pid
 .agent-memory-codex/
+.anvil/
 data/pgdata/
 data/backups/
 plans/
