@@ -54,6 +54,36 @@ function allow() {
   process.exit(0);
 }
 
+function asErrorText(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value.slice(0, 2000);
+  try { return JSON.stringify(value).slice(0, 2000); } catch { return String(value).slice(0, 2000); }
+}
+
+function inferOutcome(input) {
+  let toolSuccess = null;
+  let toolError = null;
+
+  if (typeof input.tool_success === 'boolean') toolSuccess = input.tool_success;
+  if (typeof input.success === 'boolean') toolSuccess = input.success;
+
+  if (input.tool_error) toolError = asErrorText(input.tool_error);
+  if (!toolError && input.error) toolError = asErrorText(input.error);
+
+  const resp = input.tool_response;
+  if (!toolError && resp && typeof resp === 'object') {
+    if (resp.error) toolError = asErrorText(resp.error);
+  }
+
+  if (toolSuccess === null) {
+    if (toolError) toolSuccess = false;
+    else if (input.failed === true || input.is_error === true) toolSuccess = false;
+    else if (resp && typeof resp === 'object' && typeof resp.success === 'boolean') toolSuccess = resp.success;
+  }
+
+  return { toolSuccess, toolError };
+}
+
 /**
  * Save a failed payload to disk so it can be retried after recovery.
  */
@@ -178,15 +208,25 @@ if (SKIP_TOOLS.has(toolName)) {
 }
 
 // Build queue payload
+const { toolSuccess, toolError } = inferOutcome(input);
+const toolResponsePreview = typeof input.tool_response === 'string'
+  ? input.tool_response.slice(0, 2000)
+  : JSON.stringify(input.tool_response || '').slice(0, 2000);
 const payload = JSON.stringify({
   session_id: input.session_id || `session-${Date.now()}`,
+  hook_event_name: 'PostToolUse',
   tool_name: toolName,
   tool_input: input.tool_input || null,
-  tool_response_preview: typeof input.tool_response === 'string'
-    ? input.tool_response.slice(0, 2000)
-    : JSON.stringify(input.tool_response || '').slice(0, 2000),
+  tool_response: input.tool_response || null,
+  tool_response_preview: toolResponsePreview,
+  tool_success: toolSuccess,
+  tool_error: toolError,
+  raw_event: input,
   cwd: input.cwd || process.cwd(),
   last_user_message: null,
+  source_system: input.source_system || 'claude-code',
+  source_mode: input.source_mode || 'hook',
+  source_agent: input.source_agent || null,
 });
 
 debug(`POST /api/queue tool=${toolName} payload=${payload.length}b`);

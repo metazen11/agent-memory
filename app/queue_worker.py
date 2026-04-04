@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
 from app.config import settings
 from app.db import get_pool
@@ -33,7 +32,7 @@ async def process_one(pool) -> bool:
             )
             RETURNING id, session_id, tool_name, tool_input,
                       tool_response_preview, cwd, last_user_message,
-                      source_system, source_mode, source_agent
+                      source_system, source_mode, source_agent, tool_call_id
         """)
 
         if row is None:
@@ -41,6 +40,13 @@ async def process_one(pool) -> bool:
 
         queue_id = row["id"]
         tool_name = row["tool_name"] or ""
+        tool_call_id = row["tool_call_id"]
+
+        if tool_call_id:
+            await conn.execute(
+                "UPDATE mem_tool_calls SET queue_status = 'processing' WHERE id = $1",
+                tool_call_id,
+            )
 
         # Skip low-value tools
         if tool_name in SKIP_TOOLS:
@@ -48,6 +54,12 @@ async def process_one(pool) -> bool:
                 "UPDATE mem_observation_queue SET status = 'skipped', processed_at = now() WHERE id = $1",
                 queue_id,
             )
+            if tool_call_id:
+                await conn.execute("""
+                    UPDATE mem_tool_calls
+                    SET queue_status = 'skipped', processed_at = now()
+                    WHERE id = $1
+                """, tool_call_id)
             logger.debug(f"Skipped tool {tool_name} (queue #{queue_id})")
             return True
 
@@ -67,6 +79,12 @@ async def process_one(pool) -> bool:
                     "UPDATE mem_observation_queue SET status = 'skipped', processed_at = now() WHERE id = $1",
                     queue_id,
                 )
+                if tool_call_id:
+                    await conn.execute("""
+                        UPDATE mem_tool_calls
+                        SET queue_status = 'skipped', processed_at = now()
+                        WHERE id = $1
+                    """, tool_call_id)
                 logger.debug(f"LLM skipped observation for queue #{queue_id}")
                 return True
 
@@ -102,7 +120,7 @@ async def process_one(pool) -> bool:
                 embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
             # Insert observation
-            await conn.execute("""
+            obs_row = await conn.fetchrow("""
                 INSERT INTO mem_observations (
                     session_id, project_id, title, subtitle, type,
                     narrative, facts, concepts, files_read, files_modified,
@@ -113,7 +131,7 @@ async def process_one(pool) -> bool:
                     $6, $7, $8, $9, $10,
                     $11, $12::vector, $13,
                     $14, now(), $15, $16, $17
-                )
+                ) RETURNING id
             """,
                 row["session_id"],
                 project_id,
@@ -133,17 +151,37 @@ async def process_one(pool) -> bool:
                 row["source_mode"],
                 row["source_agent"],
             )
+            observation_id = obs_row["id"] if obs_row else None
 
             # Mark queue item done
             await conn.execute(
                 "UPDATE mem_observation_queue SET status = 'done', processed_at = now() WHERE id = $1",
                 queue_id,
             )
+            if tool_call_id:
+                await conn.execute("""
+                    UPDATE mem_tool_calls
+                    SET queue_status = 'done',
+                        processed_at = now(),
+                        observation_id = $2,
+                        tool_success = COALESCE(tool_success, true),
+                        tool_error = NULL
+                    WHERE id = $1
+                """, tool_call_id, observation_id)
             logger.info(f"Created observation from queue #{queue_id}: {obs_data.get('title', '?')}")
             return True
 
         except Exception as e:
             logger.error(f"Queue #{queue_id} processing failed: {e}")
+            next_status = "failed"
+            retry_row = await conn.fetchrow(
+                "SELECT retry_count FROM mem_observation_queue WHERE id = $1",
+                queue_id,
+            )
+            retry_count = (retry_row["retry_count"] if retry_row else 0) + 1
+            if retry_count <= settings.queue_max_retries:
+                next_status = "pending"
+
             await conn.execute("""
                 UPDATE mem_observation_queue
                 SET status = CASE WHEN retry_count >= $2 THEN 'failed' ELSE 'pending' END,
@@ -151,6 +189,15 @@ async def process_one(pool) -> bool:
                     processed_at = now()
                 WHERE id = $1
             """, queue_id, settings.queue_max_retries)
+            if tool_call_id:
+                await conn.execute("""
+                    UPDATE mem_tool_calls
+                    SET queue_status = $2,
+                        processed_at = now(),
+                        tool_success = false,
+                        tool_error = $3
+                    WHERE id = $1
+                """, tool_call_id, next_status, str(e)[:2000])
             return True
 
 

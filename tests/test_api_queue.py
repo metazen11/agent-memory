@@ -35,3 +35,30 @@ async def test_queue_requires_session_id(client):
         "tool_name": "Bash",
     })
     assert resp.status_code == 422  # validation error
+
+
+@pytest.mark.asyncio
+async def test_queue_accepts_rich_tool_logging_payload(client, test_project):
+    resp = await client.post("/api/queue", json={
+        "session_id": "queue-test-rich",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Read",
+        "tool_input": {"path": "README.md"},
+        "tool_response": {"content": "ok", "success": True},
+        "tool_response_preview": "ok",
+        "tool_success": True,
+        "tool_error": None,
+        "raw_event": {"tool_name": "Read", "meta": {"agent": "test"}},
+        "cwd": test_project,
+        "last_user_message": "inspect readme",
+        "source_system": "codex-cli",
+        "source_mode": "hook",
+        "source_agent": "codex-cli",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "queued"
+    if "queue_id" in body:
+        assert body["queue_id"] is not None
+    if "tool_call_id" in body:
+        assert body["tool_call_id"] is not None

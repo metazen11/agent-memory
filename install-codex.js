@@ -16,6 +16,7 @@ const ROOT = path.resolve(__dirname);
 const PLATFORM = os.platform();
 const PYTHON = path.join(ROOT, '.venv', PLATFORM === 'win32' ? 'Scripts' : 'bin', 'python');
 const MCP_SERVER = path.join(ROOT, 'mcp_server.py');
+const MIGRATE_SCRIPT = path.join(ROOT, 'scripts', 'run_migrations.py');
 const REQUIRED = [
   'integrations/codex/session-start.js',
   'integrations/codex/session-end.js',
@@ -52,6 +53,10 @@ function checkFiles() {
     console.error(`MCP server file not found: ${MCP_SERVER}`);
     process.exit(1);
   }
+  if (!fs.existsSync(MIGRATE_SCRIPT)) {
+    console.error(`Migration script not found: ${MIGRATE_SCRIPT}`);
+    process.exit(1);
+  }
 }
 
 function ensureExecutableBits() {
@@ -83,6 +88,19 @@ function registerMcp() {
   run(cmd, { stdio: 'inherit' });
 }
 
+function runMigrations() {
+  console.log('\nRunning database migrations...');
+  const cmd = `"${PYTHON}" "${MIGRATE_SCRIPT}"`;
+  try {
+    run(cmd, { stdio: 'inherit' });
+  } catch (e) {
+    console.error('\nFailed to run migrations for Codex adapter install.');
+    console.error('Ensure PostgreSQL/agent-memory database is reachable, then retry.');
+    if (e?.message) console.error(e.message);
+    process.exit(1);
+  }
+}
+
 function printSummary() {
   console.log('\nagent-memory Codex adapter installed');
   console.log('');
@@ -103,8 +121,10 @@ function printSummary() {
 function main() {
   const args = new Set(process.argv.slice(2));
   const skipMcp = args.has('--skip-mcp');
+  const skipMigrations = args.has('--skip-migrations');
   checkFiles();
   ensureExecutableBits();
+  if (!skipMigrations) runMigrations();
   if (!skipMcp) registerMcp();
   printSummary();
 }

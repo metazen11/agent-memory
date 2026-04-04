@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from pydantic import BaseModel, Field
 
 
@@ -61,7 +62,12 @@ class QueueItem(BaseModel):
     session_id: str
     tool_name: str | None = None
     tool_input: dict | None = None
+    tool_response: Any | None = None
     tool_response_preview: str | None = None
+    tool_success: bool | None = None
+    tool_error: str | None = None
+    hook_event_name: str | None = None
+    raw_event: dict | None = None
     cwd: str | None = None
     last_user_message: str | None = None
     source_system: str | None = None

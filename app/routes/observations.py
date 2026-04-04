@@ -27,6 +27,13 @@ async def _ensure_session(conn, session_id: str, project_id: int, agent_type: st
     return row["id"]
 
 
+def _to_json_text(value):
+    """Convert arbitrary input to JSON text for JSON/JSONB columns."""
+    if value is None:
+        return None
+    return json.dumps(value)
+
+
 # ── Queue ingest (fire-and-forget from hooks) ────────
 
 @router.post("/api/queue")
@@ -42,27 +49,115 @@ async def queue_observation(item: QueueItem):
             session_db_id,
         )
         source_system = item.source_system or (session_row["agent_type"] if session_row else None)
+        source_agent = item.source_agent or (session_row["agent_type"] if session_row else None)
+        tool_response_preview = item.tool_response_preview[:2000] if item.tool_response_preview else None
 
-        await conn.execute("""
+        # 1) Raw event capture (for replay/debug)
+        event_row = await conn.fetchrow("""
+            INSERT INTO mem_tool_call_events
+            (
+                session_id, hook_event_name, tool_name, tool_input, tool_response,
+                tool_success, tool_error, prompt_text, cwd,
+                source_system, source_mode, source_agent,
+                raw_event_json, raw_event_jsonb
+            )
+            VALUES
+            (
+                $1, $2, $3, $4::jsonb, $5::jsonb,
+                $6, $7, $8, $9,
+                $10, $11, $12,
+                $13::json, $14::jsonb
+            )
+            RETURNING id
+        """,
+            session_db_id,
+            item.hook_event_name,
+            item.tool_name,
+            _to_json_text(item.tool_input),
+            _to_json_text(item.tool_response),
+            item.tool_success,
+            item.tool_error[:2000] if item.tool_error else None,
+            item.last_user_message,
+            item.cwd,
+            source_system,
+            item.source_mode,
+            source_agent,
+            _to_json_text(item.raw_event),
+            _to_json_text(item.raw_event),
+        )
+        event_id = event_row["id"] if event_row else None
+
+        # 2) Normalized tool call ledger row
+        tool_call_row = await conn.fetchrow("""
+            INSERT INTO mem_tool_calls
+            (
+                event_id, session_id, project_id, hook_event_name, tool_name,
+                tool_input, tool_response_preview, tool_success, tool_error,
+                prompt_text, cwd, queue_status, source_system, source_mode, source_agent
+            )
+            VALUES
+            (
+                $1, $2, $3, $4, $5,
+                $6::jsonb, $7, $8, $9,
+                $10, $11, 'pending', $12, $13, $14
+            )
+            RETURNING id
+        """,
+            event_id,
+            session_db_id,
+            project_id,
+            item.hook_event_name,
+            item.tool_name,
+            _to_json_text(item.tool_input),
+            tool_response_preview,
+            item.tool_success,
+            item.tool_error[:2000] if item.tool_error else None,
+            item.last_user_message,
+            item.cwd,
+            source_system,
+            item.source_mode,
+            source_agent,
+        )
+        tool_call_id = tool_call_row["id"] if tool_call_row else None
+
+        # 3) Existing queue pipeline (linked to tool_call_id)
+        queue_row = await conn.fetchrow("""
             INSERT INTO mem_observation_queue
             (
                 session_id, tool_name, tool_input, tool_response_preview,
-                cwd, last_user_message, source_system, source_mode, source_agent
+                cwd, last_user_message, source_system, source_mode, source_agent, tool_call_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id
         """,
             session_db_id,
             item.tool_name,
-            json.dumps(item.tool_input) if item.tool_input else None,
-            item.tool_response_preview[:2000] if item.tool_response_preview else None,
+            _to_json_text(item.tool_input),
+            tool_response_preview,
             item.cwd,
             item.last_user_message,
             source_system,
             item.source_mode,
-            item.source_agent,
+            source_agent,
+            tool_call_id,
         )
+        queue_id = queue_row["id"] if queue_row else None
 
-    return {"status": "queued"}
+        # Back-link queue/event ids for easier joins
+        if tool_call_id and queue_id:
+            await conn.execute(
+                "UPDATE mem_tool_calls SET queue_id = $2 WHERE id = $1",
+                tool_call_id,
+                queue_id,
+            )
+        if event_id and queue_id:
+            await conn.execute(
+                "UPDATE mem_tool_call_events SET queue_id = $2 WHERE id = $1",
+                event_id,
+                queue_id,
+            )
+
+    return {"status": "queued", "queue_id": queue_id, "tool_call_id": tool_call_id}
 
 
 # ── Direct observation creation ───────────────────────
