@@ -110,9 +110,15 @@ class TestObservationCreate:
             files_read=["/src/auth.py"],
             files_modified=["/src/auth.py"],
             tool_name="Edit",
+            source_system="anvil",
+            source_mode="cli",
+            source_agent="dev",
         )
         assert obs.title == "Found a bug"
         assert obs.tool_name == "Edit"
+        assert obs.source_system == "anvil"
+        assert obs.source_mode == "cli"
+        assert obs.source_agent == "dev"
 
 
 class TestQueueItem:
@@ -130,9 +136,13 @@ class TestQueueItem:
             tool_response_preview="file1\nfile2",
             cwd="/tmp",
             last_user_message="list files",
+            source_system="anvil",
+            source_mode="worker",
+            source_agent="review",
         )
         assert item.tool_name == "Bash"
         assert item.tool_input["command"] == "ls"
+        assert item.source_mode == "worker"
 
 
 class TestLessonCreate:

@@ -64,6 +64,9 @@ class QueueItem(BaseModel):
     tool_response_preview: str | None = None
     cwd: str | None = None
     last_user_message: str | None = None
+    source_system: str | None = None
+    source_mode: str | None = None
+    source_agent: str | None = None
 
 
 # ── Observation schemas ───────────────────────────────
@@ -82,6 +85,9 @@ class ObservationCreate(BaseModel):
     files_modified: list[str] = Field(default_factory=list)
     tool_name: str | None = None
     prompt_number: int | None = None
+    source_system: str | None = None
+    source_mode: str | None = None
+    source_agent: str | None = None
 
 
 class ObservationOut(BaseModel):
@@ -100,6 +106,9 @@ class ObservationOut(BaseModel):
     files_modified: list = Field(default_factory=list)
     tool_name: str | None = None
     prompt_number: int | None = None
+    source_system: str | None = None
+    source_mode: str | None = None
+    source_agent: str | None = None
     has_embedding: bool = False
     created_at: datetime
     score: float | None = None

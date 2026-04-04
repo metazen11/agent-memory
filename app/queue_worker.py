@@ -32,7 +32,8 @@ async def process_one(pool) -> bool:
                 FOR UPDATE SKIP LOCKED
             )
             RETURNING id, session_id, tool_name, tool_input,
-                      tool_response_preview, cwd, last_user_message
+                      tool_response_preview, cwd, last_user_message,
+                      source_system, source_mode, source_agent
         """)
 
         if row is None:
@@ -71,7 +72,7 @@ async def process_one(pool) -> bool:
 
             # Get project_id from session
             session_row = await conn.fetchrow(
-                "SELECT project_id FROM mem_sessions WHERE id = $1",
+                "SELECT project_id, agent_type FROM mem_sessions WHERE id = $1",
                 row["session_id"],
             )
             if not session_row:
@@ -106,12 +107,12 @@ async def process_one(pool) -> bool:
                     session_id, project_id, title, subtitle, type,
                     narrative, facts, concepts, files_read, files_modified,
                     raw_text, embedding, embedding_model_id,
-                    tool_name, created_at
+                    tool_name, created_at, source_system, source_mode, source_agent
                 ) VALUES (
                     $1, $2, $3, $4, $5,
                     $6, $7, $8, $9, $10,
                     $11, $12::vector, $13,
-                    $14, now()
+                    $14, now(), $15, $16, $17
                 )
             """,
                 row["session_id"],
@@ -128,6 +129,9 @@ async def process_one(pool) -> bool:
                 embedding_str,
                 embedding_model_id,
                 tool_name,
+                row["source_system"] or session_row["agent_type"],
+                row["source_mode"],
+                row["source_agent"],
             )
 
             # Mark queue item done

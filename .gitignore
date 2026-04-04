@@ -12,3 +12,4 @@ logs/
 .agent-memory-codex/
 data/pgdata/
 data/backups/
+plans/

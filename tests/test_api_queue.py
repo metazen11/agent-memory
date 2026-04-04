@@ -12,6 +12,9 @@ async def test_queue_accepts_valid_payload(client, test_project):
         "tool_response_preview": "hello",
         "cwd": test_project,
         "last_user_message": "run echo",
+        "source_system": "anvil",
+        "source_mode": "cli",
+        "source_agent": "dev",
     })
     assert resp.status_code == 200
     assert resp.json()["status"] == "queued"

@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS mem_observations (
     -- Metadata
     prompt_number     INTEGER,
     tool_name         TEXT,
+    source_system     TEXT,
+    source_mode       TEXT,
+    source_agent      TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     -- Full-text search (auto-maintained generated column)
@@ -97,6 +100,9 @@ CREATE TABLE IF NOT EXISTS mem_observation_queue (
     tool_response_preview TEXT,
     cwd                 TEXT,
     last_user_message   TEXT,
+    source_system       TEXT,
+    source_mode         TEXT,
+    source_agent        TEXT,
     status              TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','processing','done','failed','skipped')),
     retry_count         INTEGER NOT NULL DEFAULT 0,

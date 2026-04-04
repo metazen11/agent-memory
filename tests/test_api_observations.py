@@ -20,11 +20,17 @@ async def test_create_observation(client, test_project):
         "files_read": ["/tmp/test.py"],
         "files_modified": [],
         "tool_name": "Bash",
+        "source_system": "anvil",
+        "source_mode": "cli",
+        "source_agent": "dev",
     })
     assert resp.status_code == 200
     data = resp.json()
     assert data["title"] == "Test observation creation"
     assert data["type"] == "discovery"
+    assert data["source_system"] == "anvil"
+    assert data["source_mode"] == "cli"
+    assert data["source_agent"] == "dev"
     assert data["has_embedding"] is True
     assert data["id"] > 0
     _created_obs_ids.append(data["id"])
@@ -74,6 +80,7 @@ async def test_get_observation_by_id(client):
     data = resp.json()
     assert data["id"] == obs_id
     assert data["title"] == "Test observation creation"
+    assert data["source_system"] == "anvil"
 
 
 @pytest.mark.asyncio

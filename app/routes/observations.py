@@ -37,11 +37,19 @@ async def queue_observation(item: QueueItem):
         project_path = item.cwd or "unknown"
         project_id = await ensure_project(conn, project_path)
         session_db_id = await _ensure_session(conn, item.session_id, project_id)
+        session_row = await conn.fetchrow(
+            "SELECT agent_type FROM mem_sessions WHERE id = $1",
+            session_db_id,
+        )
+        source_system = item.source_system or (session_row["agent_type"] if session_row else None)
 
         await conn.execute("""
             INSERT INTO mem_observation_queue
-            (session_id, tool_name, tool_input, tool_response_preview, cwd, last_user_message)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            (
+                session_id, tool_name, tool_input, tool_response_preview,
+                cwd, last_user_message, source_system, source_mode, source_agent
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         """,
             session_db_id,
             item.tool_name,
@@ -49,6 +57,9 @@ async def queue_observation(item: QueueItem):
             item.tool_response_preview[:2000] if item.tool_response_preview else None,
             item.cwd,
             item.last_user_message,
+            source_system,
+            item.source_mode,
+            item.source_agent,
         )
 
     return {"status": "queued"}
@@ -63,6 +74,11 @@ async def create_observation(obs: ObservationCreate):
     async with pool.acquire() as conn:
         project_id = await ensure_project(conn, obs.project)
         session_db_id = await _ensure_session(conn, obs.session_id, project_id)
+        session_row = await conn.fetchrow(
+            "SELECT agent_type FROM mem_sessions WHERE id = $1",
+            session_db_id,
+        )
+        source_system = obs.source_system or (session_row["agent_type"] if session_row else None)
 
         # Normalize type before insert
         obs.type = normalize_observation_type(obs.type)
@@ -88,12 +104,12 @@ async def create_observation(obs: ObservationCreate):
                 session_id, project_id, title, subtitle, type,
                 narrative, facts, concepts, files_read, files_modified,
                 raw_text, embedding, embedding_model_id,
-                tool_name, prompt_number
+                tool_name, prompt_number, source_system, source_mode, source_agent
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9, $10,
                 $11, $12::vector, $13,
-                $14, $15
+                $14, $15, $16, $17, $18
             ) RETURNING id, created_at
         """,
             session_db_id, project_id, obs.title, obs.subtitle, obs.type,
@@ -102,6 +118,7 @@ async def create_observation(obs: ObservationCreate):
             json.dumps(obs.files_read), json.dumps(obs.files_modified),
             raw_text, embedding_str, embedding_model_id,
             obs.tool_name, obs.prompt_number,
+            source_system, obs.source_mode, obs.source_agent,
         )
 
         return ObservationOut(
@@ -119,6 +136,9 @@ async def create_observation(obs: ObservationCreate):
             files_modified=obs.files_modified,
             tool_name=obs.tool_name,
             prompt_number=obs.prompt_number,
+            source_system=source_system,
+            source_mode=obs.source_mode,
+            source_agent=obs.source_agent,
             has_embedding=embedding_str is not None,
             created_at=row["created_at"],
         )
@@ -158,6 +178,7 @@ async def list_observations(
                    o.title, o.subtitle, o.type, o.narrative,
                    o.facts, o.concepts, o.files_read, o.files_modified,
                    o.tool_name, o.prompt_number,
+                   o.source_system, o.source_mode, o.source_agent,
                    o.embedding IS NOT NULL as has_embedding,
                    o.created_at
             FROM mem_observations o
@@ -182,6 +203,7 @@ async def get_observation(obs_id: int):
                    o.title, o.subtitle, o.type, o.narrative,
                    o.facts, o.concepts, o.files_read, o.files_modified,
                    o.tool_name, o.prompt_number,
+                   o.source_system, o.source_mode, o.source_agent,
                    o.embedding IS NOT NULL as has_embedding,
                    o.created_at
             FROM mem_observations o
@@ -234,6 +256,7 @@ async def search_observations(req: SearchRequest):
                            o.title, o.subtitle, o.type, o.narrative,
                            o.facts, o.concepts, o.files_read, o.files_modified,
                            o.tool_name, o.prompt_number,
+                           o.source_system, o.source_mode, o.source_agent,
                            true as has_embedding,
                            o.created_at,
                            1 - (o.embedding <=> $1::vector) as similarity
@@ -276,6 +299,7 @@ async def search_observations(req: SearchRequest):
                        o.title, o.subtitle, o.type, o.narrative,
                        o.facts, o.concepts, o.files_read, o.files_modified,
                        o.tool_name, o.prompt_number,
+                       o.source_system, o.source_mode, o.source_agent,
                        o.embedding IS NOT NULL as has_embedding,
                        o.created_at,
                        ts_rank_cd(o.tsv, to_tsquery('english', $1)) as fts_rank
@@ -324,6 +348,7 @@ async def search_observations(req: SearchRequest):
                            o.title, o.subtitle, o.type, o.narrative,
                            o.facts, o.concepts, o.files_read, o.files_modified,
                            o.tool_name, o.prompt_number,
+                           o.source_system, o.source_mode, o.source_agent,
                            o.embedding IS NOT NULL as has_embedding,
                            o.created_at,
                            ({like_score_expr}) as kw_hits
@@ -395,6 +420,9 @@ def _row_to_obs(row) -> ObservationOut:
         files_modified=json.loads(row["files_modified"]) if isinstance(row["files_modified"], str) else (row["files_modified"] or []),
         tool_name=row["tool_name"],
         prompt_number=row["prompt_number"],
+        source_system=row["source_system"],
+        source_mode=row["source_mode"],
+        source_agent=row["source_agent"],
         has_embedding=row["has_embedding"],
         created_at=row["created_at"],
     )
