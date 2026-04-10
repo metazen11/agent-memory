@@ -1,100 +1,116 @@
-# Handoff (agentMemory -> Claude + Codex integration)
+# Handoff (agentMemory Fine-Tune + Integrations)
 
-## Current status
+## Current status (latest)
 
-- Claude integration already existed in repo and remains unchanged.
-- Codex integration has been added in separate files (no patch to `install.js`).
-- Codex MCP registration was performed and verified with `codex mcp get agent-memory`.
+- Feature toggles for hint injection are implemented and split:
+  - `AGENT_MEMORY_HINTS_ENABLED` (global default)
+  - `AGENT_MEMORY_SESSION_HINTS_ENABLED` (session-start hints)
+  - `AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED` (pre-tool warnings)
+- Terminal toggle interface added:
+  - `node scripts/hints-config.js status|set|tui`
+- Cross-platform install packs added for Claude/Codex/Anvil:
+  - `.sh`, `.js`, and Windows `.cmd` launchers.
 
-## What was added
+## Fine-tune/training state
 
-- `install-codex.js`
-- `scripts/install-agent-memory-codex.sh`
-- `scripts/codex-agent-memory.sh`
-- `codex.agent-memory.md`
-- `integrations/codex/common.js`
-- `integrations/codex/session-start.js`
-- `integrations/codex/session-end.js`
-- `integrations/codex/pre-tool-trigger.js`
-- `integrations/codex/post-tool-hook.js`
-- `integrations/codex/drain-spool.js`
-- `integrations/codex/host-watch.js`
-- `integrations/codex/hooks.json`
+### Gemma 4 path
 
-Also updated:
-- `.gitignore` now includes `.agent-memory-codex/`
+- LoRA pilot training completed and merged, GGUF generated.
+- Gemma 4 GGUF currently has runtime tensor mismatch in llama.cpp (`missing tensor ...`), so this path is not the current recommended test model.
 
-## Important behavior implemented
+### Qwen 9B path (recommended, current)
 
-### Claude
+- Official HF base downloaded locally into:
+  - `models/base/qwen3.5-9b-hf`
+- Local training script uses this base:
+  - `models/lora/qwen3.5-9b-toolcalls-lora/run_train_lora.py`
+- Clean pilot fine-tune completed:
+  - adapter: `models/lora/qwen3.5-9b-toolcalls-lora/adapter_model.safetensors`
+- Merge completed:
+  - merged model: `models/merged/qwen3.5-9b-toolcalls-merged/model.safetensors`
+- GGUF conversion + quantization completed:
+  - `models/gguf/qwen3.5-9b-toolcalls-f16.gguf`
+  - `models/gguf/qwen3.5-9b-toolcalls-q4km.gguf`
+- llama.cpp load/generation test runs successfully (no tensor-missing load error on this Qwen path).
 
-- Existing fault-tolerance path is already present:
-  - `hooks/session-start.js` -> runs `hooks/ensure-services.js`
-  - `hooks/post-tool-use.js` -> recovery trigger to `hooks/ensure-services.js`
+## Most important logs
 
-### Codex (sandbox-safe mode)
+- Qwen pilot train:
+  - `logs/train_qwen9b_hf_pilot_20260409_204845.log`
+- Qwen merge:
+  - `logs/merge_qwen9b_hf_20260409_204913.log`
+- Qwen GGUF convert/quant:
+  - `logs/gguf_convert_qwen9b_20260409_204946.log`
 
-- `session-start`:
-  - tries API path
-  - if unavailable, falls back quickly to local snapshot/spool mode
-  - avoids long hangs in sandbox
-- `pre-tool-trigger`:
-  - uses API when available
-  - falls back to `.agent-memory-codex/lessons.snapshot.json`
-- `post-tool-hook`:
-  - queues online when possible
-  - otherwise spools payloads into `.agent-memory-codex/spool/`
-- `host-watch` (wrapper-launched):
-  - tries to keep services awake via `hooks/ensure-services.js`
-  - drains spool back to API
-  - refreshes local snapshots
+(Older logs remain for Gemma and earlier attempts.)
 
-## Known blocker / environment note
+## Data pipeline status
 
-- In this Codex sandbox, FastAPI startup fails to connect to external Postgres (`localhost:5433`) with:
-  - `PermissionError: [Errno 1] Operation not permitted`
-- So online API checks from sandbox may fail. The new Codex path is designed to continue in snapshot/spool mode.
-- Running from host terminal (outside restrictive sandbox) should allow full recovery behavior.
+- Raw data folder contract is in place:
+  - `data/raw/` (Claude + Anvil collected)
+- Processed blend dataset exists:
+  - `data/processed/fine_tune_blend/train.chat.jsonl`
+  - `data/processed/fine_tune_blend/valid.chat.jsonl`
 
 ## Resume commands
 
-1) Refresh Codex integration:
+### 1) Check toggle state quickly
 
 ```bash
-./scripts/install-agent-memory-codex.sh
+node scripts/hints-config.js status
 ```
 
-2) Start/verify backend services from host terminal:
+### 2) Confirm model artifacts
 
 ```bash
-node install.js --start
-node install.js --status
+ls -lh models/gguf/qwen3.5-9b-toolcalls-*.gguf
 ```
 
-3) Launch Codex with wrapper:
+### 3) Quick llama.cpp test
 
 ```bash
-./scripts/codex-agent-memory.sh
+./models/llama.cpp/build/bin/llama-cli -m models/gguf/qwen3.5-9b-toolcalls-q4km.gguf -n 64 -p "Reply with READY only."
 ```
 
-4) Optional manual helpers during session:
+### 4) Start next (non-pilot) Qwen training iteration
+
+Use existing script with larger env settings (example):
 
 ```bash
-node integrations/codex/pre-tool-trigger.js --tool Bash --input "npm run migrate"
-node integrations/codex/post-tool-hook.js --tool Bash --input '{"command":"npm test"}' --output "tests passed"
+set -a; source .env
+export FAST_PILOT=1
+export PILOT_MAX_TRAIN_SAMPLES=1200
+export PILOT_MAX_VALID_SAMPLES=120
+export PILOT_EPOCHS=0.5
+export PILOT_MAX_LENGTH=1024
+export PILOT_GRAD_ACCUM=4
+export PILOT_LOGGING_STEPS=10
+export PILOT_EVAL_STRATEGY=steps
+export PILOT_EVAL_STEPS=100
+export PILOT_SAVE_STRATEGY=steps
+export PILOT_SAVE_STEPS=100
+set +a
+./.venv-finetune/bin/python models/lora/qwen3.5-9b-toolcalls-lora/run_train_lora.py
 ```
 
-## Verification already done
+Then merge + GGUF:
 
-- Syntax checks passed (`node --check`) on new Codex scripts.
-- `codex mcp get agent-memory` showed registered server:
-  - command: `/Users/mz/Dropbox/_CODING/agentMemory/.venv/bin/python`
-  - args: `/Users/mz/Dropbox/_CODING/agentMemory/mcp_server.py`
-- `session-start` returns quickly in offline/sandbox mode and writes:
-  - `.agent-memory-codex/session-context.md`
-- `post-tool-hook` spools correctly when offline.
+```bash
+./.venv-finetune/bin/python fine-tune/gguf/merge_lora_hf.py \
+  --base-model models/base/qwen3.5-9b-hf \
+  --lora-adapter models/lora/qwen3.5-9b-toolcalls-lora \
+  --output-dir models/merged/qwen3.5-9b-toolcalls-merged
 
-## Suggested next step when returning
+./.venv-finetune/bin/python fine-tune/gguf/convert_to_gguf.py \
+  --llama-cpp-dir models/llama.cpp \
+  --hf-model-dir models/merged/qwen3.5-9b-toolcalls-merged \
+  --out-f16 models/gguf/qwen3.5-9b-toolcalls-f16.gguf \
+  --out-quant models/gguf/qwen3.5-9b-toolcalls-q4km.gguf \
+  --quant Q4_K_M \
+  --run
+```
 
-- Run `node install.js --status` and confirm FastAPI is `ok`.
-- If still stopped, inspect `logs/server.log` and start services from host terminal (outside strict sandbox).
+## Notes
+
+- Avoid using the local LM Studio MLX-export Qwen copy as base for training; it produced key mismatch warnings (`UNEXPECTED`/`MISSING`) during load.
+- Use `models/base/qwen3.5-9b-hf` as the training base.
