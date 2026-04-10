@@ -1,0 +1,43 @@
+{
+  "description": "Reward profile for continuous tool-intelligence learning in this ecosystem.",
+  "weights": {
+    "all_tools_success": 1.0,
+    "tool_success_ratio": 0.7,
+    "has_qa_signal": 0.5,
+    "has_docs_signal": 0.45,
+    "has_plan_signal": 0.35,
+    "has_review_signal": 0.35,
+    "has_test_signal": 0.4,
+    "tool_count_bonus_cap": 0.3,
+    "tool_count_bonus_per_step": 0.03,
+    "error_penalty": -1.2
+  },
+  "signals": {
+    "qa_patterns": [
+      "pytest",
+      "playwright",
+      "integration test",
+      "e2e",
+      "test_"
+    ],
+    "docs_patterns": [
+      "README.md",
+      "handoff.md",
+      "docs/",
+      "AGENTS.md",
+      "CLAUDE.md"
+    ],
+    "plan_patterns": [
+      "plan",
+      "todo",
+      "roadmap",
+      "milestone"
+    ],
+    "review_patterns": [
+      "review",
+      "code review",
+      "risk",
+      "regression"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+mlx
+mlx-lm
+mlx-tune
+huggingface-hub>=0.25.0

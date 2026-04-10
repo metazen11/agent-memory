@@ -30,6 +30,8 @@ Most agents should start with the **REST API** (works everywhere) and add **MCP*
 │  /api/observations ──► CRUD + hybrid search             │
 │  /api/sessions ──► session lifecycle                     │
 │  /api/health ──► health check                            │
+│  /api/lessons ──► proactive pre-tool rules               │
+│  /api/tool-calls ──► lookup, stats, dataset export       │
 │                                                         │
 │  Queue Worker (background asyncio task)                 │
 │  ├─ Dequeue pending items (FOR UPDATE SKIP LOCKED)      │
@@ -316,6 +318,43 @@ curl -X POST 'localhost:3377/api/admin/re-embed?only_missing=true'
 
 # Check re-embed progress
 curl localhost:3377/api/admin/re-embed/status
+
+# Cancel running re-embed job
+curl -X POST localhost:3377/api/admin/re-embed/cancel
+```
+
+### 2.5 Lessons + Tool Call Lookup/Export
+
+```bash
+# Create a lesson (project-scoped)
+curl -X POST localhost:3377/api/lessons \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Check migrations before prod deploy",
+    "rule": "Always run migrations in dry-run mode before deploy.",
+    "severity": "warning",
+    "project": "/path/to/my-project",
+    "trigger_tool": "Bash",
+    "trigger_pattern": "migrate|deploy"
+  }'
+
+# Lookup lessons for a tool invocation (used by pre-tool hooks)
+curl "localhost:3377/api/lessons/match?tool_name=Bash&tool_input_preview=npm%20run%20migrate&project=/path/to/my-project"
+
+# Lookup tool calls (route-level ledger)
+curl "localhost:3377/api/tool-calls?project=/path/to/my-project&tool_name=Bash&success=true&limit=50"
+
+# Tool usage stats
+curl "localhost:3377/api/tool-calls/stats?project=/path/to/my-project"
+
+# Export tool calls for training pipelines (jsonl or csv)
+curl "localhost:3377/api/tool-calls/export?project=/path/to/my-project&success=true&format=jsonl" > tool_calls.jsonl
+
+# Export training-ready dataset variants
+curl "localhost:3377/api/tool-calls/export/dataset?dataset_type=trajectory&project=/path/to/my-project&include_errors=false&include_observations=true"
+
+# Get API-side primer/help payload for LLM/agent export workflows
+curl "localhost:3377/api/tool-calls/export/help"
 ```
 
 ---
@@ -355,7 +394,7 @@ Add this to your agent's MCP configuration file. Replace `/absolute/path/to/agen
 
 ### MCP Tools Reference
 
-The server exposes 5 tools:
+The server exposes memory + lesson + dataset tools:
 
 #### `search` — Step 1: Get index with IDs
 
@@ -417,6 +456,30 @@ Returns complete observations (~500-1000 tokens each): title, narrative, facts, 
 #### `memory_search_guide` — Usage reminder
 
 No parameters. Returns the 3-layer workflow instructions.
+
+#### `export_training_dataset` — Training export interface
+
+```json
+{
+  "dataset_type": "sft",
+  "project": "/path/to/my-project",
+  "include_errors": false,
+  "include_observations": true,
+  "limit": 2000
+}
+```
+
+Returns training-ready records using shared export logic:
+- `sft`: single-turn tool behavior
+- `trajectory`: tool + optional observation + reward/outcome
+- `preference`: chosen/rejected pairs for RM or DPO pipelines
+
+#### `training_export_guide` — Help/primer for dataset collection
+
+No parameters. Returns a structured guide with:
+- recommended collection workflow
+- API and MCP endpoint/tool usage
+- dataset shapes and quality controls for SFT/RL
 
 ### 3-Layer Search Workflow
 
@@ -850,7 +913,10 @@ The `/api/queue` endpoint accepts tool call data for asynchronous processing. Th
   "tool_input": {},
   "tool_response_preview": "optional-string (truncated to 2000 chars)",
   "cwd": "optional-string",
-  "last_user_message": "optional-string"
+  "last_user_message": "optional-string",
+  "source_system": "optional-string",
+  "source_mode": "optional-string",
+  "source_agent": "optional-string"
 }
 ```
 
@@ -864,6 +930,9 @@ The `/api/queue` endpoint accepts tool call data for asynchronous processing. Th
 | `tool_response_preview` | string | 2000 chars | First portion of tool output |
 | `cwd` | string | — | Working directory (project derived from basename) |
 | `last_user_message` | string | — | User prompt that triggered this action |
+| `source_system` | string | — | Source system (e.g. `claude-code`, `codex`) |
+| `source_mode` | string | — | Runtime mode (`default`, `plan`, etc.) |
+| `source_agent` | string | — | Concrete agent/model identifier |
 
 ### What the LLM extracts
 
@@ -921,6 +990,10 @@ All tables use the `mem_` prefix to avoid collisions in shared databases.
 | `mem_sessions` | One per agent session |
 | `mem_observations` | Core memory with title, narrative, embedding |
 | `mem_observation_queue` | Async processing queue |
+| `mem_tool_calls` | Durable tool call ledger with success/error and prompt fields |
+| `mem_lessons` | Proactive lessons (project-scoped or global) |
+| `mem_user_prompts` | Optional prompt timeline records |
+| `backfill_log` | JSONL backfill progress checkpoints |
 | `mem_schema_migrations` | Tracks applied migrations |
 
 ### Search strategy
@@ -952,7 +1025,41 @@ LIMIT 10;
 
 ---
 
-## 11. Troubleshooting
+## 11. Fine-Tuning / LLM Training Dataset Exports
+
+Use one of these three export patterns depending on training goal. All patterns can run per-project (pass project filter) or global (omit project filter).
+
+### Pattern A: Tool-Call SFT (single-turn tool behavior)
+
+- Endpoint: `GET /api/tool-calls/export?format=jsonl&success=true`
+- Keep fields: `prompt_text`, `tool_name`, `tool_input`, `tool_response_preview`, `source_agent`, `project`
+- Exclude errors/problematic calls with `success=true` and optional text filters on `tool_error`
+- Best for: fine-tuning models to produce better tool-call arguments and short tool-aware reasoning
+
+### Pattern B: Trajectory Dataset (prompt -> tool -> observation -> outcome)
+
+- Build from SQL joins:
+  - `mem_tool_calls` (prompt + tool I/O)
+  - `mem_observations` (what was learned/built)
+  - `mem_sessions` (final status)
+- Keep `observation_id` linkage so each tool event maps to downstream memory
+- Reward label starter:
+  - `+1` for `tool_success=true` and completed session
+  - `0` for partial/no observation link
+  - `-1` for `tool_success=false`, `tool_error` present, or failed session
+- Best for: multi-step policy training and trajectory scoring
+
+### Pattern C: Preference/Reward Dataset (chosen vs rejected traces)
+
+- Construct pairwise data for DPO/ORPO/RM:
+  - chosen = successful tool calls with useful observation linkage
+  - rejected = same/similar context with failure/error outcome
+- Add lesson context:
+  - if a call should have matched a critical lesson but still failed, keep as hard negative
+- Keep a separate "unsafe/problematic" split for permission/path/destructive failures
+- Best for: reliability/safety preference optimization
+
+## 12. Troubleshooting
 
 ### Server won't start
 

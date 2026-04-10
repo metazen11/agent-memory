@@ -14,6 +14,27 @@ const LESSONS_FILE = path.join(STATE_DIR, 'lessons.snapshot.json');
 const RECENT_FILE = path.join(STATE_DIR, 'recent.snapshot.json');
 const WATCHER_PID_FILE = path.join(STATE_DIR, 'host-watch.pid');
 
+function envFlagEnabled(name, defaultValue = true) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function hintsEnabled() {
+  return envFlagEnabled('AGENT_MEMORY_HINTS_ENABLED', true);
+}
+
+function sessionHintsEnabled() {
+  return envFlagEnabled('AGENT_MEMORY_SESSION_HINTS_ENABLED', hintsEnabled());
+}
+
+function preToolHintsEnabled() {
+  return envFlagEnabled('AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED', hintsEnabled());
+}
+
 function ensureStateDir() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
 }
@@ -174,17 +195,18 @@ async function drainSpooledQueue() {
   return drained;
 }
 
-async function refreshSnapshots({ projectPath, projectName }) {
-  const [recentResp, lessonsResp] = await Promise.all([
-    requestJson('POST', '/api/observations/search', {
-      query: 'recent work',
-      project: projectPath,
-      limit: 8,
-      mode: 'hybrid',
-    }, 5000).catch(() => ({ data: { observations: [] } })),
-    requestJson('GET', `/api/lessons?project=${encodeURIComponent(projectPath)}&active=true&limit=25`, null, 3000)
-      .catch(() => ({ data: [] })),
-  ]);
+async function refreshSnapshots({ projectPath, projectName, includeLessons = true }) {
+  const recentReq = requestJson('POST', '/api/observations/search', {
+    query: 'recent work',
+    project: projectPath,
+    limit: 8,
+    mode: 'hybrid',
+  }, 5000).catch(() => ({ data: { observations: [] } }));
+  const lessonsReq = includeLessons
+    ? requestJson('GET', `/api/lessons?project=${encodeURIComponent(projectPath)}&active=true&limit=25`, null, 3000)
+      .catch(() => ({ data: [] }))
+    : Promise.resolve({ data: [] });
+  const [recentResp, lessonsResp] = await Promise.all([recentReq, lessonsReq]);
 
   const recent = recentResp.data || { observations: [] };
   const lessons = Array.isArray(lessonsResp.data) ? lessonsResp.data : [];
@@ -289,4 +311,7 @@ module.exports = {
   compileLessonMatchesFromSnapshot,
   formatRecentObservations,
   formatLessons,
+  hintsEnabled,
+  sessionHintsEnabled,
+  preToolHintsEnabled,
 };

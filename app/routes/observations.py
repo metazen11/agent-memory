@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -7,6 +8,37 @@ from app.db import get_pool
 from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
 from app.project import ensure_project, project_path_filter
+
+
+# ── Tool success inference ────────────────────────────
+# Applied server-side when saving to mem_tool_calls so the hook stays thin.
+
+_ERROR_PATTERNS = [
+    re.compile(r'^Error[:\s]', re.IGNORECASE),
+    re.compile(r'^Traceback ', re.IGNORECASE),
+    re.compile(r'^FAILED', re.IGNORECASE),
+    re.compile(r'^fatal:', re.IGNORECASE),
+    re.compile(r'permission denied', re.IGNORECASE),
+    re.compile(r'no such file or directory', re.IGNORECASE),
+    re.compile(r'command not found', re.IGNORECASE),
+    re.compile(r'exit code [1-9]', re.IGNORECASE),
+    re.compile(r'^panic:', re.IGNORECASE),
+    re.compile(r'path escapes workspace', re.IGNORECASE),
+]
+
+
+def _infer_tool_success(response_preview: str | None) -> tuple[bool, str | None]:
+    """Infer tool_success and tool_error from the response text.
+
+    Returns (success: bool, error_snippet: str | None).
+    """
+    if not response_preview:
+        return True, None
+    head = response_preview[:500]
+    for pattern in _ERROR_PATTERNS:
+        if pattern.search(head):
+            return False, head
+    return True, None
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +59,6 @@ async def _ensure_session(conn, session_id: str, project_id: int, agent_type: st
     return row["id"]
 
 
-def _to_json_text(value):
-    """Convert arbitrary input to JSON text for JSON/JSONB columns."""
-    if value is None:
-        return None
-    return json.dumps(value)
-
-
 # ── Queue ingest (fire-and-forget from hooks) ────────
 
 @router.post("/api/queue")
@@ -49,115 +74,57 @@ async def queue_observation(item: QueueItem):
             session_db_id,
         )
         source_system = item.source_system or (session_row["agent_type"] if session_row else None)
-        source_agent = item.source_agent or (session_row["agent_type"] if session_row else None)
-        tool_response_preview = item.tool_response_preview[:2000] if item.tool_response_preview else None
 
-        # 1) Raw event capture (for replay/debug)
-        event_row = await conn.fetchrow("""
-            INSERT INTO mem_tool_call_events
-            (
-                session_id, hook_event_name, tool_name, tool_input, tool_response,
-                tool_success, tool_error, prompt_text, cwd,
-                source_system, source_mode, source_agent,
-                raw_event_json, raw_event_jsonb
-            )
-            VALUES
-            (
-                $1, $2, $3, $4::jsonb, $5::jsonb,
-                $6, $7, $8, $9,
-                $10, $11, $12,
-                $13::json, $14::jsonb
-            )
-            RETURNING id
-        """,
-            session_db_id,
-            item.hook_event_name,
-            item.tool_name,
-            _to_json_text(item.tool_input),
-            _to_json_text(item.tool_response),
-            item.tool_success,
-            item.tool_error[:2000] if item.tool_error else None,
-            item.last_user_message,
-            item.cwd,
-            source_system,
-            item.source_mode,
-            source_agent,
-            _to_json_text(item.raw_event),
-            _to_json_text(item.raw_event),
-        )
-        event_id = event_row["id"] if event_row else None
+        response_preview = item.tool_response_preview[:2000] if item.tool_response_preview else None
+        tool_input_json = json.dumps(item.tool_input) if item.tool_input else None
 
-        # 2) Normalized tool call ledger row
-        tool_call_row = await conn.fetchrow("""
-            INSERT INTO mem_tool_calls
-            (
-                event_id, session_id, project_id, hook_event_name, tool_name,
-                tool_input, tool_response_preview, tool_success, tool_error,
-                prompt_text, cwd, queue_status, source_system, source_mode, source_agent
-            )
-            VALUES
-            (
-                $1, $2, $3, $4, $5,
-                $6::jsonb, $7, $8, $9,
-                $10, $11, 'pending', $12, $13, $14
-            )
-            RETURNING id
-        """,
-            event_id,
-            session_db_id,
-            project_id,
-            item.hook_event_name,
-            item.tool_name,
-            _to_json_text(item.tool_input),
-            tool_response_preview,
-            item.tool_success,
-            item.tool_error[:2000] if item.tool_error else None,
-            item.last_user_message,
-            item.cwd,
-            source_system,
-            item.source_mode,
-            source_agent,
-        )
-        tool_call_id = tool_call_row["id"] if tool_call_row else None
-
-        # 3) Existing queue pipeline (linked to tool_call_id)
+        # Insert into observation queue (for LLM-based observation extraction)
         queue_row = await conn.fetchrow("""
             INSERT INTO mem_observation_queue
             (
                 session_id, tool_name, tool_input, tool_response_preview,
-                cwd, last_user_message, source_system, source_mode, source_agent, tool_call_id
+                cwd, last_user_message, source_system, source_mode, source_agent
             )
-            VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
         """,
             session_db_id,
             item.tool_name,
-            _to_json_text(item.tool_input),
-            tool_response_preview,
+            tool_input_json,
+            response_preview,
             item.cwd,
             item.last_user_message,
             source_system,
             item.source_mode,
-            source_agent,
-            tool_call_id,
+            item.source_agent,
         )
-        queue_id = queue_row["id"] if queue_row else None
+        queue_id = queue_row["id"]
 
-        # Back-link queue/event ids for easier joins
-        if tool_call_id and queue_id:
-            await conn.execute(
-                "UPDATE mem_tool_calls SET queue_id = $2 WHERE id = $1",
-                tool_call_id,
-                queue_id,
+        # Insert into tool_calls ledger with inferred success/error
+        tool_success, tool_error = _infer_tool_success(response_preview)
+        tc_row = await conn.fetchrow("""
+            INSERT INTO mem_tool_calls
+            (
+                session_id, project_id, queue_id, tool_name, tool_input,
+                tool_response_preview, tool_success, tool_error,
+                prompt_text, cwd, source_system, source_mode, source_agent
             )
-        if event_id and queue_id:
-            await conn.execute(
-                "UPDATE mem_tool_call_events SET queue_id = $2 WHERE id = $1",
-                event_id,
-                queue_id,
-            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            RETURNING id
+        """,
+            session_db_id, project_id, queue_id,
+            item.tool_name, tool_input_json,
+            response_preview, tool_success, tool_error, item.last_user_message,
+            item.cwd, source_system, item.source_mode, item.source_agent,
+        )
 
-    return {"status": "queued", "queue_id": queue_id, "tool_call_id": tool_call_id}
+        # Backlink queue row to tool_call
+        await conn.execute(
+            "UPDATE mem_observation_queue SET tool_call_id = $1 WHERE id = $2",
+            tc_row["id"], queue_id,
+        )
+
+    return {"status": "queued"}
 
 
 # ── Direct observation creation ───────────────────────
@@ -256,9 +223,15 @@ async def list_observations(
         param_idx = 1
 
         if project:
-            clause, param_idx = project_path_filter(param_idx)
-            conditions.append(clause)
-            params.extend([project, project, project])
+            # Support both full paths and short project names
+            if '/' in project:
+                clause, param_idx = project_path_filter(param_idx)
+                conditions.append(clause)
+                params.extend([project, project, project])
+            else:
+                conditions.append(f"p.name = ${param_idx}")
+                params.append(project)
+                param_idx += 1
 
         if type:
             conditions.append(f"o.type = ${param_idx}")

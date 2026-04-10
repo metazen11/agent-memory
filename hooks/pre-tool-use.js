@@ -19,6 +19,18 @@ const path = require('path');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
+function envFlagEnabled(name, defaultValue = true) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'off', 'no'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+const GLOBAL_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_HINTS_ENABLED', true);
+const PRE_TOOL_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED', GLOBAL_HINTS_ENABLED);
+
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:pre-tool-use] ${msg}`);
 }
@@ -128,6 +140,10 @@ function trackTrigger(lessonId) {
 
 const input = readStdin();
 if (!input) {
+  output({});
+}
+if (!PRE_TOOL_HINTS_ENABLED) {
+  debug('Pre-tool lesson hints disabled');
   output({});
 }
 

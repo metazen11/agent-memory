@@ -13,12 +13,14 @@ const {
   LESSONS_FILE,
   formatRecentObservations,
   formatLessons,
+  sessionHintsEnabled,
 } = require('./common');
 
 async function main() {
   const cwd = process.cwd();
   const project = projectNameFromCwd(cwd);
   const sessionId = process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
+  const hintsOn = sessionHintsEnabled();
 
   let online = true;
   let notices = [];
@@ -40,7 +42,7 @@ async function main() {
   let lessons = [];
   try {
     await startSession();
-    ({ recent, lessons } = await refreshSnapshots({ projectPath: cwd, projectName: project }));
+    ({ recent, lessons } = await refreshSnapshots({ projectPath: cwd, projectName: project, includeLessons: hintsOn }));
   } catch (e) {
     if (allowHostRecovery) {
       const recovery = runEnsureServices();
@@ -48,18 +50,22 @@ async function main() {
       if (recovery.stdout) notices.push(recovery.stdout.replace(/\n/g, ' | '));
       try {
         await startSession();
-        ({ recent, lessons } = await refreshSnapshots({ projectPath: cwd, projectName: project }));
+        ({ recent, lessons } = await refreshSnapshots({ projectPath: cwd, projectName: project, includeLessons: hintsOn }));
       } catch {
         online = false;
         notices.push('still offline; using local snapshot/spool mode');
         recent = readJsonFile(RECENT_FILE, { observations: [] }) || { observations: [] };
-        lessons = (readJsonFile(LESSONS_FILE, { lessons: [] }) || { lessons: [] }).lessons || [];
+        if (hintsOn) {
+          lessons = (readJsonFile(LESSONS_FILE, { lessons: [] }) || { lessons: [] }).lessons || [];
+        }
       }
     } else {
       online = false;
       notices.push('agent-memory unavailable; using local snapshot/spool mode');
       recent = readJsonFile(RECENT_FILE, { observations: [] }) || { observations: [] };
-      lessons = (readJsonFile(LESSONS_FILE, { lessons: [] }) || { lessons: [] }).lessons || [];
+      if (hintsOn) {
+        lessons = (readJsonFile(LESSONS_FILE, { lessons: [] }) || { lessons: [] }).lessons || [];
+      }
     }
   }
 
@@ -73,11 +79,15 @@ async function main() {
     '',
     notices.length ? `Status: ${notices.join(' ; ')}` : 'Status: online',
     '',
-    formatLessons(lessons),
+    hintsOn
+      ? formatLessons(lessons)
+      : '## Active Lessons\n\nSession-start hints disabled (`AGENT_MEMORY_SESSION_HINTS_ENABLED=0`).\n',
     formatRecentObservations(recent),
     '## Workflow Notes',
     '',
-    '- Before risky Bash/Edit/Write actions, run `node integrations/codex/pre-tool-trigger.js --tool <Tool> --input <preview>` (falls back to local lesson snapshot offline).',
+    hintsOn
+      ? '- Before risky Bash/Edit/Write actions, run `node integrations/codex/pre-tool-trigger.js --tool <Tool> --input <preview>` (falls back to local lesson snapshot offline).'
+      : '- Session-start hint injection is disabled (`AGENT_MEMORY_SESSION_HINTS_ENABLED=0`).',
     '- After meaningful tool actions, run `node integrations/codex/post-tool-hook.js --tool <Tool> --input <json> --output <preview>` (spools locally if offline).',
     '- End the session with `node integrations/codex/session-end.js` (done automatically by `scripts/codex-agent-memory.sh`).',
     '',

@@ -29,8 +29,18 @@ const REQUIRED = [
 ];
 
 function run(cmd, opts = {}) {
-  const out = execSync(cmd, { encoding: 'utf8', stdio: opts.stdio || 'pipe' });
+  const env = opts.env || process.env;
+  const out = execSync(cmd, { encoding: 'utf8', stdio: opts.stdio || 'pipe', env });
   return typeof out === 'string' ? out.trim() : '';
+}
+
+function codexEnv() {
+  const env = { ...process.env };
+  if (PLATFORM === 'darwin') {
+    delete env.MallocStackLogging;
+    delete env.MallocStackLoggingNoCompact;
+  }
+  return env;
 }
 
 function exists(rel) {
@@ -70,22 +80,23 @@ function ensureExecutableBits() {
 }
 
 function registerMcp() {
+  const env = codexEnv();
   try {
-    run('codex --version');
+    run('codex --version', { env });
   } catch {
     console.error('Codex CLI not found in PATH.');
     process.exit(1);
   }
 
   try {
-    run('codex mcp get agent-memory');
-    run('codex mcp remove agent-memory');
+    run('codex mcp get agent-memory', { env });
+    run('codex mcp remove agent-memory', { env });
   } catch {
     // ignore if not present
   }
 
   const cmd = `codex mcp add agent-memory -- "${PYTHON}" "${MCP_SERVER}"`;
-  run(cmd, { stdio: 'inherit' });
+  run(cmd, { stdio: 'inherit', env });
 }
 
 function runMigrations() {

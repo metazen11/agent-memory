@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WATCHER_PID_FILE="$ROOT_DIR/.agent-memory-codex/host-watch.pid"
 
+# Prevent noisy/invalid macOS malloc debug env from leaking into Codex CLI.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  unset MallocStackLogging
+  unset MallocStackLoggingNoCompact
+fi
+
 cleanup() {
   if [[ -f "$WATCHER_PID_FILE" ]]; then
     WATCHER_PID="$(cat "$WATCHER_PID_FILE" 2>/dev/null || true)"

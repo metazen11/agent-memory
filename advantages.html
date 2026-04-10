@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgentMemory + Anvil: Advantages and Capability Roadmap</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --ink: #1b1f24;
+      --muted: #5a6675;
+      --line: #d9dee6;
+      --accent: #0a7a5a;
+      --accent-2: #1f4e79;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(180deg, #eef3f8 0%, var(--bg) 35%, #f8fafb 100%);
+      line-height: 1.45;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 28px auto;
+      padding: 0 18px 40px;
+    }
+    .hero {
+      background: radial-gradient(circle at top right, #dbeeff 0%, #eff6ff 35%, #ffffff 100%);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 26px;
+      box-shadow: 0 8px 24px rgba(31, 78, 121, 0.08);
+    }
+    h1 { margin: 0 0 8px; font-size: 31px; }
+    .sub { margin: 0; color: var(--muted); font-size: 16px; }
+    .grid {
+      margin-top: 18px;
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      color: var(--accent-2);
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      color: var(--accent);
+    }
+    p { margin: 0 0 10px; }
+    ul { margin: 0; padding-left: 18px; }
+    li { margin: 5px 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 14px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 10px 11px;
+    }
+    th {
+      background: #f1f6fb;
+      color: #173a5e;
+      font-weight: 700;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .pill {
+      display: inline-block;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid #b9d8ca;
+      background: #ecf8f2;
+      color: #14543f;
+      font-size: 12px;
+      margin: 0 6px 6px 0;
+    }
+    .footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>AgentMemory + Anvil: Strategic Advantages</h1>
+      <p class="sub">Executive summary of current capabilities, active work, and what additional compute/VRAM unlocks for coding model quality, parallel agents, and local AI ownership.</p>
+      <p class="sub" style="margin-top:8px;"><strong>Ownership boundary:</strong> This document describes independent R&amp;D work outside WFCA scope. No IP transfer, assignment, or licensing is implied by this summary.</p>
+      <div style="margin-top:12px;">
+        <span class="pill">Local-first AI engineering stack</span>
+        <span class="pill">Cross-session memory + orchestration</span>
+        <span class="pill">Fine-tuning / RL data pipeline</span>
+        <span class="pill">Multi-host integration (Claude/Codex/Gemini)</span>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>What We Have Built</h2>
+        <h3>1) Durable Memory Platform (AgentMemory)</h3>
+        <ul>
+          <li>Persistent memory service for coding agents on PostgreSQL + pgvector with hybrid semantic + full-text search (RRF fusion).</li>
+          <li>Embedding pipeline in production: sentence-transformers embeddings (768-dim) indexed with HNSW for fast retrieval.</li>
+          <li>Captures tool calls, responses, and session context; converts activity into reusable observations and lessons.</li>
+          <li>Exposes both REST API and MCP interfaces for agent interoperability.</li>
+          <li>AgentMemory MCP tools available now: memory_search_guide, search, timeline, get_observations, save_memory, create_lesson, search_lessons, export_training_dataset, training_export_guide.</li>
+          <li>Supports project-scoped and global memory retrieval with path-aware filtering.</li>
+          <li>Training dataset export surfaces: raw tool ledger, SFT, trajectory, and preference datasets with reward/error filtering.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>What We Have Built</h2>
+        <h3>2) Autonomous Runtime + Prompt Pack (Anvil)</h3>
+        <ul>
+          <li>Host-agnostic autonomous pipeline with explicit stages: INIT → PICK → PLAN → DEV → CODE_REVIEW → TEST → REVIEW → PR → REPORT → IMPROVE.</li>
+          <li>Task adapters for local todo backlogs and GitHub issues.</li>
+          <li>Specialist agents (review/security/perf/docs/compliance/etc.) and resumable run state.</li>
+          <li>Tool-calling inventory implemented in runtime: list_files, read_file, read_file_full, write_file, edit_file, insert_after, insert_before, delete_with_anchor, replace_block, glob_search, grep_search, bash_run, fetch_url, plus graph-mode done/search_memory.</li>
+          <li>Tooling layer with workspace sandboxing, secret masking, security deny lists, and controlled file/search/shell/web operations.</li>
+          <li>Local model runtime with backend flexibility: local GGUF, LM Studio, OpenAI, Anthropic, MLX.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>What I’m Working On Now</h2>
+        <ul>
+          <li>Unified dataset export workflow so agents can self-serve training corpora via API and MCP.</li>
+          <li>Training guidance/primer endpoints for LLMs to collect clean SFT and RL datasets safely.</li>
+          <li>Tighter linkage from tool calls → observations → rewards for better trajectory and preference learning.</li>
+          <li>Operational hardening to scale from single-agent execution to coordinated multi-agent runs.</li>
+          <li>Improving quality controls: filtering failures/problematic traces and preserving high-signal examples.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Business Value Today</h2>
+        <ul>
+          <li><strong>Compounding productivity:</strong> memory turns solved tasks into reusable institutional knowledge.</li>
+          <li><strong>Higher engineering consistency:</strong> codified review/test policies improve quality and reduce regressions.</li>
+          <li><strong>Faster onboarding:</strong> new contributors/agents can retrieve project decisions and patterns immediately.</li>
+          <li><strong>Model improvement loop:</strong> production interactions become training assets instead of wasted telemetry.</li>
+          <li><strong>Risk reduction:</strong> local control over data and model behavior reduces external dependency exposure.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Fine-Tuning and RL Capabilities (Already Developed)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Current Capability</th>
+            <th>Why It Matters</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Data extraction</td>
+            <td>API and MCP export for SFT, trajectory, and preference datasets (project-scoped or global)</td>
+            <td>Immediate creation of trainable corpora from real engineering workflows</td>
+          </tr>
+          <tr>
+            <td>Reward shaping</td>
+            <td>Reward heuristics + problematic trace filters + success/error tags</td>
+            <td>Enables RL/RM tuning with cleaner positives and intentional hard negatives</td>
+          </tr>
+          <tr>
+            <td>Observation linkage</td>
+            <td>Tool calls linked to observations and lessons where available</td>
+            <td>Supports trajectory quality and downstream policy learning</td>
+          </tr>
+          <tr>
+            <td>Training workflows</td>
+            <td>Anvil reinforcement-learning docs/scripts for SFT and LoRA-first progression</td>
+            <td>Lower-risk path to custom coding behavior without full-model retraining</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Tool Interfaces (MCP + Tool Calling)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Interface</th>
+            <th>Available Tools</th>
+            <th>Primary Use</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>AgentMemory MCP</td>
+            <td>memory_search_guide, search, timeline, get_observations, save_memory, create_lesson, search_lessons, export_training_dataset, training_export_guide</td>
+            <td>Memory retrieval, lesson governance, and training dataset export</td>
+          </tr>
+          <tr>
+            <td>Anvil Tool Calling Runtime</td>
+            <td>list_files, read_file, read_file_full, write_file, edit_file, insert_after, insert_before, delete_with_anchor, replace_block, glob_search, grep_search, bash_run, fetch_url (+ done/search_memory in graph mode)</td>
+            <td>Deterministic workspace operations for autonomous coding and verification loops</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>IP and Scope Clarification</h2>
+      <ul>
+        <li>This initiative is independent work and currently outside WFCA project scope.</li>
+        <li>Artifacts, code, datasets, and model-tuning workflows described here remain privately owned unless a separate written agreement states otherwise.</li>
+        <li>This brief is informational and does not constitute assignment of IP rights.</li>
+      </ul>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Combined Capability Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>AgentMemory Contribution</th>
+            <th>Anvil Contribution</th>
+            <th>Combined Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Cross-session intelligence</td>
+            <td>Observations, lessons, searchable timeline</td>
+            <td>Pipeline consumes memory in planning/execution</td>
+            <td>Agents improve over time instead of repeating mistakes</td>
+          </tr>
+          <tr>
+            <td>Task execution rigor</td>
+            <td>Captures what worked/failed per project</td>
+            <td>Enforces staged delivery with code review before test</td>
+            <td>Higher delivery reliability and auditable workflow</td>
+          </tr>
+          <tr>
+            <td>Training data generation</td>
+            <td>Tool-call ledger + export endpoints (SFT/trajectory/preference)</td>
+            <td>Produces diverse task/tool trajectories</td>
+            <td>Immediate pipeline for fine-tuning + reward modeling</td>
+          </tr>
+          <tr>
+            <td>Multi-host portability</td>
+            <td>MCP + REST standards</td>
+            <td>Prompt-pack sync across coding hosts</td>
+            <td>Lower switching cost and reduced vendor dependency</td>
+          </tr>
+          <tr>
+            <td>Governance and safety</td>
+            <td>Lessons and pattern tracking</td>
+            <td>Tool sandboxing, deny lists, controlled operations</td>
+            <td>Safer autonomous behavior with traceable controls</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Deterministic Fixes to Heuristic AI Problems</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Heuristic Failure Pattern</th>
+            <th>Deterministic Control Implemented</th>
+            <th>Expected Benefit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Forgetting prior decisions, re-solving old issues</td>
+            <td>Persistent memory + indexed embeddings + timeline retrieval + lessons</td>
+            <td>Lower repetition, faster execution, stronger continuity</td>
+          </tr>
+          <tr>
+            <td>Unreliable tool behavior or unsafe file access</td>
+            <td>Workspace path sandboxing, command deny-listing, controlled tool schemas</td>
+            <td>Reduced destructive actions and policy violations</td>
+          </tr>
+          <tr>
+            <td>Skipping quality gates under pressure</td>
+            <td>Explicit stage policy and enforced CODE_REVIEW-before-TEST ordering</td>
+            <td>Lower defect escape rate and better release discipline</td>
+          </tr>
+          <tr>
+            <td>Non-reproducible behavior across hosts</td>
+            <td>Prompt-pack sync and host-agnostic contracts across Claude/Codex/Gemini</td>
+            <td>Portable behavior and easier governance</td>
+          </tr>
+          <tr>
+            <td>Poor model improvement loop (no usable telemetry)</td>
+            <td>Structured exports (SFT/trajectory/preference), reward/error labels, filtering</td>
+            <td>Repeatable fine-tuning and RL iteration cycle</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>What More Processing/VRAM Unlocks</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Hardware Tier (Practical)</th>
+            <th>Model/Agent Capability</th>
+            <th>What This Enables for Us</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>8–12 GB VRAM</td>
+            <td>Small coding models (7B–8B quantized), mostly single-agent</td>
+            <td>Good for experimentation, light automation, and baseline local privacy workflows</td>
+          </tr>
+          <tr>
+            <td>16–24 GB VRAM</td>
+            <td>Stronger 14B–32B quantized options, 2–4 concurrent agents</td>
+            <td>Meaningfully better code quality, deeper context retention, practical parallel specialist execution</td>
+          </tr>
+          <tr>
+            <td>48 GB VRAM class</td>
+            <td>High-quality coding models with larger effective context, 6–10 agents</td>
+            <td>Reliable multi-agent orchestration, faster end-to-end task throughput, better review/planning depth</td>
+          </tr>
+          <tr>
+            <td>80 GB+ VRAM class</td>
+            <td>Very large models or higher precision operation, larger swarms (10+)</td>
+            <td>Near-enterprise local autonomy: agent swarms, complex repo reasoning, heavier RL/finetune iteration</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">These tiers are operational planning estimates. Real capacity depends on context window, quantization level, sequence length, and concurrency settings.</p>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Real-World Constraint: Shared Workstation Load</h2>
+      <ul>
+        <li>Current development happens alongside heavy desktop apps (IDEs, database tools, meetings, browser stacks), so available unified memory for inference is often much lower than nominal hardware capacity.</li>
+        <li>This reduces practical concurrency for local agents and can force fallback to smaller models during business hours.</li>
+        <li>Operational answer: tiered execution — interactive work on local baseline models, heavy inference/training/evals in scheduled windows or on dedicated compute when available.</li>
+      </ul>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Security Roadmap (HIPAA-Aligned Starting Point)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Control Area</th>
+            <th>Initial Implementation</th>
+            <th>Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Encryption in transit</td>
+            <td>HTTPS reverse proxy (Caddy/Nginx), TLS 1.2+, HSTS, HTTP→HTTPS redirect</td>
+            <td>Encrypted API/model traffic end-to-end</td>
+          </tr>
+          <tr>
+            <td>Access control</td>
+            <td>API key or JWT auth for endpoints; least-privilege service accounts</td>
+            <td>Controlled system access and reduced lateral risk</td>
+          </tr>
+          <tr>
+            <td>Network boundary</td>
+            <td>Private LAN/VPN-only access, no public exposure by default</td>
+            <td>Smaller attack surface</td>
+          </tr>
+          <tr>
+            <td>Sensitive data handling</td>
+            <td>Redaction rules, constrained logging, retention/deletion policy</td>
+            <td>Reduced data leakage and compliance readiness</td>
+          </tr>
+          <tr>
+            <td>Auditability</td>
+            <td>Audit trails for exports/access/admin actions</td>
+            <td>Traceability for governance and investigations</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note">Goal is HIPAA-aligned engineering controls first; formal HIPAA compliance additionally requires administrative/process controls and legal frameworks.</p>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Wi-Fi-First Secure Deployment (No Wired Network Required)</h2>
+      <ul>
+        <li>Start on trusted WPA2/WPA3 network and private addressing only.</li>
+        <li>Use overlay networking (e.g., Tailscale) for authenticated, encrypted device-to-device access.</li>
+        <li>Enforce HTTPS + auth on all service endpoints even inside private network segments.</li>
+        <li>Apply host firewalls/IP allowlists so only authorized devices reach inference and memory services.</li>
+      </ul>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Hardware Investment Path</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th>Pros</th>
+            <th>Tradeoff</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Upgrade primary machine to 128GB unified memory</td>
+            <td>Immediate runway increase; no second system to operate; faster day-to-day local iteration</td>
+            <td>Still shares resources with IDE/meeting workload</td>
+          </tr>
+          <tr>
+            <td>Dedicated inference node (future Mac Studio)</td>
+            <td>Stable high-memory inference capacity; cleaner separation of dev vs inference; better for swarms/parallel specialists</td>
+            <td>Additional hardware + operations overhead</td>
+          </tr>
+          <tr>
+            <td>Practical staged strategy</td>
+            <td>Upgrade primary machine now (optionally via resale), then add dedicated inference node once sustained parallel load justifies it</td>
+            <td>Two-step capital plan, but lower near-term execution risk</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Why Local Development Matters (Strategic Advantages)</h2>
+      <ul>
+        <li><strong>Privacy and compliance:</strong> sensitive source code and telemetry remain under internal control.</li>
+        <li><strong>No hard vendor lock-in:</strong> backends and hosts can be swapped without rewriting the workflow stack.</li>
+        <li><strong>IP ownership:</strong> prompts, memory, datasets, and adapters remain proprietary assets.</li>
+        <li><strong>Lower long-term cost curve:</strong> less dependence on external per-token pricing for core internal workflows.</li>
+        <li><strong>Explainability and control:</strong> we can inspect pipelines, policies, tools, and learned behavior end to end.</li>
+        <li><strong>Faster experimentation:</strong> immediate loop from usage telemetry to training data to tuned model behavior.</li>
+      </ul>
+    </section>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>Recommended Next Investments</h2>
+      <ol style="margin:0; padding-left:20px;">
+        <li>Increase VRAM/compute to support stronger coding models and sustained parallel specialists.</li>
+        <li>Productize continuous export → train → evaluate loop (SFT + preference + trajectory).</li>
+        <li>Add agent-swarm scheduler controls (priority, budget, and failure recovery policies).</li>
+        <li>Expand evaluation harness (task success rate, latency, cost/task, defect escape rate).</li>
+        <li>Institutionalize governance dashboards for memory quality, training quality, and policy adherence.</li>
+      </ol>
+    </section>
+
+    <p class="note" style="margin-top:16px;">
+      * The IP has been developed on personal time by Mauricio Zuniga with AI tools and is currently outside of WFCA scope.
+    </p>
+    <p class="footer">Prepared for leadership review • AgentMemory + Anvil combined roadmap</p>
+  </div>
+</body>
+</html>

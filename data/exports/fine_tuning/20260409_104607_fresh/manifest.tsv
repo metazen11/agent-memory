@@ -1,0 +1,7 @@
+export_dir=data/exports/fine_tuning/20260409_104607_fresh
+export_help.json	bytes=2546	lines=0
+preference_global_pairs.jsonl	bytes=219773	lines=90
+preference_project_pairs.jsonl	bytes=0	lines=0
+sft_global_clean.jsonl	bytes=7029203	lines=4832
+sft_project_clean.jsonl	bytes=432234	lines=229
+trajectory_project_full.jsonl	bytes=445114	lines=229

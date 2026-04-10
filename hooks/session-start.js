@@ -23,6 +23,18 @@ const { execFileSync, spawn } = require('child_process');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
 
+function envFlagEnabled(name, defaultValue = true) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'off', 'no'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+const GLOBAL_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_HINTS_ENABLED', true);
+const SESSION_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_SESSION_HINTS_ENABLED', GLOBAL_HINTS_ENABLED);
+
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:session-start] ${msg}`);
 }
@@ -424,7 +436,9 @@ debug(`project=${project} cwd=${cwd}`);
   if (!healthy) {
     debug('Services still not healthy after retries');
     output({
-      systemMessage: `${MCP_HINT}${projectCtx}\n\n⚠ agent-memory services are not running. Run \`node install.js --start\` to start them.`,
+      systemMessage: SESSION_HINTS_ENABLED
+        ? `${MCP_HINT}${projectCtx}\n\n⚠ agent-memory services are not running. Run \`node install.js --start\` to start them.`
+        : '⚠ agent-memory services are not running. Run `node install.js --start` to start them.',
     });
     return;
   }
@@ -452,8 +466,8 @@ debug(`project=${project} cwd=${cwd}`);
   const [observations, projectContext, projectLessons, globalLessons] = await Promise.all([
     fetchObservations(project),
     searchProjectContext(project, projectName),
-    fetchLessons(project, 'critical', 10),
-    fetchLessons(null, 'critical', 5),
+    SESSION_HINTS_ENABLED ? fetchLessons(project, 'critical', 10) : Promise.resolve([]),
+    SESSION_HINTS_ENABLED ? fetchLessons(null, 'critical', 5) : Promise.resolve([]),
   ]);
 
   // Build startup notice block (if services had to be started)
@@ -490,7 +504,11 @@ debug(`project=${project} cwd=${cwd}`);
 
   if (!hasObservations && !hasContext && allLessons.length === 0) {
     debug('No recent observations, context, or lessons — injecting MCP hint only');
-    output({ systemMessage: `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}` });
+    output({
+      systemMessage: SESSION_HINTS_ENABLED
+        ? `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}`
+        : `${noticeBlock}agent-memory is online. Session-start hint injection is disabled (\`AGENT_MEMORY_SESSION_HINTS_ENABLED=0\`).`,
+    });
     return;
   }
 
@@ -530,7 +548,9 @@ debug(`project=${project} cwd=${cwd}`);
     }
   }
 
-  const msg = `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${knowledgeCtx}${recentCtx}`;
-  debug(`Injecting hint + ${allLessons.length} lessons + ${hasContext ? projectContext.length : 0} knowledge + ${hasObservations ? observations.length : 0} recent`);
+  const msg = SESSION_HINTS_ENABLED
+    ? `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${knowledgeCtx}${recentCtx}`
+    : `${noticeBlock}agent-memory is online. Session-start hint injection is disabled (\`AGENT_MEMORY_SESSION_HINTS_ENABLED=0\`).`;
+  debug(`Injecting hint=${SESSION_HINTS_ENABLED} + ${allLessons.length} lessons + ${hasContext ? projectContext.length : 0} knowledge + ${hasObservations ? observations.length : 0} recent`);
   output({ systemMessage: msg });
 })();

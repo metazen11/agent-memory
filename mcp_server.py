@@ -25,6 +25,8 @@ load_dotenv(os.path.join(_script_dir, ".env"))
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+from app.dataset_exports import fetch_tool_call_rows, build_dataset_records
+from app.training_export_guide import build_training_export_guide
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -211,6 +213,38 @@ async def list_tools():
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="export_training_dataset",
+            description=(
+                "Export training datasets from tool-call memory for fine-tuning and reward modeling. "
+                "Supports dataset_type=sft|trajectory|preference with project/global scope and reward/error filters."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dataset_type": {"type": "string", "enum": ["sft", "trajectory", "preference"], "default": "sft"},
+                    "project": {"type": "string", "description": "Project path/name scope. Omit for global export."},
+                    "include_errors": {"type": "boolean", "default": False},
+                    "include_observations": {"type": "boolean", "default": True},
+                    "min_reward": {"type": "number"},
+                    "max_reward": {"type": "number"},
+                    "limit": {"type": "integer", "default": 2000},
+                    "offset": {"type": "integer", "default": 0},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="training_export_guide",
+            description=(
+                "Primer/help for agents on collecting clean datasets for fine-tuning and reinforcement learning "
+                "from agent-memory via API and MCP."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -238,6 +272,10 @@ async def call_tool(name: str, arguments: dict):
             return await _create_lesson(pool, arguments)
         elif name == "search_lessons":
             return await _search_lessons(pool, arguments)
+        elif name == "export_training_dataset":
+            return await _export_training_dataset(pool, arguments)
+        elif name == "training_export_guide":
+            return await _training_export_guide()
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
         logger.error(f"Tool {name} failed: {e}")
@@ -687,6 +725,48 @@ async def _search_lessons(pool, args):
             })
 
         return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
+
+async def _export_training_dataset(pool, args):
+    dataset_type = args.get("dataset_type", "sft")
+    project = args.get("project")
+    include_errors = bool(args.get("include_errors", False))
+    include_observations = bool(args.get("include_observations", True))
+    min_reward = args.get("min_reward")
+    max_reward = args.get("max_reward")
+    limit = min(int(args.get("limit", 2000)), 10000)
+    offset = max(int(args.get("offset", 0)), 0)
+
+    async with pool.acquire() as conn:
+        rows = await fetch_tool_call_rows(
+            conn,
+            project=project,
+            limit=limit,
+            offset=offset,
+        )
+        items = build_dataset_records(
+            rows,
+            dataset_type=dataset_type,
+            include_errors=include_errors,
+            include_observations=include_observations,
+            min_reward=min_reward,
+            max_reward=max_reward,
+        )
+
+    payload = {
+        "dataset_type": dataset_type,
+        "count": len(items),
+        "project": project,
+        "include_errors": include_errors,
+        "include_observations": include_observations,
+        "items": items,
+    }
+    return [TextContent(type="text", text=json.dumps(payload, indent=2) + VISIBILITY_REMINDER)]
+
+
+async def _training_export_guide():
+    payload = build_training_export_guide()
+    return [TextContent(type="text", text=json.dumps(payload, indent=2) + VISIBILITY_REMINDER)]
 
 
 # ── Main ──────────────────────────────────────────────────────

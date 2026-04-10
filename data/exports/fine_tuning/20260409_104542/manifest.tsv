@@ -1,0 +1,7 @@
+export_dir=data/exports/fine_tuning/20260409_104542
+export_help.json	0
+preference_global_pairs.jsonl	0
+preference_project_pairs.jsonl	0
+sft_global_clean.jsonl	0
+sft_project_clean.jsonl	0
+trajectory_project_full.jsonl	0

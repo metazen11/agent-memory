@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { requestJson, compileLessonMatchesFromSnapshot } = require('./common');
+const { requestJson, compileLessonMatchesFromSnapshot, preToolHintsEnabled } = require('./common');
 const http = require('http');
 
 function parseArgs(argv) {
@@ -35,6 +35,10 @@ async function main() {
   if (!tool) {
     console.error('Usage: node integrations/codex/pre-tool-trigger.js --tool <ToolName> --input <preview>');
     process.exit(2);
+  }
+  if (!preToolHintsEnabled()) {
+    console.log('Pre-tool lesson hints disabled (AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED=0).');
+    return;
   }
 
   let matches = [];

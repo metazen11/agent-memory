@@ -8,6 +8,8 @@ Install or refresh the Codex integration:
 
 ```bash
 ./scripts/install-agent-memory-codex.sh
+# or cross-platform:
+node scripts/install-agent-memory-codex.js
 ```
 
 Use MCP server `agent-memory` for:
@@ -15,6 +17,13 @@ Use MCP server `agent-memory` for:
 - `timeline`
 - `get_observations`
 - `save_memory`
+
+For API-side tool lookup/export (outside MCP), use:
+- `GET /api/tool-calls` (lookup)
+- `GET /api/tool-calls/stats`
+- `GET /api/tool-calls/export?format=jsonl|csv`
+- `GET /api/tool-calls/export/dataset` (training-ready datasets)
+- `GET /api/tool-calls/export/help` (agent primer)
 
 ## Session Start
 
@@ -28,6 +37,29 @@ The wrapper also starts a host-side watcher (outside Codex sandbox) that:
 
 At the beginning of the session, read `.agent-memory-codex/session-context.md` and briefly acknowledge relevant recent memory before continuing.
 
+Toggle prompt hints on/off:
+
+```bash
+export AGENT_MEMORY_HINTS_ENABLED=0   # disable lesson/prompt hint injection
+export AGENT_MEMORY_HINTS_ENABLED=1   # re-enable
+```
+
+Split toggles:
+
+```bash
+export AGENT_MEMORY_SESSION_HINTS_ENABLED=1   # keep session-start hints on
+export AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED=0  # disable pre-tool warnings
+```
+
+Local TUI-style controller (writes `.env`):
+
+```bash
+node scripts/hints-config.js status
+node scripts/hints-config.js set session on
+node scripts/hints-config.js set pretool off
+node scripts/hints-config.js tui
+```
+
 ## Trigger Checks (Lesson Warnings)
 
 Before risky `Bash`, `Edit`, or `Write` operations, run:
@@ -38,6 +70,7 @@ node integrations/codex/pre-tool-trigger.js --tool Bash --input "npm run migrate
 
 If the API is unavailable, this falls back to `.agent-memory-codex/lessons.snapshot.json`.
 If lessons are returned, follow them before proceeding.
+If hints are disabled (`AGENT_MEMORY_HINTS_ENABLED=0`), this command exits with a disabled notice.
 
 ## Post-Tool Capture Hook (Manual)
 
