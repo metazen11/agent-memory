@@ -18,7 +18,6 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 models/*
-!models/.gitkeep
 fine-tune/outputs/
 fine-tune/generated/
 plans/
