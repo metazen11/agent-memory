@@ -37,6 +37,77 @@ VISIBILITY_REMINDER = (
     "Do NOT silently consume them. Format as a visible 'Memory recall:' block."
 )
 
+
+def _failure_hint(message: str) -> str:
+    """Return a short, actionable hint for failure-like tool output."""
+    msg = (message or "").lower()
+    if "exit code -1" in msg:
+        return "Tool exited with code -1. Retry once and verify the command path, permissions, and runtime dependencies."
+    if "timeout" in msg or "timed out" in msg:
+        return "Operation timed out. Retry with a narrower query or increase the timeout/retry budget."
+    if "failed" in msg or "error" in msg:
+        return "Tool reported a failure. Check tool input arguments and service health, then retry."
+    return "Tool output indicates a problem. Validate inputs and retry."
+
+
+def _json_error_payload(message: str, code: str = "TOOL_ERROR") -> str:
+    """Standard MCP JSON error payload with an LLM-readable hint."""
+    return json.dumps(
+        {
+            "ok": False,
+            "error": message,
+            "code": code,
+            "hint": _failure_hint(message),
+        }
+    )
+
+
+def _contains_failure_signal(message: str) -> bool:
+    msg = (message or "").lower()
+    signals = (
+        "error",
+        "failed",
+        "exception",
+        "traceback",
+        "timeout",
+        "timed out",
+        "exit code -1",
+    )
+    return any(s in msg for s in signals)
+
+
+def _annotate_success_content_with_hint(contents: list[TextContent]) -> list[TextContent]:
+    """If successful output text contains error-like signals, append a warning hint JSON."""
+    out = []
+    for item in contents:
+        if not isinstance(item, TextContent):
+            out.append(item)
+            continue
+        text = item.text or ""
+        # If this is already a structured error payload, don't double-annotate.
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and parsed.get("ok") is False and "hint" in parsed:
+                out.append(item)
+                continue
+        except Exception:
+            pass
+
+        if _contains_failure_signal(text):
+            warning = json.dumps(
+                {
+                    "ok": True,
+                    "warning": {
+                        "code": "OUTPUT_CONTAINS_ERROR_SIGNAL",
+                        "hint": _failure_hint(text),
+                    },
+                }
+            )
+            out.append(TextContent(type="text", text=f"{text}\n\n{warning}"))
+        else:
+            out.append(item)
+    return out
+
 # ── Config (from env or defaults) ─────────────────────────────
 
 
@@ -58,6 +129,10 @@ DATABASE_URL = _build_database_url()
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL",
     os.environ.get("AGENT_MEMORY_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5"),
+)
+MCP_EMBED_TIMEOUT_SECONDS = max(
+    0.1,
+    float(os.environ.get("AGENT_MEMORY_MCP_EMBED_TIMEOUT_SECONDS", "2.5")),
 )
 
 # ── DB pool (lazy) ────────────────────────────────────────────
@@ -90,6 +165,25 @@ def _get_model():
 def embed_sync(text: str) -> list[float]:
     model = _get_model()
     return model.encode(text, normalize_embeddings=True).tolist()
+
+
+async def try_embed(text: str) -> list[float] | None:
+    """Best-effort embedding with timeout to avoid MCP tool stalls/timeouts."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, embed_sync, text),
+            timeout=MCP_EMBED_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Embedding timed out after %.1fs; continuing without vector search",
+            MCP_EMBED_TIMEOUT_SECONDS,
+        )
+        return None
+    except Exception as e:
+        logger.warning("Embedding failed; continuing without vector search: %s", e)
+        return None
 
 
 # ── MCP Server ────────────────────────────────────────────────
@@ -261,25 +355,33 @@ async def call_tool(name: str, arguments: dict):
             ))]
         pool = await get_pool()
         if name == "search":
-            return await _search(pool, arguments)
+            result = await _search(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "get_observations":
-            return await _get_observations(pool, arguments)
+            result = await _get_observations(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "timeline":
-            return await _timeline(pool, arguments)
+            result = await _timeline(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "save_memory":
-            return await _save_memory(pool, arguments)
+            result = await _save_memory(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "create_lesson":
-            return await _create_lesson(pool, arguments)
+            result = await _create_lesson(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "search_lessons":
-            return await _search_lessons(pool, arguments)
+            result = await _search_lessons(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "export_training_dataset":
-            return await _export_training_dataset(pool, arguments)
+            result = await _export_training_dataset(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         elif name == "training_export_guide":
-            return await _training_export_guide()
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            result = await _training_export_guide()
+            return _annotate_success_content_with_hint(result)
+        return [TextContent(type="text", text=_json_error_payload(f"Unknown tool: {name}", code="UNKNOWN_TOOL"))]
     except Exception as e:
         logger.error(f"Tool {name} failed: {e}")
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+        return [TextContent(type="text", text=_json_error_payload(str(e), code="TOOL_EXCEPTION"))]
 
 
 async def _search(pool, args):
@@ -290,10 +392,8 @@ async def _search(pool, args):
     date_start = args.get("dateStart")
     date_end = args.get("dateEnd")
 
-    # Embed query
-    loop = asyncio.get_event_loop()
-    embedding = await loop.run_in_executor(None, embed_sync, query)
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    embedding = await try_embed(query)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]" if embedding else None
 
     async with pool.acquire() as conn:
         # Build shared filter clauses (applied to both queries)
@@ -330,20 +430,22 @@ async def _search(pool, args):
                     pidx += 1
             return parts, params, pidx
 
-        # --- Vector search ---
-        vec_params = [emb_str, limit * 2]  # $1=embedding, $2=limit
-        vec_where_parts, vec_params, _ = _apply_shared_filters(vec_params, 3)
-        vec_where = ("AND " + " AND ".join(vec_where_parts)) if vec_where_parts else ""
+        # --- Vector search (best effort; skipped if embeddings unavailable/slow) ---
+        vec_rows = []
+        if emb_str:
+            vec_params = [emb_str, limit * 2]  # $1=embedding, $2=limit
+            vec_where_parts, vec_params, _ = _apply_shared_filters(vec_params, 3)
+            vec_where = ("AND " + " AND ".join(vec_where_parts)) if vec_where_parts else ""
 
-        vec_rows = await conn.fetch(f"""
-            SELECT o.id, o.title, o.type, o.created_at, p.name as project_name,
-                   1 - (o.embedding <=> $1::vector) as vec_score
-            FROM mem_observations o
-            JOIN mem_projects p ON p.id = o.project_id
-            WHERE o.embedding IS NOT NULL {vec_where}
-            ORDER BY o.embedding <=> $1::vector
-            LIMIT $2
-        """, *vec_params)
+            vec_rows = await conn.fetch(f"""
+                SELECT o.id, o.title, o.type, o.created_at, p.name as project_name,
+                       1 - (o.embedding <=> $1::vector) as vec_score
+                FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE o.embedding IS NOT NULL {vec_where}
+                ORDER BY o.embedding <=> $1::vector
+                LIMIT $2
+            """, *vec_params)
 
         # --- Full-text search ---
         fts_params = [query, limit * 2]  # $1=query, $2=limit
@@ -481,28 +583,38 @@ async def _timeline(pool, args):
     async with pool.acquire() as conn:
         # If query provided instead of anchor ID, find best match
         if not anchor_id and query:
-            loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(None, embed_sync, query)
-            emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
-            best = await conn.fetchrow("""
-                SELECT id FROM mem_observations
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> $1::vector
-                LIMIT 1
-            """, emb_str)
+            best = None
+            embedding = await try_embed(query)
+            if embedding:
+                emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+                best = await conn.fetchrow("""
+                    SELECT id FROM mem_observations
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> $1::vector
+                    LIMIT 1
+                """, emb_str)
+            if not best:
+                best = await conn.fetchrow("""
+                    SELECT id
+                    FROM mem_observations
+                    WHERE tsv @@ plainto_tsquery('english', $1)
+                       OR raw_text ILIKE '%' || $1 || '%'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """, query)
             if best:
                 anchor_id = best["id"]
             else:
-                return [TextContent(type="text", text="No observations found matching query")]
+                return [TextContent(type="text", text=_json_error_payload("No observations found matching query", code="NOT_FOUND"))]
         elif not anchor_id:
-            return [TextContent(type="text", text="Provide either anchor (ID) or query")]
+            return [TextContent(type="text", text=_json_error_payload("Provide either anchor (ID) or query", code="INVALID_ARGUMENT"))]
 
         anchor = await conn.fetchrow(
             "SELECT session_id, created_at FROM mem_observations WHERE id = $1",
             anchor_id,
         )
         if not anchor:
-            return [TextContent(type="text", text=f"Observation {anchor_id} not found")]
+            return [TextContent(type="text", text=_json_error_payload(f"Observation {anchor_id} not found", code="NOT_FOUND"))]
 
         rows = await conn.fetch("""
             (SELECT id, title, type, created_at, 'before' as position
@@ -536,10 +648,8 @@ async def _save_memory(pool, args):
     title = args.get("title", text[:80])
     project_name = args.get("project", "manual")
 
-    # Embed
-    loop = asyncio.get_event_loop()
-    embedding = await loop.run_in_executor(None, embed_sync, text)
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    embedding = await try_embed(text)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]" if embedding else None
 
     async with pool.acquire() as conn:
         # Get or create project by full_path
@@ -590,10 +700,8 @@ async def _create_lesson(pool, args):
 
     raw_text = f"{title}\n{rule}"
 
-    # Embed
-    loop = asyncio.get_event_loop()
-    embedding = await loop.run_in_executor(None, embed_sync, raw_text)
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    embedding = await try_embed(raw_text)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]" if embedding else None
 
     async with pool.acquire() as conn:
         # Get or create project by full_path
@@ -636,10 +744,8 @@ async def _search_lessons(pool, args):
     project = args.get("project")
     limit = min(args.get("limit", 10), 50)
 
-    # Embed query
-    loop = asyncio.get_event_loop()
-    embedding = await loop.run_in_executor(None, embed_sync, query)
-    emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
+    embedding = await try_embed(query)
+    emb_str = "[" + ",".join(str(v) for v in embedding) + "]" if embedding else None
 
     async with pool.acquire() as conn:
         # Build path filter helper for lessons
@@ -654,26 +760,28 @@ async def _search_lessons(pool, args):
             params.extend([project_val, project_val, project_val])
             return clause, params, pidx + 3
 
-        # --- Vector search ---
-        vec_params = [emb_str, limit * 2]
-        vec_pidx = 3
-        vec_where_parts = ["l.active = true"]
-        if project:
-            clause, vec_params, vec_pidx = _lesson_path_filter(vec_params, vec_pidx, project)
-            vec_where_parts.append(clause)
-        vec_where = " AND ".join(vec_where_parts)
+        # --- Vector search (best effort; skipped if embeddings unavailable/slow) ---
+        vec_rows = []
+        if emb_str:
+            vec_params = [emb_str, limit * 2]
+            vec_pidx = 3
+            vec_where_parts = ["l.active = true"]
+            if project:
+                clause, vec_params, vec_pidx = _lesson_path_filter(vec_params, vec_pidx, project)
+                vec_where_parts.append(clause)
+            vec_where = " AND ".join(vec_where_parts)
 
-        vec_rows = await conn.fetch(f"""
-            SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
-                   l.trigger_pattern, l.trigger_count, l.created_at,
-                   p.name as project_name,
-                   1 - (l.embedding <=> $1::vector) as vec_score
-            FROM mem_lessons l
-            LEFT JOIN mem_projects p ON p.id = l.project_id
-            WHERE l.embedding IS NOT NULL AND {vec_where}
-            ORDER BY l.embedding <=> $1::vector
-            LIMIT $2
-        """, *vec_params)
+            vec_rows = await conn.fetch(f"""
+                SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
+                       l.trigger_pattern, l.trigger_count, l.created_at,
+                       p.name as project_name,
+                       1 - (l.embedding <=> $1::vector) as vec_score
+                FROM mem_lessons l
+                LEFT JOIN mem_projects p ON p.id = l.project_id
+                WHERE l.embedding IS NOT NULL AND {vec_where}
+                ORDER BY l.embedding <=> $1::vector
+                LIMIT $2
+            """, *vec_params)
 
         # --- Full-text search ---
         fts_params = [query, limit * 2]

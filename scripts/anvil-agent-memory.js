@@ -1,38 +1,35 @@
 #!/usr/bin/env node
-const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+  parseEnvFile,
+  maybeHandleToolHintsSlashCommand,
+} = require('../integrations/anvil/middleware');
 
 const ROOT = path.resolve(__dirname, '..');
 const ENV_FILE = path.join(ROOT, '.env');
 const ANVIL_ENV_FILE = path.join(ROOT, '.anvil', 'agent-memory.env');
 
-function parseEnvFile(file) {
-  const out = {};
-  if (!fs.existsSync(file)) return out;
-  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const idx = t.indexOf('=');
-    if (idx <= 0) continue;
-    const key = t.slice(0, idx).trim();
-    let value = t.slice(idx + 1).trim();
-    value = value.replace(/^['"]|['"]$/g, '');
-    out[key] = value;
-  }
-  return out;
-}
-
 function usage() {
   console.log('Usage:');
   console.log('  node scripts/anvil-agent-memory.js <anvil-command> [args...]');
+  console.log('  node scripts/anvil-agent-memory.js /tool-hints <status|on|off|toggle>');
+  console.log('  node scripts/anvil-agent-memory.js /tool-hints debug <status|on|off|toggle>');
   console.log('Example:');
   console.log('  node scripts/anvil-agent-memory.js anvil');
+  console.log('  node scripts/anvil-agent-memory.js /tool-hints toggle');
 }
 
 function main() {
   const argv = process.argv.slice(2);
+  if (maybeHandleToolHintsSlashCommand({
+    argv,
+    rootDir: ROOT,
+    envFile: ENV_FILE,
+    anvilEnvFile: ANVIL_ENV_FILE,
+  })) {
+    return;
+  }
   if (argv.length < 1) {
     usage();
     process.exit(2);

@@ -9,13 +9,14 @@
 //    node install.js --status     # Show what's installed and running
 //    node install.js --start      # Start services (Docker + FastAPI)
 //    node install.js --stop       # Stop services
+//    node install.js --verify-llm # Validate local GGUF runtime
 //
 // ─────────────────────────────────────────────────────────────
 
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, spawnSync } = require('child_process');
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -124,6 +125,21 @@ function run(cmd, opts = {}) {
     if (opts.ignoreError) return '';
     throw e;
   }
+}
+
+function runPythonCode(code, opts = {}) {
+  const env = { ...process.env, ...(opts.env || {}) };
+  const res = spawnSync(PYTHON, ['-c', code], {
+    encoding: 'utf8',
+    timeout: opts.timeout || 30000,
+    env,
+  });
+  if (res.status !== 0) {
+    if (opts.ignoreError) return '';
+    const detail = `${(res.stdout || '').trim()}\n${(res.stderr || '').trim()}`.trim();
+    throw new Error(detail || `python exited with code ${res.status}`);
+  }
+  return (res.stdout || '').trim();
 }
 
 function ensureDir(dir) {
@@ -432,6 +448,15 @@ function downloadGGUFModel() {
       // Write path into .env
       updateEnvVar('OBSERVATION_LLM_MODEL', modelPath);
       ok('Configured OBSERVATION_LLM_MODEL in .env');
+      info('Validating GGUF runtime (load + minimal inference)...');
+      const verify = verifyObservationLLMRuntime(modelPath, 180000);
+      if (verify.ok) {
+        ok(`Local GGUF verified (${verify.details})`);
+      } else {
+        fail('GGUF file downloaded but runtime validation failed');
+        info((verify.error || '').split('\n').slice(-4).join('\n'));
+        printGgufGuidance();
+      }
     }
   } catch (e) {
     skip('Local LLM download failed — will fall back to Anthropic Haiku API');
@@ -518,6 +543,50 @@ function updateEnvVar(key, value) {
     content += `\n${key}=${value}\n`;
   }
   fs.writeFileSync(ENV_FILE, content, 'utf8');
+}
+
+function verifyObservationLLMRuntime(modelPath, timeout = 120000) {
+  if (!modelPath) return { ok: false, reason: 'missing_path' };
+  if (!fs.existsSync(modelPath)) return { ok: false, reason: 'missing_file' };
+  const code = `
+import os
+from llama_cpp import Llama
+p = os.environ["OBSERVATION_LLM_MODEL"]
+last_err = None
+for layers in (-1, 0):
+    try:
+        llm = Llama(
+            model_path=p,
+            n_ctx=512,
+            n_threads=4,
+            n_gpu_layers=layers,
+            verbose=False,
+        )
+        out = llm("ping", max_tokens=6, temperature=0)
+        txt = ((out.get("choices") or [{}])[0].get("text") or "").strip()
+        print(f"ok:n_gpu_layers={layers}:sample={txt[:40]}")
+        raise SystemExit(0)
+    except Exception as e:
+        last_err = e
+raise RuntimeError(f"failed to load/infer GGUF with n_gpu_layers -1 and 0: {last_err}")
+`.trim();
+  try {
+    const out = runPythonCode(code, {
+      timeout,
+      env: { OBSERVATION_LLM_MODEL: modelPath },
+    });
+    return { ok: true, details: out };
+  } catch (e) {
+    return { ok: false, reason: 'runtime_error', error: e.message || String(e) };
+  }
+}
+
+function printGgufGuidance() {
+  info('Local GGUF troubleshooting:');
+  info('  1) Reinstall deps: ".venv/bin/pip install -r requirements.txt"');
+  info('  2) Verify .env path: OBSERVATION_LLM_MODEL=/absolute/path/to/*.gguf');
+  info('  3) Run: node install.js --verify-llm');
+  info('  4) If local GGUF still fails, set ANTHROPIC_API_KEY for cloud fallback');
 }
 
 function isNativePostgresInstalled() {
@@ -912,6 +981,24 @@ function status() {
   if (fs.existsSync(ENV_FILE)) ok('.env exists');
   else fail('.env missing');
 
+  head('Observation LLM');
+  const modelPath = readEnvVar('OBSERVATION_LLM_MODEL');
+  const anthropicKey = readEnvVar('ANTHROPIC_API_KEY');
+  if (!modelPath) {
+    if (anthropicKey) skip('Local GGUF disabled (Anthropic fallback configured)');
+    else fail('No local GGUF and no ANTHROPIC_API_KEY — observation extraction will not run');
+  } else if (!fs.existsSync(modelPath)) {
+    fail(`OBSERVATION_LLM_MODEL path missing: ${modelPath}`);
+  } else {
+    const verify = verifyObservationLLMRuntime(modelPath, 120000);
+    if (verify.ok) ok(`GGUF ready (${verify.details})`);
+    else {
+      fail('GGUF configured but not runnable');
+      info((verify.error || '').split('\n').slice(-3).join('\n'));
+      printGgufGuidance();
+    }
+  }
+
   head('Agents');
   for (const [name, agent] of Object.entries(AGENTS)) {
     if (!agent.detect()) {
@@ -1031,6 +1118,7 @@ async function install() {
   info('  node install.js --status     Show what\'s running');
   info('  node install.js --start      Start Docker + FastAPI');
   info('  node install.js --stop       Stop everything');
+  info('  node install.js --verify-llm Validate local GGUF load + inference');
   info('  node install.js --uninstall  Remove hooks, MCP, skills');
   console.log('');
 }
@@ -1092,6 +1180,33 @@ function backupOnly() {
   console.log('');
 }
 
+function verifyLlmOnly() {
+  console.log('');
+  console.log('\x1b[1magent-memory — verify observation LLM\x1b[0m');
+  console.log('─'.repeat(50));
+  const modelPath = readEnvVar('OBSERVATION_LLM_MODEL');
+  if (!modelPath) {
+    fail('OBSERVATION_LLM_MODEL is empty in .env');
+    printGgufGuidance();
+    process.exit(1);
+  }
+  if (!fs.existsSync(modelPath)) {
+    fail(`GGUF file not found: ${modelPath}`);
+    printGgufGuidance();
+    process.exit(1);
+  }
+  info(`Model path: ${modelPath}`);
+  const verify = verifyObservationLLMRuntime(modelPath, 180000);
+  if (!verify.ok) {
+    fail('GGUF runtime verification failed');
+    info((verify.error || '').split('\n').slice(-5).join('\n'));
+    printGgufGuidance();
+    process.exit(1);
+  }
+  ok(`GGUF runtime verification passed (${verify.details})`);
+  console.log('');
+}
+
 // ── CLI ──────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
@@ -1108,6 +1223,8 @@ if (args.includes('--uninstall') || args.includes('-u')) {
   migrateOnly();
 } else if (args.includes('--backup')) {
   backupOnly();
+} else if (args.includes('--verify-llm')) {
+  verifyLlmOnly();
 } else if (args.includes('--help') || args.includes('-h')) {
   console.log(`
 agent-memory installer
@@ -1122,6 +1239,7 @@ Usage:
   node install.js --migrate --dry-run  Show what migrations would run (no changes)
   node install.js --migrate --backup   Backup tables before migrating
   node install.js --backup     Backup mem_* tables (no migration)
+  node install.js --verify-llm Validate local GGUF load + minimal inference
   node install.js --help       Show this help
 `);
 } else {

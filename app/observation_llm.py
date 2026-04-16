@@ -63,14 +63,31 @@ def _get_llm():
         gc.collect()
     if _llm is None:
         from llama_cpp import Llama
-        logger.info(f"Loading observation LLM: {settings.observation_llm_model}")
-        _llm = Llama(
-            model_path=settings.observation_llm_model,
-            n_ctx=4096,
-            n_threads=4,
-            n_gpu_layers=-1,  # offload all layers to Metal GPU
-            verbose=False,
-        )
+        model_path = settings.observation_llm_model
+        if not model_path:
+            raise RuntimeError("OBSERVATION_LLM_MODEL is empty")
+        logger.info(f"Loading observation LLM: {model_path}")
+        # Try GPU offload first (best throughput), then fall back to CPU-only.
+        try:
+            _llm = Llama(
+                model_path=model_path,
+                n_ctx=4096,
+                n_threads=4,
+                n_gpu_layers=-1,
+                verbose=False,
+            )
+        except Exception as gpu_err:
+            logger.warning(
+                "Failed to load local GGUF with GPU offload; retrying CPU-only. error=%s",
+                gpu_err,
+            )
+            _llm = Llama(
+                model_path=model_path,
+                n_ctx=4096,
+                n_threads=4,
+                n_gpu_layers=0,
+                verbose=False,
+            )
         logger.info("Observation LLM loaded")
     return _llm
 

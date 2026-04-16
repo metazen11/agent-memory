@@ -83,6 +83,8 @@ function printSummary() {
   console.log('Usage:');
   console.log('  ./scripts/install-agent-memory-anvil.sh');
   console.log('  ./scripts/anvil-agent-memory.sh <anvil-command> [args...]');
+  console.log('  ./scripts/anvil-agent-memory.sh /tool-hints <status|on|off|toggle>');
+  console.log('  ./scripts/anvil-agent-memory.sh /tool-hints debug <status|on|off|toggle>');
   console.log('  node scripts/hints-config.js set session on');
   console.log('  node scripts/hints-config.js set pretool off');
 }

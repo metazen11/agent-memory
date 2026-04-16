@@ -35,9 +35,17 @@ node install.js --migrate    # Run pending database migrations
 node install.js --migrate --dry-run  # Preview migrations (no changes)
 node install.js --migrate --backup   # Backup tables, then migrate
 node install.js --backup     # Backup mem_* tables only
+node install.js --verify-llm # Validate local GGUF load + minimal inference
 node install.js --uninstall  # Remove hooks, MCP, skills
 node scripts/hints-config.js status   # Show hint flag status
 node scripts/hints-config.js tui      # Interactive hint flag toggle
+```
+
+If local observation extraction is not working, run this end-to-end check:
+
+```bash
+node install.js --verify-llm
+node install.js --status
 ```
 
 ### Interface Install Packs

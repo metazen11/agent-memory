@@ -54,3 +54,71 @@ scripts\\anvil-agent-memory.cmd anvil
 # cross-platform:
 node scripts/anvil-agent-memory.js anvil
 ```
+
+## One Middleware Integration
+
+Use `integrations/anvil/middleware.js` as the single source for hint flags and slash-toggle handling in Anvil.
+
+```js
+const path = require('path');
+const {
+  appendSystemInjection,
+  logTransparencyMessage,
+  resolveHintFlags,
+  maybeHandleToolHintsSlashCommand,
+} = require('/absolute/path/to/agent-memory/integrations/anvil/middleware');
+
+const ROOT = '/absolute/path/to/agent-memory';
+const ENV_FILE = path.join(ROOT, '.env');
+const ANVIL_ENV_FILE = path.join(ROOT, '.anvil', 'agent-memory.env');
+
+function middleware(ctx, next) {
+  if (maybeHandleToolHintsSlashCommand({
+    argv: String(ctx.userText || '').trim().split(/\s+/), // e.g. "/tool-hints off"
+    rootDir: ROOT,
+    envFile: ENV_FILE,
+    anvilEnvFile: ANVIL_ENV_FILE,
+  })) {
+    return { handled: true };
+  }
+
+  const hints = resolveHintFlags({ envFile: ENV_FILE, anvilEnvFile: ANVIL_ENV_FILE });
+  if (hints.session) {
+    ctx.systemPrompt = appendSystemInjection({
+      systemPrompt: ctx.systemPrompt,
+      injection: '# Tool Hints\nUse agent-memory lessons and recent memory before tool calls.',
+      reason: 'session-hints',
+      envFile: ENV_FILE,
+      anvilEnvFile: ANVIL_ENV_FILE,
+    });
+  }
+  if (hints.pretool) {
+    // Run your pre-tool warning checks here.
+  }
+  logTransparencyMessage({
+    direction: 'inbound',
+    role: 'user',
+    text: ctx.userText,
+    meta: { stage: 'middleware' },
+    envFile: ENV_FILE,
+    anvilEnvFile: ANVIL_ENV_FILE,
+  });
+  return next();
+}
+```
+
+Slash command support:
+
+```bash
+./scripts/anvil-agent-memory.sh /tool-hints status
+./scripts/anvil-agent-memory.sh /tool-hints on
+./scripts/anvil-agent-memory.sh /tool-hints off
+./scripts/anvil-agent-memory.sh /tool-hints toggle
+./scripts/anvil-agent-memory.sh /tool-hints debug status
+./scripts/anvil-agent-memory.sh /tool-hints debug on
+./scripts/anvil-agent-memory.sh /tool-hints debug off
+```
+
+When debug is on:
+- System prompt injections are logged as `[agent-memory:debug]`.
+- Full message tracing logs as `[agent-memory:trace]` (preview-truncated).
