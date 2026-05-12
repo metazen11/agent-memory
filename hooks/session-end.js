@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 
+const { authHeaders } = require('./auth-header');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
 
@@ -50,7 +51,7 @@ const req = http.request({
   port: url.port,
   path: url.pathname,
   method: 'PATCH',
-  headers: {
+  headers: { ...authHeaders(),
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(payload),
   },

@@ -16,6 +16,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
+const { authHeaders } = require('./auth-header');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -96,6 +97,7 @@ function fetchLessonMatches(toolName, toolInputPreview, project) {
 
     const url = new URL(`${SERVER_BASE}/api/lessons/match?${params}`);
     const req = http.get({
+      headers: { ...authHeaders() },
       hostname: url.hostname,
       port: url.port,
       path: `${url.pathname}${url.search}`,
@@ -126,7 +128,7 @@ function trackTrigger(lessonId) {
     port: url.port,
     path: url.pathname,
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+    headers: { ...authHeaders(), 'Content-Type': 'application/json', 'Content-Length': 2 },
     timeout: 1000,
   }, () => {});
   req.on('error', () => {});

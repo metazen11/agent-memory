@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
+const { authHeaders } = require('./auth-header');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
 
@@ -107,6 +108,7 @@ function healthCheck(timeoutMs) {
   return new Promise((resolve) => {
     const url = new URL(`${SERVER_BASE}/api/health`);
     const req = http.get({
+      headers: { ...authHeaders() },
       hostname: url.hostname,
       port: url.port,
       path: url.pathname,
@@ -287,7 +289,7 @@ function registerSession(sessionId, project, cwd) {
     port: url.port,
     path: url.pathname,
     method: 'POST',
-    headers: {
+    headers: { ...authHeaders(),
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(payload),
     },
@@ -309,6 +311,7 @@ function fetchLessons(project, severity, limit) {
 
     const url = new URL(`${SERVER_BASE}/api/lessons?${params}`);
     const req = http.get({
+      headers: { ...authHeaders() },
       hostname: url.hostname,
       port: url.port,
       path: `${url.pathname}${url.search}`,
@@ -335,6 +338,7 @@ function fetchObservations(project) {
   return new Promise((resolve) => {
     const url = new URL(`${SERVER_BASE}/api/observations?project=${encodeURIComponent(project)}&limit=5`);
     const req = http.get({
+      headers: { ...authHeaders() },
       hostname: url.hostname,
       port: url.port,
       path: `${url.pathname}${url.search}`,
@@ -373,7 +377,7 @@ function searchProjectContext(project, projectName) {
       port: url.port,
       path: url.pathname,
       method: 'POST',
-      headers: {
+      headers: { ...authHeaders(),
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
       },
