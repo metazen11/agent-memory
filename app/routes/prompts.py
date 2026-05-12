@@ -48,7 +48,7 @@ async def list_prompts(
         idx = 1
 
         if project:
-            conditions.append(f"p.canonical_path ILIKE ${idx}")
+            conditions.append(f"p.full_path ILIKE ${idx}")
             args.append(f"%{project}%")
             idx += 1
         if session_id:
@@ -64,7 +64,7 @@ async def list_prompts(
 
         rows = await conn.fetch(
             f"""
-            SELECT up.id, up.session_id, up.project_id, p.canonical_path as project_name,
+            SELECT up.id, up.session_id, up.project_id, p.full_path as project_name,
                    up.prompt_number, up.prompt_text, up.agent_name, up.created_at
             FROM mem_user_prompts up
             LEFT JOIN mem_projects p ON up.project_id = p.id
@@ -90,7 +90,7 @@ async def search_prompts(request: Request, body: PromptSearchRequest):
         idx = 2
 
         if body.project:
-            conditions.append(f"p.canonical_path ILIKE ${idx}")
+            conditions.append(f"p.full_path ILIKE ${idx}")
             args.append(f"%{body.project}%")
             idx += 1
         if body.agent:
@@ -102,7 +102,7 @@ async def search_prompts(request: Request, body: PromptSearchRequest):
 
         rows = await conn.fetch(
             f"""
-            SELECT up.id, up.session_id, up.project_id, p.canonical_path as project_name,
+            SELECT up.id, up.session_id, up.project_id, p.full_path as project_name,
                    up.prompt_number, up.prompt_text, up.agent_name, up.created_at,
                    ts_rank(up.tsv, plainto_tsquery('english', $1)) as score
             FROM mem_user_prompts up
@@ -125,7 +125,7 @@ async def get_prompt(request: Request, prompt_id: int):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT up.*, p.canonical_path as project_name
+            SELECT up.*, p.full_path as project_name
             FROM mem_user_prompts up
             LEFT JOIN mem_projects p ON up.project_id = p.id
             WHERE up.id = $1
