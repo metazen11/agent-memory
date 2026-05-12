@@ -236,6 +236,13 @@ The model is learning *your* engineering judgment, not generic coding patterns.
 - `models/lora/qwen1.5b-agentmem-v01/` — LoRA adapter output
 - `models/gguf/qwen1.5b-agentmem-v01-q4km.gguf` — final GGUF
 
+## Known Risks & Prior Failures
+
+- **Qwen 3.x fine-tuning failed previously** — architecture changes (attention, chat template, tool call schema) broke LoRA training scripts that worked on Qwen 2.5. This plan deliberately uses **Qwen 2.5-1.5B-Instruct** as the proven-safe path.
+- **Gemma 4 GGUF has tensor mismatch** — do not use Gemma for this round.
+- **Multimodal (vision + tools) is a separate concern** — v0.1 is text-only tool calling. Vision-capable models (Qwen-VL) require different data formats and layer freezing strategies. Defer to v2+.
+- **Qwen 3.x as stretch goal** — once v0.1 works on 2.5, try Qwen 3.x as v0.3 to identify what specifically breaks and fix it with a known-good baseline to compare against.
+
 ## GitHub Issue
 
-Tracked at: metazen11/agent-memory#15 (to create)
+Tracked at: metazen11/agent-memory#15
