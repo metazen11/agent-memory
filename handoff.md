@@ -1,116 +1,108 @@
-# Handoff (agentMemory Fine-Tune + Integrations)
+# Handoff — agent-memory
 
-## Current status (latest)
+## Current Status (2026-05-12)
 
-- Feature toggles for hint injection are implemented and split:
-  - `AGENT_MEMORY_HINTS_ENABLED` (global default)
-  - `AGENT_MEMORY_SESSION_HINTS_ENABLED` (session-start hints)
-  - `AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED` (pre-tool warnings)
-- Terminal toggle interface added:
-  - `node scripts/hints-config.js status|set|tui`
-- Cross-platform install packs added for Claude/Codex/Anvil:
-  - `.sh`, `.js`, and Windows `.cmd` launchers.
+### Location Change
+- **Moved from** `~/Dropbox/_CODING/agentMemory/` **to** `~/_CODING/agentMemory/`
+- `models/` and `.venv-finetune/` are symlinks back to Dropbox (79GB cold storage)
+- Claude hook symlinks at `~/.claude/hooks/agent-memory-*.js` updated to new path
+- Anvil `.mcp.json` updated to new path
 
-## Fine-tune/training state
+### Security Sprint (issues #1-#14)
+Shipped in 8 commits to main. Key changes:
 
-### Gemma 4 path
+**Auth system:**
+- `REQUIRE_AUTH=true` in `.env` enables Bearer token auth on all endpoints
+- `TRUSTED_AGENTS=anvil,claude,codex,gemini,python-httpx` bypasses auth for known localhost callers
+- Hooks send `X-Agent-Name: claude` header for trusted bypass
+- Token CLI: `python -m app.cli setup` generates tokens for default agents
+- Token management: `python -m app.cli create-token|list-tokens|revoke-token`
 
-- LoRA pilot training completed and merged, GGUF generated.
-- Gemma 4 GGUF currently has runtime tensor mismatch in llama.cpp (`missing tensor ...`), so this path is not the current recommended test model.
+**Currently auth is ON** (`REQUIRE_AUTH=true`) with trusted agents bypass active.
 
-### Qwen 9B path (recommended, current)
+**Other security:**
+- Host bound to `127.0.0.1` (was `0.0.0.0`)
+- `trust_remote_code` removed from embeddings (configurable via `EMBEDDING_TRUST_REMOTE_CODE`)
+- CORS middleware locked to localhost origins
+- Rate limiting enabled (100 writes/min, 500 reads/min)
+- Audit logging enabled (writes_only mode)
+- Secret redaction enabled by default (`REDACT_SECRETS=true`)
+- PG trust auth warning on startup
 
-- Official HF base downloaded locally into:
-  - `models/base/qwen3.5-9b-hf`
-- Local training script uses this base:
-  - `models/lora/qwen3.5-9b-toolcalls-lora/run_train_lora.py`
-- Clean pilot fine-tune completed:
-  - adapter: `models/lora/qwen3.5-9b-toolcalls-lora/adapter_model.safetensors`
-- Merge completed:
-  - merged model: `models/merged/qwen3.5-9b-toolcalls-merged/model.safetensors`
-- GGUF conversion + quantization completed:
-  - `models/gguf/qwen3.5-9b-toolcalls-f16.gguf`
-  - `models/gguf/qwen3.5-9b-toolcalls-q4km.gguf`
-- llama.cpp load/generation test runs successfully (no tensor-missing load error on this Qwen path).
+**New features:**
+- `GET/POST /api/prompts` — searchable user prompt history (1,410 indexed)
+- `POST /api/prompts/search` — FTS search over prompts
+- Migrations 008-011 auto-apply on startup
 
-## Most important logs
+### Known Issue — PreToolUse Hook Error in Claude
+The `pre-tool-use.js` hook may show errors in Claude sessions started before the auth changes. **Fix: restart Claude Code session** so the updated hook code and env vars load.
 
-- Qwen pilot train:
-  - `logs/train_qwen9b_hf_pilot_20260409_204845.log`
-- Qwen merge:
-  - `logs/merge_qwen9b_hf_20260409_204913.log`
-- Qwen GGUF convert/quant:
-  - `logs/gguf_convert_qwen9b_20260409_204946.log`
+If error persists after restart, check:
+1. Symlinks point to `~/_CODING/` not `~/Dropbox/`: `ls -la ~/.claude/hooks/agent-memory-*.js`
+2. Service is running: `curl http://localhost:3377/api/health`
+3. Auth bypass works: `curl -H 'X-Agent-Name: claude' http://localhost:3377/api/prompts?limit=1`
 
-(Older logs remain for Gemma and earlier attempts.)
+### GitHub Issues
+14 issues at metazen11/agent-memory. Closed by commits: #1-#8, #12, #13. Remaining:
+- #9 TLS/HTTPS support (low priority)
+- #10 Data retention/purge policy (medium)
+- #11 Web UI — existing `archive/memory-explorer.html` in anvil repo ready to integrate
+- #14 Move off Dropbox on second Mac
 
-## Data pipeline status
-
-- Raw data folder contract is in place:
-  - `data/raw/` (Claude + Anvil collected)
-- Processed blend dataset exists:
-  - `data/processed/fine_tune_blend/train.chat.jsonl`
-  - `data/processed/fine_tune_blend/valid.chat.jsonl`
-
-## Resume commands
-
-### 1) Check toggle state quickly
+## Setup on New Machine
 
 ```bash
+# 1. Clone/pull
+cd ~/_CODING/agentMemory && git pull
+
+# 2. Install deps
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 3. Run migrations (auto on startup)
+.venv/bin/uvicorn app.main:app --port 3377 --host 127.0.0.1
+
+# 4. Generate tokens
+.venv/bin/python -m app.cli setup
+
+# 5. Set env
+echo 'REQUIRE_AUTH=true' >> .env
+echo 'export AGENT_MEMORY_TOKEN="<claude-token-from-step-4>"' >> ~/.zshenv
+
+# 6. Update Claude hook symlinks
+cd ~/.claude/hooks
+ln -sf ~/_CODING/agentMemory/hooks/session-start.js agent-memory-session-start.js
+ln -sf ~/_CODING/agentMemory/hooks/session-end.js agent-memory-session-end.js
+ln -sf ~/_CODING/agentMemory/hooks/pre-tool-use.js agent-memory-pre-tool-use.js
+ln -sf ~/_CODING/agentMemory/hooks/post-tool-use.js agent-memory-post-tool-use.js
+ln -sf ~/_CODING/agentMemory/hooks/ensure-services.js agent-memory-ensure-services.js
+```
+
+## Fine-tune/Training State
+
+### Qwen 9B path (recommended)
+- Base: `models/base/qwen3.5-9b-hf`
+- LoRA adapter: `models/lora/qwen3.5-9b-toolcalls-lora/`
+- Merged: `models/merged/qwen3.5-9b-toolcalls-merged/`
+- GGUF: `models/gguf/qwen3.5-9b-toolcalls-q4km.gguf`
+- Note: `models/` is a symlink to Dropbox — only needed for fine-tuning, not runtime
+
+### Data Pipeline
+- Raw: `data/raw/` (Claude + Anvil collected)
+- Processed: `data/processed/fine_tune_blend/train.chat.jsonl`
+
+## Resume Commands
+
+```bash
+# Check service health
+curl http://localhost:3377/api/health
+
+# List tokens
+python -m app.cli list-tokens
+
+# Search prompts
+curl -H 'X-Agent-Name: claude' 'http://localhost:3377/api/prompts/search' \
+  -H 'Content-Type: application/json' -d '{"query":"auth","limit":5}'
+
+# Check toggle state
 node scripts/hints-config.js status
 ```
-
-### 2) Confirm model artifacts
-
-```bash
-ls -lh models/gguf/qwen3.5-9b-toolcalls-*.gguf
-```
-
-### 3) Quick llama.cpp test
-
-```bash
-./models/llama.cpp/build/bin/llama-cli -m models/gguf/qwen3.5-9b-toolcalls-q4km.gguf -n 64 -p "Reply with READY only."
-```
-
-### 4) Start next (non-pilot) Qwen training iteration
-
-Use existing script with larger env settings (example):
-
-```bash
-set -a; source .env
-export FAST_PILOT=1
-export PILOT_MAX_TRAIN_SAMPLES=1200
-export PILOT_MAX_VALID_SAMPLES=120
-export PILOT_EPOCHS=0.5
-export PILOT_MAX_LENGTH=1024
-export PILOT_GRAD_ACCUM=4
-export PILOT_LOGGING_STEPS=10
-export PILOT_EVAL_STRATEGY=steps
-export PILOT_EVAL_STEPS=100
-export PILOT_SAVE_STRATEGY=steps
-export PILOT_SAVE_STEPS=100
-set +a
-./.venv-finetune/bin/python models/lora/qwen3.5-9b-toolcalls-lora/run_train_lora.py
-```
-
-Then merge + GGUF:
-
-```bash
-./.venv-finetune/bin/python fine-tune/gguf/merge_lora_hf.py \
-  --base-model models/base/qwen3.5-9b-hf \
-  --lora-adapter models/lora/qwen3.5-9b-toolcalls-lora \
-  --output-dir models/merged/qwen3.5-9b-toolcalls-merged
-
-./.venv-finetune/bin/python fine-tune/gguf/convert_to_gguf.py \
-  --llama-cpp-dir models/llama.cpp \
-  --hf-model-dir models/merged/qwen3.5-9b-toolcalls-merged \
-  --out-f16 models/gguf/qwen3.5-9b-toolcalls-f16.gguf \
-  --out-quant models/gguf/qwen3.5-9b-toolcalls-q4km.gguf \
-  --quant Q4_K_M \
-  --run
-```
-
-## Notes
-
-- Avoid using the local LM Studio MLX-export Qwen copy as base for training; it produced key mismatch warnings (`UNEXPECTED`/`MISSING`) during load.
-- Use `models/base/qwen3.5-9b-hf` as the training base.
