@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # Embeddings (sentence-transformers, in-process)
     embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
+    embedding_trust_remote_code: bool = False
 
     # Observation LLM (local GGUF via llama-cpp-python)
     observation_llm_model: str = ""  # path to .gguf file
@@ -24,6 +25,10 @@ class Settings(BaseSettings):
     # Server
     host: str = "127.0.0.1"
     port: int = 3377
+
+    # Security
+    allow_trust_auth: bool = False
+    cors_origins: str = "http://localhost:3377,http://127.0.0.1:3377"
 
     # Queue worker
     queue_poll_interval: int = 5

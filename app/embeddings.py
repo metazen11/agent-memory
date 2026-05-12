@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from functools import lru_cache
 
 from app.config import settings
 
@@ -15,10 +14,11 @@ def _get_model():
     if _model is None:
         from sentence_transformers import SentenceTransformer
         logger.info(f"Loading embedding model: {settings.embedding_model}")
-        _model = SentenceTransformer(
-            settings.embedding_model,
-            trust_remote_code=True,
-        )
+        kwargs = {}
+        if settings.embedding_trust_remote_code:
+            logger.warning("Loading embedding model with trust_remote_code=True — supply chain risk")
+            kwargs["trust_remote_code"] = True
+        _model = SentenceTransformer(settings.embedding_model, **kwargs)
         logger.info(f"Embedding model loaded ({_model.get_sentence_embedding_dimension()}d)")
     return _model
 

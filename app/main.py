@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import init_pool, close_pool, get_pool
@@ -37,6 +38,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Migration failed: {e}")
 
+    # Warn on passwordless PostgreSQL
+    if not settings.postgres_password and not settings.allow_trust_auth:
+        logger.critical(
+            "PostgreSQL password is empty. Set POSTGRES_PASSWORD in .env "
+            "or ALLOW_TRUST_AUTH=true to suppress this warning."
+        )
+
     # Start background queue worker
     start_worker()
 
@@ -52,6 +60,15 @@ app = FastAPI(
     description="Lightweight LLM memory service",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# CORS middleware
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(health_router)
