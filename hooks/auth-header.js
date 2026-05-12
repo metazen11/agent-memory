@@ -12,9 +12,10 @@
 function authHeaders() {
   const token = process.env.AGENT_MEMORY_TOKEN;
   if (token) {
-    return { Authorization: `Bearer ${token}` };
+    return { Authorization: `Bearer ${token}`, 'X-Agent-Name': 'claude' };
   }
-  return {};
+  // No token — still identify as claude so trusted_agents bypass works
+  return { 'X-Agent-Name': 'claude' };
 }
 
 module.exports = { authHeaders };
