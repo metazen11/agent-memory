@@ -29,6 +29,20 @@ class Settings(BaseSettings):
     # Security
     allow_trust_auth: bool = False
     cors_origins: str = "http://localhost:3377,http://127.0.0.1:3377"
+    require_auth: bool = False
+
+    # Redaction
+    redact_secrets: bool = True
+    redact_pii: bool = False
+
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_writes_per_min: int = 100
+    rate_limit_reads_per_min: int = 500
+
+    # Audit logging
+    audit_log_level: str = "writes_only"  # writes_only | all | off
+    audit_retention_days: int = 30
 
     # Queue worker
     queue_poll_interval: int = 5

@@ -20,7 +20,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const SERVER_URL = 'http://localhost:3377/api/queue';
+const SERVER_BASE = 'http://localhost:3377';
+const SERVER_URL = `${SERVER_BASE}/api/queue`;
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 const RECOVERY_LOCKFILE = path.join(require('os').tmpdir(), 'agent-memory-recovery.lock');
 const RECOVERY_COOLDOWN_MS = 60000; // 1 minute between recovery attempts
@@ -48,10 +49,80 @@ function readStdin() {
   }
 }
 
+function envFlagEnabled(name, defaultValue = true) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'off', 'no'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+const GLOBAL_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_HINTS_ENABLED', true);
+const POST_TOOL_HINTS_ENABLED = envFlagEnabled('AGENT_MEMORY_POST_TOOL_HINTS_ENABLED', GLOBAL_HINTS_ENABLED);
+
+function output(obj) {
+  console.log(JSON.stringify(obj));
+  process.exit(0);
+}
+
 function allow() {
   debug('→ allow');
-  console.log(JSON.stringify({}));
-  process.exit(0);
+  output({});
+}
+
+/**
+ * GET /api/lessons/match with output trigger params.
+ */
+function fetchOutputLessonMatches(toolName, outputPreview, project) {
+  return new Promise((resolve) => {
+    const params = new URLSearchParams({
+      tool_name: toolName,
+      trigger_on: 'output',
+      tool_output_preview: outputPreview.slice(0, 1000),
+    });
+    if (project) params.set('project', project);
+
+    const url = new URL(`${SERVER_BASE}/api/lessons/match?${params}`);
+    const req = http.get({
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      timeout: 1500,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => { req.destroy(); resolve([]); });
+  });
+}
+
+/**
+ * Fire-and-forget POST to track that a lesson was triggered.
+ */
+function trackTrigger(lessonId) {
+  const url = new URL(`${SERVER_BASE}/api/lessons/${lessonId}/trigger`);
+  const req = http.request({
+    hostname: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+    timeout: 1000,
+  }, () => {});
+  req.on('error', () => {});
+  req.on('timeout', () => { req.destroy(); });
+  req.on('socket', (s) => { s.unref(); });
+  req.write('{}');
+  req.end();
 }
 
 function asErrorText(value) {
@@ -231,63 +302,99 @@ const payload = JSON.stringify({
 
 debug(`POST /api/queue tool=${toolName} payload=${payload.length}b`);
 
-// Write stdout FIRST so Claude Code can proceed immediately
-console.log(JSON.stringify({}));
+/**
+ * Fire-and-forget the queue POST (non-blocking).
+ * Called after stdout is written.
+ */
+function fireQueuePost() {
+  const exitTimer = setTimeout(() => {
+    debug('Exit timer — checking for unsent payload');
+    if (!requestCompleted) {
+      spoolPayload(payload);
+      triggerRecovery();
+    }
+    process.exit(0);
+  }, 200);
+  exitTimer.unref();
 
-// Fire-and-forget HTTP POST
-// Exit after 200ms max so we never block Claude Code, even if the server is slow.
-// On failure: spool payload to disk + trigger background recovery.
-// On success: drain any previously spooled payloads.
-const exitTimer = setTimeout(() => {
-  debug('Exit timer — checking for unsent payload');
-  if (!requestCompleted) {
-    spoolPayload(payload);
-    triggerRecovery();
-  }
-  process.exit(0);
-}, 200);
-exitTimer.unref();
+  const url = new URL(SERVER_URL);
+  const req = http.request({
+    hostname: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    timeout: 150,
+  }, (res) => {
+    requestCompleted = true;
+    debug(`POST /api/queue → ${res.statusCode}`);
+    if (res.statusCode >= 500) {
+      debug('Server error — spooling payload and triggering recovery');
+      spoolPayload(payload);
+      triggerRecovery();
+    } else {
+      drainSpool();
+    }
+    res.resume();
+  });
+
+  req.on('error', (e) => {
+    if (!requestCompleted) {
+      requestCompleted = true;
+      debug(`POST error: ${e.message}`);
+      spoolPayload(payload);
+      triggerRecovery();
+    }
+  });
+  req.on('timeout', () => {
+    debug('POST timeout');
+    req.destroy();
+  });
+  req.on('socket', (socket) => { socket.unref(); });
+
+  req.write(payload);
+  req.end();
+}
 
 let requestCompleted = false;
 
-const url = new URL(SERVER_URL);
-const req = http.request({
-  hostname: url.hostname,
-  port: url.port,
-  path: url.pathname,
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(payload),
-  },
-  timeout: 150,
-}, (res) => {
-  requestCompleted = true;
-  debug(`POST /api/queue → ${res.statusCode}`);
-  if (res.statusCode >= 500) {
-    debug('Server error — spooling payload and triggering recovery');
-    spoolPayload(payload);
-    triggerRecovery();
-  } else {
-    // Success — drain any spooled payloads from previous failures
-    drainSpool();
-  }
-  res.resume();
-});
+// Check output-based lessons before writing stdout
+const outputPreview = asErrorText(input.tool_response) || '';
+if (outputPreview && GLOBAL_HINTS_ENABLED && POST_TOOL_HINTS_ENABLED) {
+  const project = input.cwd || process.cwd();
+  debug(`Checking output lessons for ${toolName}`);
 
-req.on('error', (e) => {
-  if (!requestCompleted) {
-    requestCompleted = true;
-    debug(`POST error: ${e.message}`);
-    spoolPayload(payload);
-    triggerRecovery();
-  }
-});
-req.on('timeout', () => {
-  debug('POST timeout');
-  req.destroy();
-});
-req.on('socket', (socket) => { socket.unref(); });
+  (async () => {
+    const matches = await fetchOutputLessonMatches(toolName, outputPreview, project);
 
-req.write(payload);
-req.end();
+    if (Array.isArray(matches) && matches.length > 0) {
+      debug(`${matches.length} output lesson(s) matched`);
+      const severity_icons = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
+      const lines = matches.map((lesson) => {
+        const icon = severity_icons[lesson.severity] || 'LESSON';
+        const scope = lesson.project_name ? `[${lesson.project_name}]` : '[global]';
+        return `${icon} ${scope}: ${lesson.rule}`;
+      });
+
+      // Fire-and-forget trigger tracking
+      for (const lesson of matches) {
+        trackTrigger(lesson.id);
+      }
+
+      console.log(JSON.stringify({ systemMessage: `## Output Lesson\n${lines.join('\n')}` }));
+    } else {
+      debug('No output lesson matches');
+      console.log(JSON.stringify({}));
+    }
+
+    // Fire queue POST after stdout
+    fireQueuePost();
+  })();
+} else {
+  // No output to check — write stdout and fire queue POST
+  console.log(JSON.stringify({}));
+  fireQueuePost();
+}

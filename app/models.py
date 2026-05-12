@@ -156,6 +156,11 @@ class LessonCreate(BaseModel):
     trigger_tool: str | None = None
     trigger_pattern: str | None = None
     source_observation_id: int | None = None
+    # Trigger expansion: output, phase, file-scope
+    trigger_on: str = "input"  # input | output | phase | file_scope
+    trigger_output_pattern: str | None = None
+    trigger_phase: str | None = None  # pre_tool | post_tool | pre_response | session_end
+    trigger_files: list[str] | None = None  # glob patterns
 
 
 class LessonUpdate(BaseModel):
@@ -166,6 +171,10 @@ class LessonUpdate(BaseModel):
     trigger_tool: str | None = None
     trigger_pattern: str | None = None
     active: bool | None = None
+    trigger_on: str | None = None
+    trigger_output_pattern: str | None = None
+    trigger_phase: str | None = None
+    trigger_files: list[str] | None = None
 
 
 class LessonOut(BaseModel):
@@ -183,6 +192,10 @@ class LessonOut(BaseModel):
     last_triggered_at: datetime | None = None
     active: bool = True
     created_at: datetime
+    trigger_on: str = "input"
+    trigger_output_pattern: str | None = None
+    trigger_phase: str | None = None
+    trigger_files: list[str] | None = None
 
 
 class LessonMatch(BaseModel):

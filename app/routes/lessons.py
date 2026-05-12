@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import logging
 import re
@@ -10,6 +11,8 @@ from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
 from app.project import ensure_project, project_path_filter
 
 MAX_PATTERN_LEN = 500
+VALID_TRIGGER_ON = ("input", "output", "phase", "file_scope")
+VALID_TRIGGER_PHASES = ("pre_tool", "post_tool", "pre_response", "session_end")
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,10 @@ def _row_to_lesson(row) -> LessonOut:
         last_triggered_at=row["last_triggered_at"],
         active=row["active"],
         created_at=row["created_at"],
+        trigger_on=row.get("trigger_on", "input"),
+        trigger_output_pattern=row.get("trigger_output_pattern"),
+        trigger_phase=row.get("trigger_phase"),
+        trigger_files=row.get("trigger_files"),
     )
 
 
@@ -48,9 +55,41 @@ def _validate_pattern(pattern: str | None) -> None:
         raise HTTPException(status_code=400, detail=f"Invalid trigger_pattern regex: {e}")
 
 
+def _validate_trigger_on(lesson: LessonCreate) -> None:
+    """Validate trigger_on value and required companion fields."""
+    if lesson.trigger_on not in VALID_TRIGGER_ON:
+        raise HTTPException(
+            status_code=400,
+            detail=f"trigger_on must be one of {VALID_TRIGGER_ON}",
+        )
+    if lesson.trigger_on == "output" and not lesson.trigger_output_pattern:
+        raise HTTPException(
+            status_code=400,
+            detail="trigger_output_pattern required when trigger_on='output'",
+        )
+    if lesson.trigger_on == "phase":
+        if not lesson.trigger_phase:
+            raise HTTPException(
+                status_code=400,
+                detail="trigger_phase required when trigger_on='phase'",
+            )
+        if lesson.trigger_phase not in VALID_TRIGGER_PHASES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"trigger_phase must be one of {VALID_TRIGGER_PHASES}",
+            )
+    if lesson.trigger_on == "file_scope" and not lesson.trigger_files:
+        raise HTTPException(
+            status_code=400,
+            detail="trigger_files required when trigger_on='file_scope'",
+        )
+
+
 @router.post("/api/lessons", response_model=LessonOut)
 async def create_lesson(lesson: LessonCreate):
     _validate_pattern(lesson.trigger_pattern)
+    _validate_pattern(lesson.trigger_output_pattern)
+    _validate_trigger_on(lesson)
     pool = await get_pool()
     async with pool.acquire() as conn:
         project_id = None
@@ -73,15 +112,19 @@ async def create_lesson(lesson: LessonCreate):
             INSERT INTO mem_lessons (
                 project_id, title, rule, severity,
                 trigger_tool, trigger_pattern, source_observation_id,
-                embedding, raw_text
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
+                embedding, raw_text,
+                trigger_on, trigger_output_pattern, trigger_phase, trigger_files
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, $11, $12, $13)
             RETURNING id, project_id, title, rule, severity,
                       trigger_tool, trigger_pattern, source_observation_id,
-                      trigger_count, last_triggered_at, active, created_at
+                      trigger_count, last_triggered_at, active, created_at,
+                      trigger_on, trigger_output_pattern, trigger_phase, trigger_files
         """,
             project_id, lesson.title, lesson.rule, lesson.severity,
             lesson.trigger_tool, lesson.trigger_pattern, lesson.source_observation_id,
             embedding_str, raw_text,
+            lesson.trigger_on, lesson.trigger_output_pattern, lesson.trigger_phase,
+            lesson.trigger_files,
         )
 
         return LessonOut(
@@ -144,23 +187,39 @@ async def match_lessons(
     tool_name: str = Query(...),
     tool_input_preview: str = Query(default=""),
     project: str | None = None,
+    trigger_on: str = Query(default="input"),
+    tool_output_preview: str = Query(default=""),
+    trigger_phase: str | None = None,
+    modified_files: str = Query(default=""),
 ):
-    """Match active lessons for a tool call. Used by PreToolUse hook.
-    Returns max 5 lessons, critical first. Must be fast (<50ms)."""
+    """Match active lessons for a tool/lifecycle event.
+
+    trigger_on controls which code path runs:
+    - input (default): regex trigger_pattern against tool_input_preview (PreToolUse)
+    - output: regex trigger_output_pattern against tool_output_preview (PostToolUse)
+    - phase: match trigger_phase exactly (pre_response, session_end, etc.)
+    - file_scope: fnmatch trigger_files globs against modified_files list
+
+    Returns max 5 lessons, critical first. Must be fast (<50ms).
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Fetch candidate lessons: active, matching tool (or NULL = any tool),
-        # scoped to project or global (project_id IS NULL)
         conditions = ["l.active = true"]
         params = []
         pidx = 1
 
-        # Tool match: trigger_tool is NULL (matches any) OR matches the tool name
-        conditions.append(f"(l.trigger_tool IS NULL OR l.trigger_tool = ${pidx})")
-        params.append(tool_name)
+        # Filter by trigger_on type
+        conditions.append(f"l.trigger_on = ${pidx}")
+        params.append(trigger_on)
         pidx += 1
 
-        # Project scope: match project (with path prefix matching) OR global lessons
+        # Tool match (skip for phase triggers — they aren't tool-specific)
+        if trigger_on != "phase":
+            conditions.append(f"(l.trigger_tool IS NULL OR l.trigger_tool = ${pidx})")
+            params.append(tool_name)
+            pidx += 1
+
+        # Project scope
         if project:
             path_clause, pidx = project_path_filter(pidx)
             conditions.append(f"(l.project_id IS NULL OR {path_clause})")
@@ -168,10 +227,18 @@ async def match_lessons(
         else:
             conditions.append("l.project_id IS NULL")
 
+        # Phase-specific: also filter by trigger_phase in SQL
+        if trigger_on == "phase" and trigger_phase:
+            conditions.append(f"l.trigger_phase = ${pidx}")
+            params.append(trigger_phase)
+            pidx += 1
+
         where = "WHERE " + " AND ".join(conditions)
 
         rows = await conn.fetch(f"""
-            SELECT l.id, l.title, l.rule, l.severity, l.trigger_pattern,
+            SELECT l.id, l.title, l.rule, l.severity,
+                   l.trigger_pattern, l.trigger_output_pattern,
+                   l.trigger_phase, l.trigger_files,
                    l.trigger_count, p.name as project_name
             FROM mem_lessons l
             LEFT JOIN mem_projects p ON p.id = l.project_id
@@ -181,16 +248,37 @@ async def match_lessons(
             LIMIT 20
         """, *params)
 
-        # Filter by trigger_pattern regex match against tool_input_preview
+        # Application-side filtering per trigger type
         matches = []
+        modified_file_list = [f.strip() for f in modified_files.split(",") if f.strip()] if modified_files else []
+
         for row in rows:
-            pattern = row["trigger_pattern"]
-            if pattern:
-                try:
-                    if not re.search(pattern, tool_input_preview, re.IGNORECASE):
+            if trigger_on == "input":
+                pattern = row["trigger_pattern"]
+                if pattern:
+                    try:
+                        if not re.search(pattern, tool_input_preview, re.IGNORECASE):
+                            continue
+                    except re.error:
+                        logger.warning(f"Invalid regex in lesson {row['id']}: {pattern}")
                         continue
-                except re.error:
-                    logger.warning(f"Invalid regex in lesson {row['id']}: {pattern}")
+
+            elif trigger_on == "output":
+                pattern = row["trigger_output_pattern"]
+                if pattern:
+                    try:
+                        if not re.search(pattern, tool_output_preview, re.IGNORECASE):
+                            continue
+                    except re.error:
+                        logger.warning(f"Invalid regex in lesson {row['id']}: {pattern}")
+                        continue
+
+            elif trigger_on == "phase":
+                pass  # already filtered by SQL
+
+            elif trigger_on == "file_scope":
+                globs = row["trigger_files"] or []
+                if not _any_glob_matches(globs, modified_file_list):
                     continue
 
             matches.append(LessonMatch(
@@ -208,11 +296,28 @@ async def match_lessons(
         return matches
 
 
+def _any_glob_matches(globs: list[str], files: list[str]) -> bool:
+    """Return True if any glob pattern matches any file path."""
+    for glob_pat in globs:
+        for filepath in files:
+            if fnmatch.fnmatch(filepath, glob_pat):
+                return True
+            # Also try matching against just the filename
+            if fnmatch.fnmatch(filepath.rsplit("/", 1)[-1], glob_pat):
+                return True
+    return False
+
+
 # ── Update lesson ────────────────────────────────────
 
 @router.patch("/api/lessons/{lesson_id}", response_model=LessonOut)
 async def update_lesson(lesson_id: int, update: LessonUpdate):
     _validate_pattern(update.trigger_pattern)
+    _validate_pattern(update.trigger_output_pattern)
+    if update.trigger_on is not None and update.trigger_on not in VALID_TRIGGER_ON:
+        raise HTTPException(status_code=400, detail=f"trigger_on must be one of {VALID_TRIGGER_ON}")
+    if update.trigger_phase is not None and update.trigger_phase not in VALID_TRIGGER_PHASES:
+        raise HTTPException(status_code=400, detail=f"trigger_phase must be one of {VALID_TRIGGER_PHASES}")
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Build dynamic SET clause
@@ -220,12 +325,21 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         params = []
         pidx = 1
 
-        for field in ("title", "rule", "severity", "trigger_tool", "trigger_pattern", "active"):
+        for field in (
+            "title", "rule", "severity", "trigger_tool", "trigger_pattern", "active",
+            "trigger_on", "trigger_output_pattern", "trigger_phase",
+        ):
             value = getattr(update, field)
             if value is not None:
                 sets.append(f"{field} = ${pidx}")
                 params.append(value)
                 pidx += 1
+
+        # trigger_files is a list — handle separately
+        if update.trigger_files is not None:
+            sets.append(f"trigger_files = ${pidx}")
+            params.append(update.trigger_files)
+            pidx += 1
 
         if not sets:
             raise HTTPException(status_code=400, detail="No fields to update")

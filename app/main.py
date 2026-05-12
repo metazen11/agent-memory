@@ -1,7 +1,5 @@
 import logging
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +13,7 @@ from app.routes.observations import router as observations_router
 from app.routes.sessions import router as sessions_router
 from app.routes.admin import router as admin_router
 from app.routes.lessons import router as lessons_router
+from app.routes.prompts import router as prompts_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,11 +70,27 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# Auth middleware (opt-in via REQUIRE_AUTH=true)
+if settings.require_auth:
+    from app.middleware import AuthMiddleware
+    app.add_middleware(AuthMiddleware)
+
+# Rate limiting
+if settings.rate_limit_enabled:
+    from app.middleware import RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware)
+
+# Audit logging
+if settings.audit_log_level != "off":
+    from app.middleware import AuditMiddleware
+    app.add_middleware(AuditMiddleware)
+
 app.include_router(health_router)
 app.include_router(observations_router)
 app.include_router(sessions_router)
 app.include_router(admin_router)
 app.include_router(lessons_router)
+app.include_router(prompts_router)
 
 
 if __name__ == "__main__":

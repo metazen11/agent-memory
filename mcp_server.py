@@ -279,7 +279,9 @@ async def list_tools():
             description=(
                 "Create a lesson — a proactive rule that fires BEFORE risky operations. "
                 "Unlike observations (passive), lessons are instructions injected at session start "
-                "and triggered by PreToolUse hooks. Use after learning from a mistake."
+                "and triggered by PreToolUse hooks. Use after learning from a mistake. "
+                "Supports 4 trigger types: input (default, pre-tool), output (post-tool), "
+                "phase (lifecycle moments), file_scope (modified file globs)."
             ),
             inputSchema={
                 "type": "object",
@@ -290,6 +292,10 @@ async def list_tools():
                     "project": {"type": "string", "description": "Project path (full cwd) to scope the lesson. Omit ONLY for truly global lessons."},
                     "trigger_tool": {"type": "string", "description": "Tool to match: Bash, Edit, Write, NotebookEdit (omit for any)"},
                     "trigger_pattern": {"type": "string", "description": "Regex to match against tool input (e.g. 'amplify.*update-app')"},
+                    "trigger_on": {"type": "string", "enum": ["input", "output", "phase", "file_scope"], "description": "Trigger type (default: input)", "default": "input"},
+                    "trigger_output_pattern": {"type": "string", "description": "Regex matched against tool output (required for trigger_on='output')"},
+                    "trigger_phase": {"type": "string", "enum": ["pre_tool", "post_tool", "pre_response", "session_end"], "description": "Lifecycle phase (required for trigger_on='phase')"},
+                    "trigger_files": {"type": "array", "items": {"type": "string"}, "description": "File glob patterns (required for trigger_on='file_scope')"},
                 },
                 "required": ["rule"],
             },
@@ -697,6 +703,10 @@ async def _create_lesson(pool, args):
     project_name = args.get("project")
     trigger_tool = args.get("trigger_tool")
     trigger_pattern = args.get("trigger_pattern")
+    trigger_on = args.get("trigger_on", "input")
+    trigger_output_pattern = args.get("trigger_output_pattern")
+    trigger_phase = args.get("trigger_phase")
+    trigger_files = args.get("trigger_files")
 
     raw_text = f"{title}\n{rule}"
 
@@ -723,18 +733,21 @@ async def _create_lesson(pool, args):
             INSERT INTO mem_lessons (
                 project_id, title, rule, severity,
                 trigger_tool, trigger_pattern,
-                embedding, raw_text
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8)
+                embedding, raw_text,
+                trigger_on, trigger_output_pattern, trigger_phase, trigger_files
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9, $10, $11, $12)
             RETURNING id
         """, project_id, title, rule, severity,
             trigger_tool, trigger_pattern,
-            emb_str, raw_text)
+            emb_str, raw_text,
+            trigger_on, trigger_output_pattern, trigger_phase, trigger_files)
 
         return [TextContent(type="text", text=json.dumps({
             "saved": True,
             "id": lesson_row["id"],
             "title": title,
             "severity": severity,
+            "trigger_on": trigger_on,
             "project": project_name,
         }))]
 
@@ -774,6 +787,7 @@ async def _search_lessons(pool, args):
             vec_rows = await conn.fetch(f"""
                 SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
                        l.trigger_pattern, l.trigger_count, l.created_at,
+                       l.trigger_on, l.trigger_output_pattern, l.trigger_phase, l.trigger_files,
                        p.name as project_name,
                        1 - (l.embedding <=> $1::vector) as vec_score
                 FROM mem_lessons l
@@ -795,6 +809,7 @@ async def _search_lessons(pool, args):
         fts_rows = await conn.fetch(f"""
             SELECT l.id, l.title, l.rule, l.severity, l.trigger_tool,
                    l.trigger_pattern, l.trigger_count, l.created_at,
+                   l.trigger_on, l.trigger_output_pattern, l.trigger_phase, l.trigger_files,
                    p.name as project_name,
                    ts_rank(l.tsv, plainto_tsquery('english', $1)) as fts_score
             FROM mem_lessons l
@@ -820,7 +835,7 @@ async def _search_lessons(pool, args):
         results = []
         for item in ranked:
             row = item["row"]
-            results.append({
+            entry = {
                 "id": row["id"],
                 "title": row["title"],
                 "rule": row["rule"],
@@ -828,9 +843,17 @@ async def _search_lessons(pool, args):
                 "project": row["project_name"],
                 "trigger_tool": row["trigger_tool"],
                 "trigger_pattern": row["trigger_pattern"],
+                "trigger_on": row.get("trigger_on", "input"),
                 "trigger_count": row["trigger_count"],
                 "score": round(item["rrf"], 4),
-            })
+            }
+            if row.get("trigger_output_pattern"):
+                entry["trigger_output_pattern"] = row["trigger_output_pattern"]
+            if row.get("trigger_phase"):
+                entry["trigger_phase"] = row["trigger_phase"]
+            if row.get("trigger_files"):
+                entry["trigger_files"] = list(row["trigger_files"])
+            results.append(entry)
 
         return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
