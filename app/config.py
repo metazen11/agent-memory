@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     allow_trust_auth: bool = False
     cors_origins: str = "http://localhost:3377,http://127.0.0.1:3377"
     require_auth: bool = False
+    trusted_agents: str = "anvil,claude,codex,gemini,python-httpx"  # comma-separated, "*" = trust all localhost
 
     # Redaction
     redact_secrets: bool = True

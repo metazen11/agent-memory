@@ -23,13 +23,48 @@ def generate_token() -> str:
     return f"mem_{secrets.token_urlsafe(32)}"
 
 
+def _is_trusted_caller(request: Request) -> bool:
+    """Check if the request comes from a trusted agent (localhost + User-Agent match).
+
+    Trusted agents bypass token auth so existing integrations (Anvil middleware,
+    MCP server, hooks) keep working without tokens during migration.
+    """
+    if not settings.trusted_agents:
+        return False
+
+    # Only trust localhost callers
+    client_ip = request.client.host if request.client else None
+    if client_ip not in ("127.0.0.1", "::1", "localhost"):
+        return False
+
+    # Match User-Agent or X-Agent-Name header against trusted list
+    ua = request.headers.get("User-Agent", "")
+    agent_name = request.headers.get("X-Agent-Name", "")
+    trusted = [a.strip().lower() for a in settings.trusted_agents.split(",") if a.strip()]
+
+    for t in trusted:
+        if t in ua.lower() or t in agent_name.lower():
+            logger.debug("Trusted agent bypass: %s (matched %s)", agent_name or ua, t)
+            return True
+
+    # Also trust any localhost caller if "*" is in the trusted list
+    if "*" in trusted:
+        return True
+
+    return False
+
+
 async def validate_token(request: Request) -> dict | None:
     """Validate Bearer token from Authorization header.
 
-    Returns token record dict if valid, None if auth is disabled.
+    Returns token record dict if valid, None if auth is disabled or caller is trusted.
     Raises HTTPException if token is invalid/missing.
     """
     if not settings.require_auth:
+        return None
+
+    # Trusted agents bypass auth (localhost + matching agent name)
+    if _is_trusted_caller(request):
         return None
 
     auth_header = request.headers.get("Authorization")
