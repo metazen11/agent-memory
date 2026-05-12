@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 3377
 
     # Queue worker
