@@ -15,7 +15,7 @@ const fs = require('fs');
 
 const { authHeaders } = require('./auth-header');
 const SERVER_BASE = 'http://localhost:3377';
-const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:session-end] ${msg}`);

@@ -79,18 +79,21 @@ ln -sf ~/_CODING/agentMemory/hooks/ensure-services.js agent-memory-ensure-servic
 
 ## Fine-tune/Training State
 
-### Qwen 9B path (recommended)
-- Base: `models/base/qwen3.5-9b-hf`
-- LoRA adapter: `models/lora/qwen3.5-9b-toolcalls-lora/`
-- Merged: `models/merged/qwen3.5-9b-toolcalls-merged/`
-- GGUF: `models/gguf/qwen3.5-9b-toolcalls-q4km.gguf`
-- Note: `models/` is a symlink to Dropbox — only needed for fine-tuning, not runtime
+See [docs/training_notes.md](docs/training_notes.md) for full details (models, logs, commands, warnings).
 
-### Data Pipeline
-- Raw: `data/raw/` (Claude + Anvil collected)
-- Processed: `data/processed/fine_tune_blend/train.chat.jsonl`
+**Summary:** Qwen 9B path is recommended. Gemma 4 has tensor mismatch issues. `models/` is a symlink to Dropbox cold storage — only needed for fine-tuning, not runtime.
+
+## Feature Toggles
+
+- `AGENT_MEMORY_HINTS_ENABLED` (global default)
+- `AGENT_MEMORY_SESSION_HINTS_ENABLED` (session-start hints)
+- `AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED` (pre-tool warnings)
+- Terminal toggle interface: `node scripts/hints-config.js status|set|tui`
+- Cross-platform install packs for Claude/Codex/Anvil: `.sh`, `.js`, and Windows `.cmd` launchers.
 
 ## Resume Commands
+
+### Service & Auth
 
 ```bash
 # Check service health
@@ -106,3 +109,7 @@ curl -H 'X-Agent-Name: claude' 'http://localhost:3377/api/prompts/search' \
 # Check toggle state
 node scripts/hints-config.js status
 ```
+
+### Training
+
+See [docs/training_notes.md](docs/training_notes.md) for all training commands, merge/GGUF steps, and warnings.

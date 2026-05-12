@@ -13,7 +13,7 @@ const fs   = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
-const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:ensure-services] ${msg}`);
 }
