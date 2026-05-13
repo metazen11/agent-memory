@@ -22,7 +22,7 @@ const { execFileSync, spawn } = require('child_process');
 
 const { authHeaders } = require('./auth-header');
 const SERVER_BASE = 'http://localhost:3377';
-const DEBUG = process.env.AGENT_MEMORY_DEBUG !== '0';
+const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
 function envFlagEnabled(name, defaultValue = true) {
   const raw = process.env[name];
@@ -188,13 +188,25 @@ function startServices() {
 
 function mcpProbe() {
   return new Promise((resolve) => {
-    // Read the MCP config to find the server command
+    // Read the MCP config — check global (~/.claude/.mcp.json) then project-level (.mcp.json in cwd)
     let mcpConfig;
-    try {
-      const mcpJsonPath = path.join(require('os').homedir(), '.claude', '.mcp.json');
-      mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
-    } catch {
-      debug('Cannot read .mcp.json');
+    let mcpJsonDir;
+    const candidates = [
+      path.join(require('os').homedir(), '.claude', '.mcp.json'),
+      path.join(cwd, '.mcp.json'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        mcpConfig = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        mcpJsonDir = path.dirname(candidate);
+        debug(`Found MCP config at ${candidate}`);
+        break;
+      } catch {
+        // try next
+      }
+    }
+    if (!mcpConfig) {
+      debug('Cannot read .mcp.json from any location');
       resolve(false);
       return;
     }
@@ -206,8 +218,12 @@ function mcpProbe() {
       return;
     }
 
-    const cmd = server.command;
-    const args = server.args || [];
+    // Resolve relative command paths against the directory containing .mcp.json
+    let cmd = server.command;
+    if (cmd.startsWith('./') || cmd.startsWith('../')) {
+      cmd = path.resolve(mcpJsonDir, cmd);
+    }
+    const args = server.args ? server.args.map(a => (a.startsWith('./') || a.startsWith('../')) ? path.resolve(mcpJsonDir, a) : a) : [];
 
     // Spawn the MCP server and send initialize
     const proc = spawn(cmd, args, {
