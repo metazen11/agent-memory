@@ -79,9 +79,27 @@ ln -sf ~/_CODING/agentMemory/hooks/ensure-services.js agent-memory-ensure-servic
 
 ## Fine-tune/Training State
 
-See [docs/training_notes.md](docs/training_notes.md) for full details (models, logs, commands, warnings).
+**Current canonical path: Qwen 2.5-3B-Instruct.** Pipeline is end-to-end working as of 2026-05-13.
 
-**Summary:** Qwen 9B path is recommended. Gemma 4 has tensor mismatch issues. `models/` is a symlink to Dropbox cold storage — only needed for fine-tuning, not runtime.
+Reading order for next session:
+- [AGENTS.md](AGENTS.md) — overview + file map.
+- [docs/fine_tune/PIPELINE_RUNBOOK.md](docs/fine_tune/PIPELINE_RUNBOOK.md) — phase-gated procedure.
+- [docs/fine_tune/FAILURE_MODES.md](docs/fine_tune/FAILURE_MODES.md) — known failures + fixes.
+- [docs/training_notes.md](docs/training_notes.md) — historical notes; **Qwen 3.5 9B and Gemma 4 paths are deprecated** (Qwen 3.5 was a hybrid SSM model — wrong arch for llama.cpp; Gemma 4 has tensor mismatch).
+
+**Pipeline validated end-to-end:**
+- Base: `models/base/qwen2.5-3b-instruct/` (HF rev `aa8e7253...`)
+- Dataset: `data/processed/qwen25_tools/v1/` (16,944/16,966 kept = 99.87%; PII scrub: 47 bearer / 4 sk- / 21,687 paths)
+- Training script: `models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py` (reusable via MODEL_SLUG env)
+- **Full GGUF: `models/gguf/qwen2.5-3b-toolcalls-q4km.gguf`** (1.8GB Q4_K_M, SHA `5e174a04...`)
+- Training: 16,096 train / 848 valid, 0.5 epoch, 2012 steps, 3h15m wall-clock on M3 Max MPS bf16
+- Loss: **2.25 → 0.83** (63% reduction); eval_loss NaN is benign (MPS bf16 quirk, see FAILURE_MODES.md §9)
+- Validator: **16/20 (80%) parseable**, **100% on natural prompts**, all schema-valid
+- Run report: [docs/training_runs/M-FT-1-full-v1.md](docs/training_runs/M-FT-1-full-v1.md)
+
+**Next step is LM Studio integration** — `scripts/fine_tune/lmstudio_smoke.sh models/gguf/qwen2.5-3b-toolcalls-q4km.gguf 0.5`.
+
+`models/` is a symlink to Dropbox cold storage. Quit Dropbox before training to prevent sync corruption.
 
 ## Feature Toggles
 
