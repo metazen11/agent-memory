@@ -30,13 +30,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import logging
 import re
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -126,6 +131,82 @@ class ParseResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     schema_valid: bool = False
     error: str | None = None
+
+
+_CONSECUTIVE_THRESHOLD = 3
+
+
+def _normalize_call(call: dict[str, Any]) -> str:
+    name = call.get("name", "")
+    args = call.get("arguments", {})
+    args_canon = json.dumps(args, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{name}|{args_canon}".encode()).hexdigest()
+
+
+@dataclass
+class AntiLoopDecision:
+    suppress: bool
+    reason: str | None = None
+    streak: int = 0
+
+
+class AntiLoopDetector:
+    """Detects the empty-args infinite-loop pattern observed in v1.
+
+    Tracks the last N normalized tool calls in a conversation. When the same
+    (name, arguments) pair appears `threshold` times in a row, the next
+    identical call is flagged for suppression — the caller should drop the
+    tool_call block and emit a text response instead.
+
+    Stateful per conversation. Instantiate one detector per session.
+
+    The production hook point is in `mcp_server.py` and the Claude hooks;
+    this class lives in the validator so the same logic powers both the
+    runtime guard and the offline eval suite.
+    """
+
+    def __init__(self, threshold: int = _CONSECUTIVE_THRESHOLD, model_version: str | None = None):
+        if threshold < 2:
+            raise ValueError("anti-loop threshold must be >= 2")
+        self.threshold = threshold
+        self.model_version = model_version
+        self._history: deque[str] = deque(maxlen=threshold)
+        self.suppressions = 0
+        self.empty_args_emissions = 0
+
+    def observe(self, call: dict[str, Any]) -> AntiLoopDecision:
+        """Record a tool call; return whether the next emission would loop."""
+        args = call.get("arguments")
+        if args == {} or args is None:
+            self.empty_args_emissions += 1
+
+        sig = _normalize_call(call)
+        self._history.append(sig)
+
+        if len(self._history) < self.threshold:
+            return AntiLoopDecision(suppress=False, streak=self._history.count(sig))
+
+        if all(h == sig for h in self._history):
+            self.suppressions += 1
+            log.warning(
+                "anti_loop_suppress model=%s streak=%s name=%s",
+                self.model_version, self.threshold, call.get("name"),
+            )
+            return AntiLoopDecision(
+                suppress=True,
+                reason=f"{self.threshold} consecutive identical calls",
+                streak=self.threshold,
+            )
+        return AntiLoopDecision(suppress=False, streak=self._history.count(sig))
+
+    def filter_sequence(self, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convenience: filter a known sequence, returning calls that survive."""
+        out: list[dict[str, Any]] = []
+        for c in calls:
+            decision = self.observe(c)
+            if not decision.suppress:
+                out.append(c)
+        return out
 
 
 def parse_tool_calls(text: str, schemas: list[dict]) -> ParseResult:
@@ -335,6 +416,20 @@ def run(args) -> int:
     parse_rate = n_parsed / n if n else 0.0
     valid_rate = n_schema_valid / n if n else 0.0
 
+    anti_loop_report: dict[str, Any] | None = None
+    if getattr(args, "anti_loop", False):
+        detector = AntiLoopDetector(model_version=args.model_version)
+        for t in trials:
+            for call in t.parse.tool_calls:
+                detector.observe(call)
+        anti_loop_report = {
+            "enabled": True,
+            "threshold": detector.threshold,
+            "suppressions": detector.suppressions,
+            "empty_args_emissions_total": detector.empty_args_emissions,
+            "model_version": detector.model_version,
+        }
+
     # Per-suite breakdown
     def _suite_of(p: str) -> str:
         return "in_distribution" if p in in_dist_set else ("natural" if p in natural_set else "other")
@@ -360,6 +455,7 @@ def run(args) -> int:
         "by_suite": by_suite,
         "min_required_parse_rate": args.min_parse_rate,
         "passed": parse_rate >= args.min_parse_rate,
+        "anti_loop": anti_loop_report,
         "utc": utc_stamp(),
         "trials_detail": [
             {
@@ -389,6 +485,12 @@ def run(args) -> int:
         rate = d["parsed"] / d["trials"] if d["trials"] else 0.0
         print(f"  [{suite_name:16s}] parsed {d['parsed']}/{d['trials']} ({rate:.1%}) schema-valid {d['schema_valid']}/{d['trials']}")
     print(f"  required:      ≥{args.min_parse_rate:.1%}")
+    if anti_loop_report:
+        print(
+            f"  anti-loop:     suppressions={anti_loop_report['suppressions']} "
+            f"empty_args={anti_loop_report['empty_args_emissions_total']} "
+            f"model={anti_loop_report['model_version']}"
+        )
     print(f"  result:        {'PASS' if report['passed'] else 'FAIL'}")
     return 0 if report["passed"] else 1
 
@@ -404,6 +506,14 @@ def main() -> int:
     p.add_argument("--max-tokens", type=int, default=256)
     p.add_argument("--min-parse-rate", type=float, default=0.03, help="Minimum parse rate to pass")
     p.add_argument("--report-dir", default=None)
+    p.add_argument(
+        "--anti-loop", action="store_true",
+        help="Run anti-loop guard across the trial sequence and report suppressions.",
+    )
+    p.add_argument(
+        "--model-version", default=None,
+        help="Tag attached to anti-loop suppression logs and the empty_args counter (e.g. v1, v2).",
+    )
     args = p.parse_args()
 
     if args.backend == "llama-cli" and not args.gguf:
