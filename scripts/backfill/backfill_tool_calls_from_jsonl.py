@@ -113,9 +113,9 @@ ON CONFLICT (session_id) DO UPDATE SET session_id = EXCLUDED.session_id
 RETURNING id
 """
 
-_FIND_PROMPT_BY_HASH_SQL = (
+_FIND_PROMPT_BY_POSITION_SQL = (
     "SELECT id FROM mem_user_prompts "
-    "WHERE session_id = $1 AND content_hash = $2"
+    "WHERE session_id = $1 AND prompt_number = $2"
 )
 
 _INSERT_PROMPT_SQL = """
@@ -127,9 +127,10 @@ VALUES ($1, $2, $3, $4, $5, $3, $6, 'backfill_jsonl', $7, $8)
 RETURNING id
 """
 
-_FIND_TOOL_CALL_BY_HASH_SQL = (
+_FIND_TOOL_CALL_BY_POSITION_SQL = (
     "SELECT id FROM mem_tool_calls "
-    "WHERE session_id = $1 AND content_hash = $2"
+    "WHERE session_id = $1 AND turn_index = $2 AND turn_subindex = $3 "
+    "AND retention_class = 'backfill_jsonl'"
 )
 
 _INSERT_TOOL_CALL_SQL = """
@@ -246,25 +247,35 @@ async def _write_session(
     session_db_id = session_row["id"]
 
     # Track inserted prompts so we can resolve prev_user_prompt_id for
-    # tool calls within this session. Key: prompt text content_hash.
-    prompt_by_hash: dict[str, int] = {}
-    # Also track the latest-inserted prompt_id by prompt-text-content
-    # so each tool_use can be linked to the most recent prior prompt
-    # without re-querying.
+    # tool calls. Two maps:
+    #   - prompt_by_text: most-recent prompt id keyed by redacted text;
+    #     used to find "which prompt is this tool call's prev?" via the
+    #     tool_call's last_user_message field.
+    #   - prompt_by_number: id keyed by prompt_number, used for the
+    #     same-prompt fallback when text doesn't match exactly.
+    prompt_by_text: dict[str, int] = {}
+    prompt_by_number: dict[int, int] = {}
     last_prompt_id: int | None = None
 
     # ── Write prompts ────────────────────────────────
+    # Dedupe key: (session_id, prompt_number). Same text said multiple
+    # times in one conversation gets distinct rows — each one is a real
+    # turn with its own tool_calls following. The earlier (session_id,
+    # content_hash) key incorrectly collapsed "ok"/"yes"/etc reused
+    # within a session, costing us linkage for those turns.
     for up in user_prompts:
         text = redact_text(up.get("prompt_text", "")) or ""
         if not text:
             continue
+        prompt_number = up["prompt_number"]
         ch = _content_hash_text(text)
-        # Idempotency check.
+        # Idempotency: same session + same turn position = same row.
         existing = await conn.fetchrow(
-            _FIND_PROMPT_BY_HASH_SQL, session_db_id, ch
+            _FIND_PROMPT_BY_POSITION_SQL, session_db_id, prompt_number
         )
         if existing:
-            prompt_by_hash[ch] = existing["id"]
+            prompt_by_text[text] = existing["id"]
+            prompt_by_number[prompt_number] = existing["id"]
             last_prompt_id = existing["id"]
             stats["prompts_skipped_duplicate"] += 1
             continue
@@ -272,14 +283,15 @@ async def _write_session(
             _INSERT_PROMPT_SQL,
             session_db_id,
             project_id,
-            up["prompt_number"],
+            prompt_number,
             text,
             "claude-code",
             ch,
             backfill_run_id,
             _parse_ts(up.get("timestamp")),
         )
-        prompt_by_hash[ch] = row["id"]
+        prompt_by_text[text] = row["id"]
+        prompt_by_number[prompt_number] = row["id"]
         last_prompt_id = row["id"]
         stats["prompts_inserted"] += 1
 
@@ -314,24 +326,29 @@ async def _write_session(
             if prior.get("last_user_message") == last_user_message
         )
 
-        # Resolve prev_user_prompt_id by looking up the redacted hash of
-        # last_user_message in our session-local map.
+        # Resolve prev_user_prompt_id. The tool_call's last_user_message
+        # is the user text that immediately preceded it. We use the
+        # text-keyed map (latest-wins) so reused short prompts ("ok",
+        # "yes") still link to the most recent occurrence — which is
+        # correct because tool_calls follow temporally.
         prev_user_prompt_id: int | None = None
         if last_user_message:
             redacted = redact_text(last_user_message) or ""
-            cleaned_hash = _content_hash_text(redacted)
-            prev_user_prompt_id = prompt_by_hash.get(cleaned_hash)
+            prev_user_prompt_id = prompt_by_text.get(redacted)
             if prev_user_prompt_id is None:
                 # Fallback: most recent prompt we've seen in this session.
                 prev_user_prompt_id = last_prompt_id
         if prev_user_prompt_id is None:
             stats["tool_calls_orphan"] += 1
 
-        # Per-call content hash for tool_call idempotency.
+        # Per-call content hash retained for search/audit, but the
+        # idempotency key is positional: (session_id, turn_index,
+        # turn_subindex). Reused tools at the same position deduplicate;
+        # the same tool name at different turns does not.
         tc_hash = _content_hash_call(name, tc.get("tool_input") or {})
-        # session+content_hash duplicate check.
         existing_tc = await conn.fetchrow(
-            _FIND_TOOL_CALL_BY_HASH_SQL, session_db_id, tc_hash
+            _FIND_TOOL_CALL_BY_POSITION_SQL,
+            session_db_id, turn_index_counter, turn_subindex,
         )
         if existing_tc:
             stats["tool_calls_skipped_duplicate"] += 1
