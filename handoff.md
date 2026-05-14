@@ -263,3 +263,14 @@ Full v1 training pipeline now in repo. Reading order:
 - `docs/fine_tune/LMSTUDIO_INTEGRATION.md` — LM Studio gotchas.
 
 Historical (deprecated): `docs/training_notes.md` — Qwen 3.5 9B and Gemma 4 paths both failed.
+
+## Daily backups
+
+A daily `pg_dump` of `agent_memory` runs at 03:14 via launchd on macOS (cron
+fallback elsewhere) and writes `data/backups/daily_*.sql.gz` with 3-file
+rotation. The schedule is auto-installed by `hooks/ensure-services.js` at
+session start; see `docs/backups.md` for restore and uninstall steps.
+
+```bash
+bash scripts/install_backup_schedule.sh --check
+```

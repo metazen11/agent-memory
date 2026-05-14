@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  agent-memory daily backup — launchd job
+
+  Fires scripts/backup.sh every day at 03:14 local time. The minute is
+  intentionally off the :00 / :30 marks to spread load across the fleet.
+
+  Install via scripts/install_backup_cron.sh — it rewrites the program
+  path to the absolute project location and copies this file to
+  ~/Library/LaunchAgents/.
+
+  Logs:
+    stdout → ~/Library/Logs/agent-memory-backup.log
+    stderr → ~/Library/Logs/agent-memory-backup.err.log
+
+  Inspect:
+    launchctl list | grep agent-memory-backup
+    launchctl print gui/$(id -u)/com.metazen.agent-memory-backup
+    tail -f ~/Library/Logs/agent-memory-backup.log
+
+  Stop:
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.metazen.agent-memory-backup.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.metazen.agent-memory-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_DIR__/scripts/backup.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>14</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/agent-memory-backup.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/agent-memory-backup.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

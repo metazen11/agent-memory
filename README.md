@@ -23,6 +23,7 @@ The installer handles everything:
 - Starts PostgreSQL (native Homebrew preferred, Docker fallback)
 - Starts FastAPI server on port 3377
 - Registers MCP server, hooks, and skills in Claude Code
+- Schedules a daily Postgres backup at 03:14 (macOS launchd; cron fallback elsewhere) — see [docs/backups.md](docs/backups.md)
 
 ### Commands
 
