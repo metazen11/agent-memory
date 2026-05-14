@@ -163,3 +163,34 @@ training script. Whatever you set MODEL_SLUG to becomes the path.
 default in the current script is `qwen2.5-3b-instruct`, which produces
 `models/lora/qwen2.5-3b-instruct-toolcalls-lora/`. (Note the `-instruct-`
 in the middle — that's the full slug, not a typo.)
+
+## 11. Empty-args infinite loop in LM Studio
+
+**Symptom:** Vague natural prompts ("find the fire-map codebase") cause the
+model to emit `<tool_call>` blocks with empty `arguments`, get a generic
+tool-result back, then emit the same empty-args call again. Loop continues
+until the context window fills.
+
+**Root cause:** v1 dataset was 83 % synthetic prompts of the form
+`"Call tool 'X' with appropriate arguments."` — the model never had to
+commit to argument content from a real user prompt. v2 fixes this at the
+training-data level by backfilling from `~/.claude/projects/**/*.jsonl`.
+
+**Mitigation (belt-and-suspenders):** `AntiLoopDetector` in
+`scripts/fine_tune/validate_tool_calls.py`. Tracks the last N normalized
+tool calls in a conversation; on the 3rd consecutive identical call,
+suppresses the tool_call block and forces a text response. Emits WARN log
+tagged with `model_version`. Increments `empty_args_emissions_total`
+counter for production observability.
+
+Enable in offline eval:
+```bash
+python scripts/fine_tune/validate_tool_calls.py \
+    --backend openai --model qwen25-toolcalls \
+    --anti-loop --model-version v2
+```
+
+Production hook points (not yet wired): `mcp_server.py` and the Claude
+hooks. Wiring is part of issue #33 retrain follow-up.
+
+Tests: `tests/fine_tune/test_anti_loop.py` (10 unit tests).
