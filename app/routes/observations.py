@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.db import get_pool
 from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
+from app.git_context import resolve_git_context
 from app.project import ensure_project, project_path_filter
 
 
@@ -100,6 +101,12 @@ async def queue_observation(item: QueueItem):
         )
         queue_id = queue_row["id"]
 
+        # Resolve git context for branch + sha tagging at moment of call.
+        # The same resolve_git_context call was used inside ensure_project
+        # above; the helper caches per-cwd within the process so this is
+        # effectively free for hot paths.
+        git_ctx = resolve_git_context(item.cwd)
+
         # Insert into tool_calls ledger with inferred success/error
         tool_success, tool_error = _infer_tool_success(response_preview)
         tc_row = await conn.fetchrow("""
@@ -107,15 +114,17 @@ async def queue_observation(item: QueueItem):
             (
                 session_id, project_id, queue_id, tool_name, tool_input,
                 tool_response_preview, tool_success, tool_error,
-                prompt_text, cwd, source_system, source_mode, source_agent
+                prompt_text, cwd, source_system, source_mode, source_agent,
+                git_branch, git_sha
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING id
         """,
             session_db_id, project_id, queue_id,
             item.tool_name, tool_input_json,
             response_preview, tool_success, tool_error, item.last_user_message,
             item.cwd, source_system, item.source_mode, item.source_agent,
+            git_ctx.branch, git_ctx.sha,
         )
 
         # Backlink queue row to tool_call
