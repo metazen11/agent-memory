@@ -338,6 +338,37 @@ Use these three export patterns depending on the target training objective. Each
   - Per-project for domain-tuned behavior
   - Cross-project/global for general reliability tuning
 
+### V2 Tool-Call Dataset (`data/processed/qwen25_tools/v2/`)
+
+A second-generation dataset for the Qwen 2.5 tool-call LoRA. Built from
+**real user prompts** linked to **real tool calls + responses**, not v1's
+synthetic `"Call tool 'X' with appropriate arguments."` placeholders.
+
+```bash
+# Build (idempotent, dry-run by default)
+.venv/bin/python scripts/fine_tune/build_v2_dataset.py            # preview
+.venv/bin/python scripts/fine_tune/build_v2_dataset.py --write    # emit files
+```
+
+Output:
+
+```
+data/processed/qwen25_tools/v2/
+  train.chat.jsonl       Qwen 2.5 chat-template rows for training
+  valid.chat.jsonl       5% session-aware split
+  train.tiny.jsonl       200-row deterministic sample
+  valid.tiny.jsonl        30-row deterministic sample
+  tool_schemas.json      OpenAI-style function envelopes per tool
+  MANIFEST.json          row counts, drop reasons, tool histogram, output hashes
+```
+
+Source: `mem_tool_calls` (retention_class='backfill_jsonl') joined to
+`mem_user_prompts` via `prev_user_prompt_id` — the linkage created by
+migration 012 and populated by the jsonl backfill at
+`scripts/backfill/backfill_tool_calls_from_jsonl.py`.
+
+See [`docs/fine_tune/V2_DATA_PIPELINE_PLAN.md`](docs/fine_tune/V2_DATA_PIPELINE_PLAN.md) for the full design.
+
 ### Local Fine-Tune + RL Toolkit (`fine-tune/`)
 
 Fine-tune dependencies are isolated from core runtime:

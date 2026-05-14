@@ -1,11 +1,30 @@
 # V2 Fine-Tune Data Pipeline Plan
 
 **Branch:** `feat/v2-finetune-data-pipeline`
-**Parent issue:** #25
+**Parent issue:** #25 (open; closes when #33 ships)
 **Created:** 2026-05-13
-**Status:** Plan revised post quality-gate review (verdict: `approve_with_changes`).
-All blocker findings addressed in-place. Review JSON at
-`docs/fine_tune/reviews/25-quality-gate.json`.
+**Status (2026-05-13, end of day):** All data-pipeline steps COMPLETE.
+7 of 8 sub-issues closed via merged PRs. Only #33 (retrain) remains open
+as the actual training run. #31 (recall surface) deferred — not on the
+v2-training critical path.
+
+Per-step state:
+- [x] Step 1 — Migration 012 (#27, PR #35)
+- [x] Step 2 — Backfill script (#28, PR #40)
+- [x] Step 3 — Backfill dry-run + commit (#29, rolled into #28; full corpus imported 2026-05-13)
+- [x] Step 4 — Hook audit + live prompt capture (#30, PR #38)
+- [ ] Step 5 — Recall surface (#31, **deferred** — runtime quality, not training-blocker)
+- [x] Step 6 — `build_v2_dataset.py` (#32, PR #42) — 23,983 train / 1,588 valid rows on disk
+- [ ] Step 7 — Retrain v2 (#33, **next**)
+- [x] Step 8 — Anti-loop guard (#26, PR #34)
+
+Bonus (surfaced during data audit, not in original plan):
+- [x] M-FT-2-9 — Project consolidation (#36, PR #37): canonical_root_path,
+  git_remote, branch tagging. 5,915 historical tool_calls remapped.
+- [x] Daily DB backup schedule (PR #39): launchd job + idempotent install
+  via session-start hook.
+
+Review JSON at `docs/fine_tune/reviews/25-quality-gate.json`.
 
 **Pinned environment:**
 - PostgreSQL 16.13 (Homebrew). All migration patterns assume PG ≥ 12.
