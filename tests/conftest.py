@@ -7,7 +7,16 @@ The test session uses a unique prefix to avoid polluting real data.
 """
 
 import os
+import sys
 import uuid
+from pathlib import Path
+
+# Make the repo root importable so test modules can `from app... import ...`.
+# pytest.ini's `pythonpath = .` does this for newer pytest configs; this
+# fallback covers both setups.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import pytest
 import httpx
@@ -21,8 +30,16 @@ TEST_PREFIX = f"test-{uuid.uuid4().hex[:8]}"
 
 @pytest.fixture
 async def client():
-    """httpx async client pointed at the live server. Per-test scope."""
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=10.0) as c:
+    """httpx async client pointed at the live server. Per-test scope.
+
+    Sends ``X-Agent-Name: claude`` so the trusted-agent bypass treats the
+    test as a known localhost caller (the same path Claude hooks use).
+    """
+    async with httpx.AsyncClient(
+        base_url=BASE_URL,
+        timeout=10.0,
+        headers={"X-Agent-Name": "claude"},
+    ) as c:
         yield c
 
 
