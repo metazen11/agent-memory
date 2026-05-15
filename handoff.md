@@ -83,6 +83,11 @@ wc -l data/processed/qwen25_tools/v2/train.chat.jsonl  # 23,983
 ### Run v2 training (issue #33)
 
 The pipeline from PR #24 is the recipe. Phase-gated, runbook at `docs/fine_tune/PIPELINE_RUNBOOK.md`.
+Full execution plan with rollback per phase: `docs/fine_tune/V2_TRAINING_PLAN.md`.
+
+**IMPORTANT:** `run_train_lora.py` is **env-var driven**, not argparse. The
+script reads `MODEL_SLUG`, `DATASET_VERSION`, `DATASET_TIER`, `RUN_TAG`,
+`EPOCHS`, etc. from the environment.
 
 ```bash
 # 1. Pre-flight — Dropbox is the cold-storage symlink target; must quit
@@ -94,30 +99,33 @@ osascript -e 'tell application "Dropbox" to quit'
 #    emits the final chat-template shape).
 
 # 4. Phase 4 — TINY training run (200 rows, 1 epoch). Catches dataset
-#    bugs in ~2 min before the full run.
-.venv-finetune/bin/python models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py \
-    --dataset-dir data/processed/qwen25_tools/v2 \
-    --train-file train.tiny.jsonl \
-    --valid-file valid.tiny.jsonl \
-    --epochs 1 \
-    --run-tag v2-tiny
+#    bugs in ~25-40 min before the full run.
+DATASET_TIER=tiny DATASET_VERSION=v2 RUN_TAG=v2-tiny-smoke \
+  .venv-finetune/bin/python -u models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py
 
 # 5. Phase 4 validator — must pass ≥ 3% parse rate on the tiny set.
+#    (Run AFTER merging the LoRA adapter and converting to GGUF — see
+#    V2_TRAINING_PLAN.md Phase 3-4 for the full sequence.)
 .venv-finetune/bin/python scripts/fine_tune/validate_tool_calls.py \
-    --backend hf \
-    --hf-model-dir models/lora/qwen25-3b-toolcalls-lora/runs/<UTC>/merged \
+    --backend llama-cli \
+    --gguf models/gguf/qwen2.5-3b-toolcalls-v2-tiny-q4km.gguf \
     --min-parse-rate 0.03 \
     --anti-loop --model-version v2-tiny
 
 # 6. Phase 5 — FULL training. ~3-4h wall clock on M-series MPS.
-.venv-finetune/bin/python models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py \
-    --dataset-dir data/processed/qwen25_tools/v2 \
-    --epochs 1 \
-    --run-tag v2
+DATASET_TIER=full DATASET_VERSION=v2 RUN_TAG=v2-full \
+  .venv-finetune/bin/python -u models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py
 
-# 7. Phase 5 validator — must pass ≥ 85%.
+# 7. Phase 5 validator — must pass ≥ 85% on merged HF + GGUF backends.
 # 8. Phase 6 — GGUF convert + LM Studio install.
+# 9. Phase 7 (NEW) — chat-loop verification via llama-server on the v2 GGUF.
+#    Restart Dropbox ONLY after both LM Studio AND chat-loop pass.
 ```
+
+**LoRA output dir** is `models/lora/qwen2.5-3b-instruct-toolcalls-lora/`
+(with `-instruct-`), not `qwen2.5-3b-toolcalls-lora/` (that's where the
+training script lives). The `latest` symlink in the output dir advances
+on successful training completion.
 
 ### Critical reminders before training
 
