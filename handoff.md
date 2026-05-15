@@ -1,6 +1,48 @@
 # Handoff — agent-memory
 
-## Current Status (2026-05-13, late session)
+## ⚠️ Current Status (2026-05-15) — V2 RETRACTED, V3 PLANNED
+
+**v2 is NOT production-ready.** Real-world A/B test on 2026-05-15 (PR #44
+branch, before merge) showed v2 is strictly worse than v1 in multi-turn
+agentic use:
+
+| Metric | v1 (q4_k_m, shipped) | v2 (q6_k, retracted) |
+|---|---|---|
+| Useful answer rate | 3/10 (30%) | **0/10 (0%)** |
+| Multi-turn adaptation | 9/10 (90%) | **3/10 (30%)** |
+| Loop rate | 4/10 (40%) | **9/10 (90%)** |
+
+**What we got wrong in v2:** Phase-9 vague-prompt eval measured the wrong
+symptom (empty-args `{}` arguments). On real prompts, neither v1 nor v2
+emits empty-args; v1's actual production bug is *path hallucination +
+populated-args loops*, and v2 traded path hallucination away (real win)
+but broke tool_response grounding (catastrophic regression).
+
+**v2 specific regressions:**
+1. Re-emits identical tool_call after seeing a tool_response (90% of sessions)
+2. Hallucinates fake `user`/`tool_response`/`assistant` chat scaffolding
+   inside one generation, burning context
+3. Off-topic action selection (e.g. `gh issue create` instead of searching
+   for a test)
+
+**Decision:** PR #44 stays as the v2 artifact / learning record but the
+GGUF must NOT be wired in as a Claude-Code replacement. v1 remains the
+shipped production model. v3 work picks up from this postmortem.
+
+**Read these before any v3 work:**
+- `docs/training_runs/v2-real-world-test.md` — full A/B with verbatim transcripts
+- `docs/fine_tune/V3_PLAN.md` — v3 plan with multi-turn fixes baked in
+- `docs/training_runs/v2-20260514T055422Z.md` — v2 training run report (incomplete: gate was wrong)
+
+**v3 base:** `Qwen/Qwen3-VL-8B-Instruct` (256K native context, vision,
+native tool-calling in chat template). Cloud A100 training. Dataset
+rebuild from 303K+ new rows since 2026-03-29. Three training-data fixes:
+stop-after-tool_call, oversample text-synthesis-after-tool_response,
+negative training on identical-re-emit.
+
+---
+
+## Previous Status (2026-05-13, late session) — superseded by retraction above
 
 ### V2 fine-tune data pipeline COMPLETE — ready for training
 
