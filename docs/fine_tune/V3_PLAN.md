@@ -2,8 +2,8 @@
 
 **Status:** PROPOSED — 2026-05-15
 **Supersedes:** v2 (retracted, see `docs/training_runs/v2-real-world-test.md`)
-**Base:** `Qwen/Qwen3-VL-8B-Instruct`
-**Training:** cloud A100/H100 (Runpod), NOT MPS
+**Base:** `Qwen/Qwen3-8B`
+**Training:** LOCAL MPS only (~36–40h wall clock)
 
 ## 1. Why v3 exists (the v2 postmortem in one paragraph)
 
@@ -17,85 +17,91 @@ only 30% of the time vs v1's 90%. v2 fixed path hallucination (real win
 (catastrophic regression). v3 must fix that regression and the latent
 v1 regressions it inherits.
 
+v3 also constrains training to models ≤ 6 GB Q4_K_M while the pipeline
+is being de-risked. Iteration speed matters more than capability right
+now; v2's 12-hour training + bad-gate cycle was too slow to debug
+effectively.
+
 Full A/B: `docs/training_runs/v2-real-world-test.md`.
 
 ## 2. Goals (in priority order)
 
-1. **Multi-turn tool_response grounding.** After a `<tool_response>` user
+1. **Better at OUR work, doesn't degrade.** Concretely: better tool
+   selection on agent-memory, fire-map, daily-dispatch, anvil. Measured
+   by Class A (in-distribution shape match), Class B (tool_response
+   adaptation), and Class E (project recall).
+2. **Multi-turn tool_response grounding.** After a `<tool_response>` user
    turn, the assistant must adapt — emit a different tool_call, OR
    produce a text answer. Re-emitting the same call is the v2 regression
    to kill.
-2. **Stop-after-tool_call.** Generation ends at `</tool_call>` cleanly.
+3. **Stop-after-tool_call.** Generation ends at `</tool_call>` cleanly.
    v2 hallucinated fake `user`/`tool_response`/`assistant` scaffolding
    inside one generation.
-3. **On-topic action selection.** v2's prompt-3 emitting `gh issue create`
+4. **On-topic action selection.** v2's prompt-3 emitting `gh issue create`
    for a "is there a test for X?" question is a training-distribution
    bleed that must not survive.
-4. **Carry forward v2's wins:** stays in the right repo (no fire-map
-   path hallucination), plausible local commands, populated arg values.
-5. **Add capabilities:** 256K context (8× v2's 32K), native vision, more
-   modern base model with native tool-calling in the chat template.
+5. **No in-args generative loops.** Argument-value strings must not loop
+   repeated content until max_tokens.
+6. **≥125k effective context.** Via YaRN at serve time on Qwen3-8B's
+   32k native window (`--rope-scaling yarn --rope-scale 4
+   --yarn-orig-ctx 32768`, per FAILURE_MODES.md #12).
+7. **Local-only.** Train on the user's Mac (~40h). No cloud.
 
 Non-goals (deferred):
-- Audio modality (Qwen3-Omni is 30B MoE, way over budget)
-- Function-calling reasoning chains (v3 stays one-step at a time)
-- Sub-1B distillation (separate ticket if v3 ships)
+- Vision in the trained model — handled in the harness as a pre-pass
+  (see §10).
+- Audio modality.
+- Function-calling reasoning chains (v3 stays one-step at a time).
+- DPO/KTO preference training — defer to v3.1.
 
 ## 3. Base model decision
 
-**Pick:** `Qwen/Qwen3-VL-8B-Instruct`
+**Pick:** `Qwen/Qwen3-8B`
 
 | Attribute | Value | Source |
 |---|---|---|
-| HF repo | `Qwen/Qwen3-VL-8B-Instruct` | huggingface.co/Qwen/Qwen3-VL-8B-Instruct |
-| Params | ~9B | model card |
-| Native context | 262,144 (extendable to 1M with YaRN) | config.json |
-| Vision | Yes (separate mmproj file at inference) | model card |
-| Tool calling in chat template | Yes — verified `<tools>` branch + `<tool_call>`/`</tool_call>` emit logic in tokenizer_config.json | direct Jinja read |
+| HF repo | `Qwen/Qwen3-8B` | huggingface.co/Qwen/Qwen3-8B |
+| Params | 8.2B | model card |
+| Native context | 32,768 | config.json |
+| YaRN context | 131,072 (at scale 4, orig 32k) | rope_scaling docs |
+| Q4_K_M size | ~5 GB | GGUF community ports |
+| Tool calling in chat template | Yes (native `<tools>` branch) | tokenizer_config.json |
 | License | Apache-2.0 | repo |
-| Released | 2025-10-15 | release notes |
-| GGUF available | Yes, official: `Qwen/Qwen3-VL-8B-Instruct-GGUF` (Q4_K_M/Q8_0/F16 + mmproj Q8_0/F16) | repo |
-| llama.cpp floor | b6907 (Qwen3-VL architecture support) | llama.cpp release notes |
-| transformers floor | v4.57.0 | model card |
 
-**Why not Qwen2.5-VL-7B:** Stock chat template has NO tools branch.
-Vocab has `<tool_call>` tokens but the Jinja doesn't reference them.
-Training would fight the template. Documented in QwenLM/Qwen3-VL #1093.
+**Hard size rule:** any candidate base for v3 training must produce a
+Q4_K_M GGUF of ≤ 6 GB. Qwen3-8B at ~5 GB clears this comfortably.
 
-**Why not Qwen2.5-7B-Instruct-1M:** 1M context is great but no vision,
-and tool-calling not in default chat template either.
+**Why not Qwen3.5-9B (the 9B is real but rejected for training):**
+Hybrid Mamba/SSM architecture; LoRA tools have unproven injection
+points for SSM tensors. Thinking-by-default mode fights tool-call SFT.
+Multimodal weights wasted (vision moved to harness). 5.6 GB at the
+size limit. Stays loaded in LM Studio for general inference but NOT
+for training.
 
-**Why not Qwen3-8B (text-only):** Same template story as VL but no vision.
-Fallback if vision-pipeline plumbing slips.
+**Why not Qwen3-VL-8B-Instruct:** Vision moved to harness pre-pass per
+user decision 2026-05-15 ("sacrifice vision in lieu of context").
 
-**Why not Qwen3.5/3.6:** Only exist as 35B-A3B MoE — too large for our
-budget (cloud cost) and inference target (LM Studio / llama.cpp local).
+**Why not Qwen2.5-7B-Instruct-1M:** No `<tools>` branch in default chat
+template. Retrofitting one is exactly the kind of yak-shave v2 taught
+us to avoid.
 
 ## 4. Training infrastructure
 
-**Cloud, not local.** v2 took 12h 38m on MPS for 23k rows / 3B model /
-1 epoch. v3 is ~3× the data (75K+ rows after dedupe/filter) and ~3× the
-model (9B). Linear scaling = ~100h on MPS, which is unworkable. Cloud
-A100 80GB ≈ ~6h for the same job. Cost ~$15–20.
+**Local MPS training, ~40h wall clock.** Apple Silicon M-series, MPS
+backend, bf16 dtype. No cloud, no remote, no upload.
 
-| Provider | GPU | Hourly | Est. total | Notes |
-|---|---|---|---|---|
-| Runpod | A100 80GB | ~$2/h | ~$12–18 | already used in flight test |
-| Vast.ai | A100 80GB | ~$1.50/h | ~$9–14 | cheaper, less predictable |
-| Modal | A100 80GB | ~$3/h | ~$18–24 | nicer DX, more expensive |
-| Local MPS | M-series | $0 | 100h+ | unworkable for 8B |
+Wall clock estimate: ~3× v2's 12h 38m = **36–40h for 1 epoch** on the
+v3 dataset at 8B. The user can use the machine for other work during
+training (slow but possible — see Phase 0 pre-flight in §7).
 
-**Pick:** Runpod A100 80GB first. Fallback Vast if Runpod has no capacity
-on training day.
+Hard environmental requirement: **Dropbox MUST be quit during
+training** (FAILURE_MODES #1 — symlink resolution under
+`~/Dropbox/_CODING/...` corrupts checkpoint paths). Phase 2 in §7
+makes this an explicit gate.
 
-Workflow:
-1. `rclone` dataset + base model to Runpod pod-attached volume
-2. Train via PEFT LoRA (same recipe shape as v2)
-3. Download adapter back to laptop
-4. Merge + convert to GGUF locally (still uses llama.cpp on the Mac)
-5. Local validation + chat-loop verify
-
-Adapter download is ~150–300 MB so the merge-locally step is cheap.
+No `rclone`, no SSH, no pod provisioning, no upload step. Adapter is
+saved straight to local disk; merge + GGUF conversion happen on the
+same machine in the same shell.
 
 ## 5. Dataset rebuild
 
@@ -135,15 +141,14 @@ v2 would lose diversity and bias toward stale workflows.
    but require the tool_call to be a *discovery* action (Bash/Read/Grep)
    not a *mutation* action.
 
-6. **Vision examples (NEW — if scope allows).** If we want v3 to use
-   vision, sample ~5% of training rows from Anvil's screenshot capture
-   (already exists in `~/Dropbox/_CODING/anvil/screenshots/`). Pair each
-   screenshot with a real prompt like "what does this UI look like" or
-   "is this button styled correctly". Keep small at first; vision is a
-   nice-to-have, not the goal. **Decision needed:** ship vision in v3
-   or hold for v3.1?
+6. **Project-tagged oversampling.** Tag rows whose prompts or paths
+   mention `agent-memory`, `fire-map`, `daily-dispatch`, `anvil`, or
+   known TDD/QA patterns. Oversample tagged rows at 2× the natural
+   rate, capped so any single project ≤ 25% of training set. Document
+   per-project row counts in MANIFEST. This is the data-side lever
+   for the Class E "project recall" eval (§6).
 
-### Build script — additional filter for the in-args loop
+### Build script — additional filters
 
 7. **Cap argument-value length and repetition.** During row build, if
    any single argument value is longer than 2,000 chars OR contains > 3
@@ -154,17 +159,25 @@ v2 would lose diversity and bias toward stale workflows.
    generated string in it; we don't need those for tool-call shape
    learning.
 
+8. **Vision-row filter.** The trained model is text-only (see §10). If
+   any source rows reference images (screenshot prompts, image
+   attachments), strip the image and replace with a `[VISION]`
+   placeholder OR drop the row entirely. Default: drop. The MANIFEST
+   records the count of vision-dropped rows so we can audit before
+   training.
+
 New `scripts/fine_tune/build_v3_dataset.py`, derived from `build_v2_dataset.py`,
 with the changes above. Spec the data path:
 
 ```
-data/processed/qwen3_vl_tools/v3/
+data/processed/qwen3_tools/v3/
   train.chat.jsonl        ~60K-90K rows
   valid.chat.jsonl        ~5% session-aware split
   train.tiny.jsonl        200 rows for smoke
   valid.tiny.jsonl        30 rows
-  tool_schemas.json       (carry v2 schemas, possibly add Glob/Vision-specific)
-  MANIFEST.json           drop reasons, oversample ratios, vision-row count
+  tool_schemas.json       (carry v2 schemas)
+  MANIFEST.json           drop reasons, oversample ratios, per-project row
+                          counts, vision-dropped count
 ```
 
 ## 6. Eval suite — the v2 mistake corrected
@@ -184,7 +197,7 @@ to whether the model behaves on **our** prompts in **our** sessions.
 v3 evals are anchored to our training data so that "before vs after"
 is a direct comparison on the distribution we actually care about.
 
-### Three test classes anchored to our training data
+### Five test classes anchored to our training data
 
 #### Class A — Replayed session starts (in-distribution)
 
@@ -244,9 +257,32 @@ v2 baseline: 0% useful, 90% loop, 30% adapt.
 Existing `scripts/fine_tune/validate_tool_calls.py` at ≥ 85% aggregate.
 Keep as a sanity check; v2 passed this and was still broken in real use.
 
+#### Class E — Project recall (the "justifies the work" gate)
+
+Hand-curated set of ~20 prompts that mention the user's projects by
+name — `agent-memory`, `fire-map`, `daily-dispatch`, `anvil` — and
+require the model to use project-specific knowledge from training data
+(paths, schemas, scripts, conventions). Examples: "where does fire-map
+load WUI polygons from", "what's the agent-memory backfill script
+called", "show me the daily-dispatch cron entry".
+
+Match criteria (any one passes):
+- References a real path/script/command from that project
+- Uses the project's actual tool conventions (e.g. `make` targets,
+  `scripts/` layout)
+- Plausibly correct first action for that project's workflow
+
+This is the gate that **justifies the whole exercise.** v1 and v2 will
+both score very low here (they were trained without the project-tagged
+oversampling from §5 fix #6). If v3 doesn't beat them on Class E, we
+gained nothing from the rebuild.
+
+**v3 gate: ≥ 50% project-correct recall, AND strictly better than both
+v1 and v2 baselines.**
+
 ### Tool-call shape gate (cross-cutting)
 
-Across all four classes, count instances where the model continues
+Across all five classes, count instances where the model continues
 generating after `</tool_call>` (the v2 "hallucinated chat scaffolding"
 regression). Pass: 0 / total prompts. Fail: any.
 
@@ -279,17 +315,19 @@ Class B adapt rate        90%      30%      XX%     +YY pp
 Class C useful answer     30%      0%       XX%     +YY pp
 Class C loop rate         40%      90%      XX%     +YY pp
 Class D aggregate         80%      85%      XX%     +YY pp
+Class E project recall    TBD%     TBD%     XX%     +YY pp
 Shape violations          TBD      TBD      XX
 In-args repetition viols  0        5/10     XX
 ```
 
-**Ship gate:** Class B ≥ 85%, Class C all green, Class D ≥ 85%, shape
-violations = 0, in-args repetition violations = 0, Class A documented
-(no hard threshold first run — we need v1 + v2 baselines first).
+**Ship gate:** Class B ≥ 85%, Class C all green, Class D ≥ 85%, Class
+E ≥ 50% AND strictly better than v1 and v2, shape violations = 0,
+in-args repetition violations = 0, Class A documented (no hard
+threshold first run — we need v1 + v2 baselines first).
 
 ### What we measure BEFORE v3 training
 
-Before starting v3, run all four classes against v1 and v2. This
+Before starting v3, run all five classes against v1 and v2. This
 establishes baselines we can actually compare against — without them
 we have no idea whether v3 improvements are real or measurement noise.
 This is Phase 0.5 in §7.
@@ -304,88 +342,85 @@ in `docs/training_runs/v3-baselines.md` AND human sanity review.
 
 | Phase | Action | Gate | Rollback |
 |---|---|---|---|
-| 0 | Pre-flight: verify base model HF revision SHA, llama.cpp ≥ b6907, transformers ≥ v4.57, Runpod credit ≥ $30, dataset delta still ≤ 30 days old | all green | restart |
-| 0.5 | **Baseline v1 + v2 on all four eval classes (A/B/C/D).** Write numbers to `docs/training_runs/v3-baselines.md`. WITHOUT this baseline, no v3 improvement is provable. | doc committed | NA |
-| 1 | Build v3 dataset (`scripts/fine_tune/build_v3_dataset.py --write`) | MANIFEST shows < 5% reject rate, vision row count documented, **held-out eval split written separately** (30 sessions for Class A, 30 for Class B) | rebuild with relaxed filters |
-| 2 | Push dataset + base to Runpod pod | uploads complete, SHAs match | retry rclone |
-| 3 | Tiny training (`DATASET_TIER=tiny`) on Runpod | adapter saved, train loss curve sensible | abort, fix data |
+| 0 | Pre-flight: verify base model HF revision SHA, llama.cpp version ≥ b6907 (Qwen3 family), transformers ≥ v4.57.0, ≥ 40 GB free RAM during training, ≥ 80 GB free disk, dataset delta still ≤ 30 days old | all green | restart |
+| 0.5 | **Baseline v1 + v2 on all 5 eval classes (A/B/C/D/E).** Write to `docs/training_runs/v3-baselines.md`. | docs committed | NA |
+| 1 | Build v3 dataset (`scripts/fine_tune/build_v3_dataset.py --write`) — includes project-tagged oversampling | MANIFEST shows < 5% reject rate, per-project row counts documented, held-out eval split written separately | rebuild with relaxed filters |
+| 2 | Quit Dropbox; verify symlink integrity | clean | NA |
+| 3 | Tiny training (`DATASET_TIER=tiny`) on LOCAL MPS | adapter saved, train loss curve sensible | abort, fix data |
 | 4 | Tiny validator (single-turn, --min-parse-rate 0.05) | PASS | fix dataset shape |
-| 5 | Full training on Runpod (~6h A100) | exit 0, train_loss < v2's 0.91 final | abort, halve LR |
-| 6 | Download adapter, merge locally, convert to GGUF f16 + Q4_K_M + Q6_K + Q8_0 | files written, SHAs computed | re-quantize from f16 |
+| 5 | Full training on LOCAL MPS (~36–40h). User uses machine sparingly during this. | exit 0, train_loss < v2's 0.91 final | abort, halve LR |
+| 6 | Merge LoRA, convert to GGUF f16 + Q4_K_M + Q6_K | files written, **Q4_K_M ≤ 6 GB confirmed** | re-quantize from f16 |
 | 7 | Single-turn validator ≥ 85% on Q6_K | PASS | drop to Q8_0, retry |
-| 8 | Tool-call shape gate (Gate 5 above) | PASS | retrain with stricter stop-after-tool_call |
-| 9 | **Multi-turn real-world A/B (Gates 1, 2, 3)** | PASS — primary gate | retrain with adjusted oversample ratios |
-| 10 | LM Studio install + manual smoke test by user | works | uninstall, keep v1 |
+| 8 | Tool-call shape gate (0 hallucinated post-tool_call scaffolding) | PASS | retrain with stricter stop-after-tool_call |
+| 9 | **Multi-turn real-world A/B (Classes B + C + E)** | PASS — primary gate | retrain with adjusted oversample ratios |
+| 10 | Restart Dropbox; LM Studio install + manual smoke test | works | uninstall, keep v1 |
 | 11 | Run report + PR + close v3 parent issue | merged | abandon |
-
-Phase 5 on Runpod requires:
-- Pod with A100 80GB and 200 GB ephemeral
-- `pip install -r requirements-cloud.txt` (new file: pinned transformers ≥ 4.57, peft latest, datasets, accelerate)
-- Wandb integration so we can watch loss curves from the laptop
 
 ## 8. v3 training config (proposed)
 
 ```
-base:           Qwen/Qwen3-VL-8B-Instruct (at known revision SHA)
-adapter:        LoRA r=32 alpha=64 dropout=0.05 (up from v2's r=16)
+base:           Qwen/Qwen3-8B (at pinned HF revision SHA)
+adapter:        LoRA r=32 alpha=64 dropout=0.05
 target_modules: q_proj k_proj v_proj o_proj gate_proj up_proj down_proj
 epochs:         1.0
-max_length:     4096 (up from v2's 1024 — most sessions need more context)
+max_length:     4096
 batch_size:     1
-grad_accum:     8 (up from v2's 4 — 8B model + longer seqs need more accum)
-lr:             1.5e-4 cosine (down from v2's 2e-4 — larger model, smaller LR)
+grad_accum:     8
+lr:             1.5e-4 cosine
 warmup_ratio:   0.03
 dtype:          bf16
-device:         cuda (Runpod), NOT mps
+device:         mps (NOT cuda)
 eval_steps:     500
 save_steps:     250
+per_device_eval_batch_size: 1   # FAILURE_MODES #8
 seed:           42
 ```
 
-`max_length=4096` is a big jump. The base supports 262K but training at
-that length on a single A100 is a memory cliff. 4K covers ~95% of real
-Claude sessions per the v2 length histogram. Inference still gets the
-full 256K from the base position embeddings.
+`max_length=4096` covers ~95% of real Claude sessions per the v2 length
+histogram. Training above that on MPS is a memory cliff. Inference
+still gets ≥125k via YaRN at serve time (`--rope-scaling yarn
+--rope-scale 4 --yarn-orig-ctx 32768`).
 
 ## 9. Mitigations from v2 carry-forward
 
 These v2 lessons still apply unchanged:
 
 - `.absolute()` not `.resolve()` for paths under `models/` (FAILURE_MODES #1)
-- Quit Dropbox before training (irrelevant on Runpod, still relevant for
-  laptop merge step)
+- Quit Dropbox before training (Phase 2 gate in §7)
 - ENV-var-driven training script (v3's `run_train_lora_v3.py` keeps the
-  pattern, just swaps base + cuda)
-- GGUF output names include version tag — `qwen3-vl-8b-toolcalls-v3-q6k.gguf`
+  pattern, just swaps base)
+- GGUF output names include version tag — `qwen3-8b-toolcalls-v3-q6k.gguf`
 - Validator suite alignment — the new multi-turn gate makes this less
   fragile but still: validator system prompt must match training format
 - Q6_K is the safe ship quant; Q4_K_M may not preserve arg commitment;
   ship the smallest quant that passes Gate 7
 
-## 10. Vision: ship in v3 or hold?
+## 10. Vision: harness pre-pass, not in the trained model
 
-**Recommendation: HOLD vision for v3.1.** Reasoning:
+Vision is OUT of the trained model. Image inputs are routed through a
+separate harness pre-pass — an off-the-shelf vision model (Qwen2.5-VL
+or the existing mmproj at
+`~/.lmstudio/models/lmstudio-community/Qwen3.5-9B-GGUF/mmproj-Qwen3.5-9B-BF16.gguf`)
+generates a text description, then the trained Qwen3-8B handles the
+tool call. This keeps training under 6 GB Q4_K_M, removes
+vision-encoder complexity from the LoRA, and lets us swap vision
+models without retraining.
 
-1. v3's primary mandate is fixing the v2 multi-turn regression. Adding
-   vision is orthogonal and doubles the eval surface.
-2. Vision adds an mmproj file (separate GGUF), a different inference
-   path (`llama-mtmd-cli`), and a different training-data shape (image
-   tokens). Compounding risk.
-3. The user's actual day-to-day pain is tool-call quality on text
-   prompts, not screenshot interpretation.
-4. v3 base supports vision regardless — if v3.1 wants to add it, the
-   base is already vision-capable, just need to add vision rows to the
-   dataset and retrain.
+Flow:
+```
+[image] → vision model (untrained, swappable) → [text description]
+       → trained Qwen3-8B (tool-call SFT)      → [tool_call]
+```
 
-If you want vision in v3 anyway, the scope add is ~+1 day for dataset
-work, ~+2h for training (image tokens are cheap), and an extra GGUF
-artifact to ship. **Your call.**
+This is referenced as a harness feature, not a training feature.
+Dataset fix #8 (§5) keeps vision rows out of the training corpus.
 
 ## 11. What we are NOT doing in v3
 
+- Vision-in-model (see §10 — harness pre-pass instead)
 - DPO/KTO preference training (defer to v3.1 if SFT alone fixes the
   re-emit regression)
-- Audio modality (Qwen3-Omni is too large)
+- Audio modality
 - Distillation (would require teacher generations from v3 + smaller base)
 - Replacing the MCP runtime anti-loop guard (it's a belt-and-suspenders
   layer that should stay regardless of model quality)
@@ -397,10 +432,11 @@ artifact to ship. **Your call.**
 Before kicking off v3:
 
 - [ ] User reviews this plan
-- [ ] User confirms vision in/out
-- [ ] User confirms Runpod or alternative cloud provider
-- [ ] User confirms budget (~$15–20 estimated, $50 cap)
-- [ ] User confirms gate thresholds in §6 (especially the 50% useful-answer target)
+- [ ] User confirms Qwen3-8B base
+- [ ] User confirms ≥40 hr local training is acceptable
+- [ ] User confirms quitting Dropbox during training
+- [ ] User confirms gate thresholds in §6 (especially Class E ≥ 50%
+      AND strictly better than v1/v2)
 - [ ] Quality-gate agent runs against this plan and produces a JSON
       finding (per CLAUDE.md "Plans require senior production review")
 
@@ -414,5 +450,4 @@ Once approved: open v3 parent issue, branch off main, run Phase 0.
 - Pipeline runbook (general): `docs/fine_tune/PIPELINE_RUNBOOK.md`
 - Failure modes: `docs/fine_tune/FAILURE_MODES.md` (will get v3 additions during the run)
 - Harness: `tests/fine_tune/real_world/harness.py`
-- Base model card: huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-- Base GGUF: huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF
+- Base model card: huggingface.co/Qwen/Qwen3-8B

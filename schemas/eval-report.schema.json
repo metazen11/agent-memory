@@ -83,8 +83,8 @@
     },
     "eval_class": {
       "type": "string",
-      "enum": ["A", "B", "C", "D", "custom"],
-      "description": "Which V3_PLAN.md §6 eval class this report covers. 'custom' for ad-hoc runs."
+      "enum": ["A", "B", "C", "D", "E", "custom"],
+      "description": "Which V3_PLAN.md §6 eval class this report covers. 'custom' for ad-hoc runs. E = project-specific recall."
     },
     "gates": {
       "type": "array",
