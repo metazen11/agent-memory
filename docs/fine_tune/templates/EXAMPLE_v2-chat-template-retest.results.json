@@ -1,0 +1,240 @@
+{
+  "report_id": "v2-chat-template-retest-20260515",
+  "run_date": "2026-05-15",
+  "model": {
+    "id": "qwen2.5-3b-toolcalls-v2-q6k",
+    "path": "models/gguf/qwen2.5-3b-toolcalls-v2-q6k.gguf",
+    "quant": "Q6_K",
+    "params": "3B"
+  },
+  "harness": {
+    "name": "harness_chat.py",
+    "version": "tmp-2026-05-15",
+    "endpoint": "/v1/chat/completions",
+    "server": "llama-server --jinja -c 8192 (127.0.0.1:9099)",
+    "temperature": 0.0,
+    "max_tokens": 512,
+    "max_turns": 5
+  },
+  "eval_class": "C",
+  "gates": [
+    {
+      "name": "useful_answer rate",
+      "threshold": ">= 50",
+      "actual": 0,
+      "units": "%",
+      "pass": false,
+      "notes": "0/10 — model never synthesises a final text reply after tool results"
+    },
+    {
+      "name": "loop rate",
+      "threshold": "<= 30",
+      "actual": 90,
+      "units": "%",
+      "pass": false,
+      "notes": "9/10 — identical tool_call re-emission or in-args generative loop"
+    },
+    {
+      "name": "multi_turn_adapted",
+      "threshold": ">= 80",
+      "actual": 80,
+      "units": "%",
+      "pass": true,
+      "notes": "8/10 — OpenAI tool role does coax varied calls, but adaptation does not lead to text answer"
+    },
+    {
+      "name": "turn-1 args populated",
+      "threshold": ">= 95",
+      "actual": 100,
+      "units": "%",
+      "pass": true,
+      "notes": "10/10 — v2 fine-tune fixed the empty-args bug from v1; this part works"
+    },
+    {
+      "name": "in-args repetition violations",
+      "threshold": 0,
+      "actual": 5,
+      "units": "violations",
+      "pass": false,
+      "notes": "5/10 — arguments string hit max_tokens with hundreds of repeated lines (new failure mode vs v1)"
+    },
+    {
+      "name": "post-tool_call scaffolding",
+      "threshold": 0,
+      "actual": 0,
+      "units": "violations",
+      "pass": true,
+      "notes": "Model did not emit fake user/tool_response/assistant scaffolding under --jinja"
+    }
+  ],
+  "baselines": [
+    {
+      "model_id": "v1 ChatML (qwen2.5-3b-toolcalls-v1)",
+      "results_url": "/tmp/v2-rwt/v1-results.json",
+      "summary": {
+        "useful_answer": "3/10",
+        "looped": "4/10",
+        "gave_up": "3/10",
+        "text_only_fallback": "0/10",
+        "multi_turn_adapted": "9/10",
+        "turn1_args_populated": "10/10"
+      }
+    },
+    {
+      "model_id": "v2 ChatML (hand-rolled harness)",
+      "results_url": "/tmp/v2-rwt/v2-results.json",
+      "summary": {
+        "useful_answer": "0/10",
+        "looped": "9/10",
+        "gave_up": "0/10",
+        "text_only_fallback": "1/10",
+        "multi_turn_adapted": "3/10",
+        "turn1_args_populated": "9/10"
+      }
+    }
+  ],
+  "prompts": [
+    {
+      "id": 1,
+      "text": "Help me find where the validator system prompt is built. Show me the actual code.",
+      "outcome": "looped",
+      "n_turns": 5,
+      "total_tokens": 2560,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["in_args_repetition"],
+      "notes": "v1: gave_up; v2 ChatML: looped"
+    },
+    {
+      "id": 2,
+      "text": "What changed in the fine_tune scripts in the last week?",
+      "outcome": "looped",
+      "n_turns": 3,
+      "total_tokens": 99,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["identical_reemit"],
+      "notes": "v1: useful_answer; v2 ChatML: looped"
+    },
+    {
+      "id": 3,
+      "text": "Is there a test that proves the empty-args loop is fixed? Show me the test.",
+      "outcome": "looped",
+      "n_turns": 4,
+      "total_tokens": 674,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": [],
+      "notes": "v1: gave_up; v2 ChatML: looped"
+    },
+    {
+      "id": 4,
+      "text": "I think there might be a memory leak in the MCP server. Investigate.",
+      "outcome": "looped",
+      "n_turns": 5,
+      "total_tokens": 2560,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["in_args_repetition"],
+      "notes": "v1: looped; v2 ChatML: looped"
+    },
+    {
+      "id": 5,
+      "text": "Generate a summary of all GGUF files in this repo and their quants.",
+      "outcome": "looped",
+      "n_turns": 4,
+      "total_tokens": 298,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": [],
+      "notes": "v1: looped; v2 ChatML: looped"
+    },
+    {
+      "id": 6,
+      "text": "Find every TODO comment in the Python code and group them by file.",
+      "outcome": "max_turns",
+      "n_turns": 5,
+      "total_tokens": 2560,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["in_args_repetition"],
+      "notes": "v1: gave_up; v2 ChatML: text_only_fallback; chat-comp result classed as gave_up in the original narrative table"
+    },
+    {
+      "id": 7,
+      "text": "What's the difference between v1 and v2 training data?",
+      "outcome": "looped",
+      "n_turns": 3,
+      "total_tokens": 153,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["identical_reemit"],
+      "notes": "v1: useful_answer; v2 ChatML: looped"
+    },
+    {
+      "id": 8,
+      "text": "Walk me through how a training row goes from raw .jsonl to the final dataset.",
+      "outcome": "looped",
+      "n_turns": 5,
+      "total_tokens": 2560,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["in_args_repetition"],
+      "notes": "v1: looped; v2 ChatML: looped"
+    },
+    {
+      "id": 9,
+      "text": "Show me the most recent commit and what it changed.",
+      "outcome": "looped",
+      "n_turns": 4,
+      "total_tokens": 136,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["identical_reemit"],
+      "notes": "v1: useful_answer; v2 ChatML: looped — model had everything at turn 1 but kept tool-calling"
+    },
+    {
+      "id": 10,
+      "text": "How do I run the validator? Give me the exact command.",
+      "outcome": "looped",
+      "n_turns": 4,
+      "total_tokens": 241,
+      "first_tool_call": { "name": "Bash" },
+      "regressions": ["in_args_repetition"],
+      "notes": "v1: looped; v2 ChatML: looped"
+    }
+  ],
+  "aggregate_stats": {
+    "useful_answer": "0/10",
+    "looped": "9/10",
+    "gave_up": "1/10",
+    "text_only_fallback": "0/10",
+    "multi_turn_adapted": "8/10",
+    "turn1_args_populated": "10/10",
+    "in_args_repetition_violations": "5/10"
+  },
+  "notable_findings": "### Failure pattern (representative)\n\nPrompt 9 (\"Show me the most recent commit and what it changed.\"):\n\n```\nturn 1: Bash(command=\"git log --oneline -3\")        -> fake stdout returned\nturn 2: Read(file_path=\"/Users/mz/Dropbox/_CODING/anvil/HANDOFF.md\")  -> fake content\nturn 3: Read(file_path=\"/Users/mz/Dropbox/_CODING/anvil/HANDOFF.md\")  [same args]\nturn 4: Read(file_path=\"/Users/mz/Dropbox/_CODING/anvil/HANDOFF.md\")  [same args] -> looped\n```\n\nThe model had everything it needed at turn 1's tool result to answer in plain text. Instead it asked for a second file, then re-asked for the same file twice. This is a synthesis failure, not a format issue.\n\n### In-args generative loop (new vs v1)\n\nOn 5/10 prompts the model produced a `tool_call` whose JSON arguments string was so long it hit `max_tokens=512` mid-string, with hundreds of repeated lines (e.g. dozens of duplicated `print(...)` statements in a single `python3.11 -c \"...\"` one-liner). v1 never produced this; v2 produces it on 50% of prompts. This drives the new in-args repetition gate added to V3_PLAN.md §6.\n\n### What did NOT regress\n\n- `--jinja` accepted the GGUF's embedded chat_template cleanly; no silent fallback\n- `finish_reason=\"tool_calls\"` returned correctly on tool-emitting turns\n- OpenAI `tool` role messages accepted without complaint\n- turn-1 args populated 10/10 (the v2 win — empty-args bug is fixed)\n- Multi-turn adaptation rose 3/10 → 8/10 vs the ChatML run; adaptation does not translate to useful answers, but the prompt rendering itself is not the bug",
+  "verdict": {
+    "pass": false,
+    "headline": "v2 is genuinely worse than v1 at the agentic task; the harness was not the problem.",
+    "recommendation": "Retraction stands — do not ship v2 as a replacement for v1. v3 must fix two regressions: (a) never-stops-tool-calling after tool_response (likely training-data imbalance toward tool_call-terminal turns), and (b) within-argument generative loops (likely a long-shell-script data leak). Both are tracked in V3_PLAN.md §6 as Class B / Class C / in-args repetition gates."
+  },
+  "artifacts": [
+    {
+      "name": "chat-completions harness",
+      "path": "/tmp/v2-rwt/harness_chat.py",
+      "size_bytes": 7191
+    },
+    {
+      "name": "raw transcripts (this run)",
+      "path": "/tmp/v2-rwt/v2-chat-results.json",
+      "size_bytes": 104610
+    },
+    {
+      "name": "llama-server log",
+      "path": "/tmp/v2-rwt/v2-chat-server.log",
+      "size_bytes": 72056
+    },
+    {
+      "name": "v2 ChatML baseline transcripts",
+      "path": "/tmp/v2-rwt/v2-results.json",
+      "size_bytes": 64261
+    },
+    {
+      "name": "v1 ChatML baseline transcripts",
+      "path": "/tmp/v2-rwt/v1-results.json",
+      "size_bytes": 93971
+    }
+  ]
+}

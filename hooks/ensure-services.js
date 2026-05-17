@@ -259,6 +259,53 @@ function ensureServer() {
   return false;
 }
 
+// ── Daily backup schedule (macOS launchd) ─────────────────────
+
+/**
+ * Ensure the agent-memory daily backup launchd job is installed.
+ *
+ * Idempotent on every session start:
+ *   - macOS only (other platforms no-op silently).
+ *   - Compares the installed plist's mtime against the template's mtime;
+ *     re-installs only when the template is newer OR the target is missing.
+ *   - Failures are debug-logged and silently swallowed — never block session
+ *     start on a backup-schedule issue.
+ */
+function ensureBackupSchedule() {
+  if (PLATFORM !== 'darwin') {
+    debug('Backup schedule: non-darwin host, skipping');
+    return;
+  }
+  try {
+    const installer = path.join(INSTALL_DIR, 'scripts', 'install_backup_schedule.sh');
+    const template = path.join(INSTALL_DIR, 'scripts', 'com.metazen.agent-memory-backup.plist');
+    if (!fs.existsSync(installer) || !fs.existsSync(template)) {
+      debug('Backup schedule: installer or template missing');
+      return;
+    }
+    const target = path.join(
+      process.env.HOME || '',
+      'Library/LaunchAgents/com.metazen.agent-memory-backup.plist'
+    );
+    // Idempotency: re-install only if target missing or template is newer.
+    if (fs.existsSync(target)) {
+      const targetMtime = fs.statSync(target).mtimeMs;
+      const templateMtime = fs.statSync(template).mtimeMs;
+      if (targetMtime >= templateMtime) {
+        debug('Backup schedule: already current');
+        return;
+      }
+      debug('Backup schedule: template newer than installed plist, reinstalling');
+    } else {
+      debug('Backup schedule: not installed, installing');
+    }
+    run(`bash "${installer}"`, { timeout: 10000 });
+    debug('Backup schedule: install complete');
+  } catch (err) {
+    debug(`Backup schedule: install failed (non-fatal): ${err.message}`);
+  }
+}
+
 // ── External database (BYOP) ─────────────────────────────────
 
 function ensureExternalDb() {
@@ -372,4 +419,8 @@ if (!serverOk) {
 }
 
 debug('All services healthy');
+
+// Best-effort daily-backup scheduling — never blocks session start.
+ensureBackupSchedule();
+
 process.exit(0);

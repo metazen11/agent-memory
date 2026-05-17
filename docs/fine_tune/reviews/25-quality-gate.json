@@ -1,0 +1,214 @@
+{
+  "verdict": "approve_with_changes",
+  "summary": "Plan is strategically sound and well-sequenced, but has critical gaps in (a) redaction enforcement on backfill, (b) the recall-surface join key (observation_id vs session_id/turn_index), (c) DB locking risk on the 54,987-row mem_tool_calls migration, and (d) retention/purge policy interaction. Eight high-severity issues should be resolved in the plan doc before any sub-issue PR opens; none are unrecoverable.",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "category": "security",
+      "where": "Step 2 / Step 5 — Risks section line 68-69; Step 2 'Behaviour' line 144-145; Step 5 acceptance criteria lines 247-255",
+      "issue": "Redaction enforcement on backfill is asserted but not pinned by a hard test or hard architectural guarantee. The plan says 'verify backfill goes through it, not raw INSERT' and 'Writes through the same redaction pipeline as live ingestion (NOT raw INSERT — must go through app.observations.create_* helpers).' But (1) there is no app/observations.py module in this repo — the live path is app/queue_worker.py and app/main.py, so 'create_* helpers' is undefined; (2) backfill_run_id stamping happens at insert time, but redact() is a text-level pass that does not know which JSON paths in tool_input are secret-bearing. A jsonl prompt like 'use this token sk-ant-api03-XXX to call the API' will redact in prompt_text but secrets nested in tool_input.headers.Authorization may pass through unscanned if redact_text() is only applied to top-level strings. Exposing tool_input on the recall path (Step 5) THEN compounds this: secrets that slipped through the v1 capture pipeline (5/2025 - 11/2025 window, before redact.py expansion) will start surfacing in /api/observations and MCP search responses to any agent with read access.",
+      "recommendation": "Add an explicit Step 2 acceptance criterion: 'every string leaf of tool_input and prompt_text passes through redact_text() before INSERT; a recursive scrubber walks the JSON tree.' Add a corresponding test in tests/backfill/test_redaction.py with fixtures for: (a) Authorization header nested in tool_input.headers, (b) connection string in tool_input.args, (c) env var dump in tool_response_preview, (d) bearer token in URL query string. Reference the canonical helper in app/redact.py:35 (redact_text) and add a new redact_json() that walks dicts/lists. For Step 5, add a *second* defense: scan tool_input one more time at recall-response-build time and emit a warn-level log if any [REDACTED:*] sentinel is *missing* from a row that pattern-matches a known secret shape — this catches both pre-redaction backfill rows and rows captured before the redact patterns were complete.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F2",
+      "severity": "critical",
+      "category": "failure_mode",
+      "where": "Step 1 lines 90-100; Risks section line 65-66",
+      "issue": "Migration 012 runs four ALTER TABLE statements on mem_tool_calls (54,987 rows) plus two CREATE INDEX statements, then auto-applies on uvicorn startup. The plan says 'nullable columns, default NULL, no backfill required on the column itself' — that is correct for the ALTER but is silent on (a) the CREATE INDEX behavior on 54k rows, which takes a ShareLock that blocks writes until completion, and (b) the auto-apply-on-startup model means the migration runs INSIDE the request-handling process — if the service is restarted under load, hooks fire, and writes block on the index build, hooks will time out and prompts will be dropped (which is exactly the bug we're fixing). The mitigation 'no backfill required on the column itself' addresses ALTER, not CREATE INDEX. The plan also does not specify whether the foreign-key REFERENCES mem_user_prompts(id) takes any lock that requires an empty table or a NOT VALID + VALIDATE CONSTRAINT pattern.",
+      "recommendation": "Change Step 1 to use CREATE INDEX CONCURRENTLY for both new indexes — this requires running them OUTSIDE the migration transaction, so the migration runner pattern needs to either (a) split 012 into 012a (ALTER+FK) and 012b (concurrent indexes, run as a separate non-transactional step), or (b) gate the CREATE INDEX behind a flag and document running it manually before service restart. For the FK ADD CONSTRAINT, use ADD CONSTRAINT ... NOT VALID then VALIDATE CONSTRAINT as a separate non-transactional step. Add an acceptance criterion: 'migration completes in < 10 s on a clean snapshot of prod DB (54,987 rows); index builds do not block concurrent hook POSTs.' Reference: existing migrations 006-011 (scripts/migrations/) for the established CONCURRENTLY pattern, if any.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F3",
+      "severity": "high",
+      "category": "scope",
+      "where": "Step 5 line 232 — 'Left-join mem_tool_calls by observation_id (or by session_id + turn_index window)'",
+      "issue": "The plan offers TWO join strategies in an 'or' clause, but they have very different semantics. mem_tool_calls.observation_id (from migration 006) is set when a tool call gets summarized into an observation post-hoc. Backfilled rows from jsonl will NOT have observation_id populated (the plan does not mention populating it). So the recall-surface code MUST use session_id + turn_index window for backfilled rows but CAN use observation_id for live-captured rows that did get observed. Pinning this 'or' to a single algorithm matters because the alternative is silent: a session whose prompts were backfilled but whose tool_calls came from live capture (mixed-origin sessions are likely, given live capture started post-some-date) will have observation_id on the tool_call but no FK match to the backfilled prompt — the join returns empty, and the recall surface shows the same narrative-only output we're trying to fix.",
+      "recommendation": "Rewrite Step 5 change #1 to: 'For each observation returned, attach tool_calls[] using the union of (a) mem_tool_calls WHERE observation_id = obs.id AND (b) mem_tool_calls WHERE session_id = obs.session_id AND created_at BETWEEN obs.created_at - interval 5m AND obs.created_at + interval 5m AND observation_id IS NULL — ordered by turn_index then created_at, deduped on tool_calls.id, capped at 5.' Add an acceptance criterion: 'a mixed-origin session (some tool_calls with observation_id, some without) returns ALL tool_calls in the recall response, not just one set.' Add a test fixture for this exact case.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F4",
+      "severity": "high",
+      "category": "compliance",
+      "where": "Risks section lines 67-69; Rollback section lines 74-80",
+      "issue": "The backfill imports up to 100k user prompts and tool-call payloads from ~/.claude/projects/. app/config.py already declares audit_retention_days: int = 30 — meaning some part of this system has a 30-day retention concept. The plan does not (a) tag backfilled rows so they're distinguishable from live-captured ones for retention purposes, (b) state whether backfilled rows are subject to the same retention/purge, (c) reference issue #10 (data retention/purge policy) which is called out in the user's review brief but not addressed in the doc. If purge runs against created_at < now() - 30d, the backfill is a NO-OP within 30 days because most jsonl turns are older than that — but the plan claims '≥ 30k rows post-backfill' as an acceptance criterion. This is internally inconsistent: either backfilled rows are exempt from purge (in which case they need a retention flag AND a documented exemption), or the AC count is wrong.",
+      "recommendation": "Add a column to migration 012: ALTER TABLE mem_user_prompts ADD COLUMN retention_class text NULL — values 'live' (default) or 'backfill_jsonl' or 'export_only'. Same for mem_tool_calls. The backfill script tags every row 'backfill_jsonl'. Document in the plan: 'backfilled rows are exempt from the standard 30-day audit_retention purge; they are subject to a separate fine_tune_retention policy (default: retain until v2 GGUF is sunset). Open issue #10 must merge this rule before #28 commits.' Either block #28 on #10 landing, or add a temporary mitigation (e.g., gate the purge job to skip retention_class != 'live' until #10 lands). Reference: app/config.py:46 audit_retention_days.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F5",
+      "severity": "high",
+      "category": "edge_case",
+      "where": "Step 2 lines 130-152 (parser behaviour)",
+      "issue": "Edge cases the parser will hit and the plan does not name expected behavior for: (1) malformed/truncated jsonl lines (Claude Code occasionally crashes mid-write) — does the parser skip the line, abort the file, or abort the run? (2) a session jsonl with assistant tool_use blocks but no preceding user message in that file (cross-session continuations, /resume) — what is prev_user_prompt_id set to? Should be NULL with a log line. (3) a tool_use block with no matching tool_result (assistant called tool, conversation ended before result returned) — Step 2 says tool_result 'updates that tool_call's response_preview' — fine, but the row exists either way. (4) multi-tool turns (assistant emits N tool_use blocks in one message before any tool_result) — what is turn_index? Same for all N or N consecutive? The plan does not say. (5) very long arguments — Step 5 caps input to 2 kB on output but storage path is silent: jsonl can contain 50 kB+ args (paste of a stack trace into Bash). (6) Unicode/binary in tool_input (file contents read by Read tool) — Postgres jsonb handles UTF-8 but rejects invalid surrogates. (7) projects with no git remote (cwd not in a repo) — Step 2 says 'populate git_remote via git -C <cwd> remote get-url origin if a git repo' but doesn't say what happens for non-repo cwds (probably NULL, but un-pinned). (8) cwd that no longer exists on disk at backfill time (project deleted/moved since jsonl was written) — git command fails, parser must not crash.",
+      "recommendation": "Add an Edge Cases subsection to Step 2 enumerating each of the 8 above with the chosen behavior, e.g.: malformed line → skip + log warn, count tracked; orphan tool_use → row inserted with prev_user_prompt_id NULL, log info; multi-tool turn → same turn_index for all tool_use blocks in the same assistant message, secondary ordering by their position in the content array (add a turn_subindex column or rely on created_at + insertion order); long args → cap at 16 kB at storage with a truncated_at_bytes column, do NOT silently drop; binary → wrap with surrogate-safe encoder; non-repo cwd → git_remote NULL, source_kind='local'; missing cwd → git_remote NULL, do not fail. Add tests for each in tests/backfill/test_edge_cases.py.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F6",
+      "severity": "high",
+      "category": "failure_mode",
+      "where": "Step 2 lines 130-159; Step 3 lines 178-185",
+      "issue": "Mid-run crash semantics are unspecified. Idempotency is keyed on mem_sessions.session_id ('= jsonl filename UUID') — but the dedupe key is at the SESSION level, not the ROW level. If --commit crashes after inserting prompts but before all tool_calls for that session land, the next run will see the session_id already present and SKIP it, leaving partial data permanently. The plan says 'Idempotent: dedupes on mem_sessions.session_id' which is the BUG, not the feature. Also: the plan does not specify transactionality. If one INSERT for prompt N+1 fails in a multi-thousand-row batch, does the parser commit the first N or roll back the whole file? If it commits piecemeal, backfill_run_id partially identifies the run for rollback (good), but the inconsistency between user_prompts and tool_calls counts can't be reversed without manual triage.",
+      "recommendation": "Make idempotency row-level OR session-atomic: (a) prefer per-session atomic transaction — every (session, prompts, tool_calls, results) imports inside one BEGIN/COMMIT, so a crashed session is fully absent; (b) dedupe key for re-runs is (session_id, turn_index, role, content_hash) — re-runs detect partial sessions and either complete them or skip if fully present. Add acceptance criterion: 'kill -9 the backfill process at random during --commit; re-run; final counts equal the single-run reference counts (run it 3x).' Document the rollback per backfill_run_id more concretely: 'DELETE FROM mem_user_prompts WHERE backfill_run_id = ...; UPDATE mem_tool_calls SET prev_user_prompt_id = NULL, backfill_run_id = NULL WHERE backfill_run_id = ...; the backfill_run_id timestamp is the run-start UTC, not the row-insert UTC.'",
+      "blocks_merge": true
+    },
+    {
+      "id": "F7",
+      "severity": "high",
+      "category": "rollback",
+      "where": "Rollback section lines 74-80; Step 7 line 317-340",
+      "issue": "The plan's rollback story covers backfill (good, via backfill_run_id) and the recall-surface change (good, 'additive, revert by removing the join'), but is silent on: (1) rollback for the V2 GGUF if it ships to LM Studio and regresses something v1 handled — v1 stays as the shipped artifact per non-goals, but the plan does not name the rollback procedure (rename symlink? user-side LM Studio model swap? what about cached weights?). (2) rollback for the hook patch in Step 4 — if the new prompt-capture path causes hook crashes or write storms, what is the revert? The plan says 'lands as a hook patch' but hooks run on every Claude session and a bad one wedges the user's workflow. (3) The 'rollback by deleting backfill rows' assumes mem_user_prompts has no other dependencies — but if observation generation has ALREADY summarized those backfilled prompts into mem_observations rows by the time we roll back, the observations remain orphaned (the FK is ON DELETE SET NULL, so they survive without source). The plan does not address whether backfilled prompts trigger the live observation-generation queue or are inserted-only.",
+      "recommendation": "Add three rollback subsections: (a) V2 model rollback — explicit symlink swap and LM Studio cache invalidation steps, with a 'kill switch' env var that forces hooks to keep using v1 even if v2 is loaded. (b) Hook rollback — every hook patch ships with the prior version committed alongside as hooks/legacy/<name>.v1.js plus a HOOKS_LEGACY env var to force-revert. Document this once in CLAUDE.md / FAILURE_MODES.md. (c) Observation cascade — Step 2 must specify whether backfill bypasses the observation-generation queue (recommended: bypass; backfill is for training-data only, not for runtime memory). Add an acceptance criterion confirming this.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F8",
+      "severity": "high",
+      "category": "testability",
+      "where": "Step 3 line 180; Step 4 line 209; Step 7 lines 332-336",
+      "issue": "Several acceptance criteria are not boolean-verifiable: (a) Step 3 'No project shows > 10 % drop in tool_calls vs. raw count of tool_use blocks in its jsonls (would indicate a parser bug)' — needs to specify HOW the raw count is obtained (jq filter over jsonl with the exact path), otherwise reviewers will eyeball it differently. (b) Step 4 'New session locally produces a mem_user_prompts row within 5 s of the first user turn (manual verify + a small integration test)' — manual verification is not CI-checkable; the integration test exists but it's separate, so what fails the PR? (c) Step 7 'Validator pass rate ≥ 85 % (v1 was 80 %)' — the validator pass-rate metric is asserted but not defined here; depends on PIPELINE_RUNBOOK.md being the source of truth. (d) Step 5 'No regression in existing observation tests' — which tests exactly? Tests for the existing /api/observations response shape don't yet assert on the *absence* of tool_calls[], so adding the key is forward-compatible-but-untested as a regression.",
+      "recommendation": "(a) Specify the raw count formula: cat jsonl | jq -c 'select(.message.content[]?.type == \"tool_use\")' | wc -l (or equivalent), include the exact command in the acceptance criterion. (b) Make Step 4's '5 s' check a real test: tests/hooks/test_user_prompt_capture.py POSTs the hook event, polls SELECT count(...) WHERE created_at > now() - interval '5 seconds' in a loop with 100 ms ticks, asserts > 0 within 5 s. Drop 'manual verify' as a separate AC. (c) Quote the exact validator script path and tolerance source: scripts/fine_tune/validate_tool_calls.py with --pass-threshold 0.85. (d) Add a contract test that snapshots the current /api/observations response shape (pre-change) into a JSON fixture and asserts the new shape is a strict superset (all old keys present, no semantics changed).",
+      "blocks_merge": false
+    },
+    {
+      "id": "F9",
+      "severity": "high",
+      "category": "observability",
+      "where": "Step 4 line 210; QC gate item 4 lines 430-431; absent in Steps 1, 2, 5, 6, 7",
+      "issue": "Observability is treated as a per-step afterthought ('counter added to /api/health... prompts_captured_today') rather than as a coherent surface that confirms the fix is working in production. The shared QC item 4 ('every new code path has either a test, a log line at info or warn, or a metric counter — pick at least one') sets the bar too low: one of three, agent's choice. The plan should specify which signals matter: (1) rolling 24h count of mem_user_prompts captured per session (already proposed for #29, good); (2) ratio of mem_tool_calls.prev_user_prompt_id IS NOT NULL over the last 24h (this is the load-bearing metric that tells us the linkage gap is closed for live capture, not just backfill); (3) p99 latency on /api/observations after Step 5 lands (we are adding a join on a 54k+ table to a hot path); (4) count of backfill rows surfaced in recall responses that pattern-match a known secret shape but were not redacted (F1 follow-up); (5) hook timeout/error rate during the migration window. None of these are in the plan.",
+      "recommendation": "Add an Observability section to the parent plan with five named metrics + threshold-alarm pairs, each with an owning step: linkage_ratio_24h (#29, alarm if < 0.5 for 1h), observation_recall_p99_latency_ms (#30, alarm if > 500), redaction_miss_in_recall_count (#30, alarm > 0), backfill_progress_pct (#28, dashboard only), hook_error_rate (#29, alarm > 1% for 5m). Tie each metric to a Grafana panel or, for this repo's scale, an /api/stats endpoint with a documented dashboard. Strengthen QC gate item 4: 'every new code path has BOTH a test AND a log line; user-visible changes additionally emit a metric.'",
+      "blocks_merge": false
+    },
+    {
+      "id": "F10",
+      "severity": "high",
+      "category": "scope",
+      "where": "Step 5 line 231 'app/api/observations.py — extend response shape'",
+      "issue": "Step 5 references app/api/observations.py — that file does not exist in this repo. Observation endpoints live in app/main.py (verified). The same path-canonical issue affects Step 5 change #3 ('app/mcp_server.py search tool') — the actual path is /Users/mz/_CODING/agentMemory/mcp_server.py (repo root), not app/mcp_server.py. Step 6 hedges between fine-tune/build_v2_dataset.py and scripts/fine_tune/build_v2_dataset.py ('match existing convention') — Hard Rule 3 requires canonical names, not a TBD. Step 4 'Counter added to /api/health or /api/stats' — pick one. These ambiguities mean reviewers and implementers will land code in inconsistent places and the QC gate cannot verify file:line references in PR bodies (QC item 1).",
+      "recommendation": "Fix all path references in the plan to absolute, canonical, verified-existing paths before any sub-issue opens. Specifically: replace app/api/observations.py with the actual handler location in app/main.py (or, if a refactor to app/api/ is desired, make that a Step 0 explicit scope item, not a side-effect of Step 5); replace app/mcp_server.py with mcp_server.py (repo root, verified); pick exactly one of fine-tune/ or scripts/fine_tune/ for Step 6 by checking what PR #24 used; pick exactly /api/stats (more conventional than mixing health and stats). Run a single sed/grep pass over the plan to enforce.",
+      "blocks_merge": true
+    },
+    {
+      "id": "F11",
+      "severity": "medium",
+      "category": "sequencing",
+      "where": "Order of operations diagram lines 370-399",
+      "issue": "The plan claims '#26 and #27 can land in parallel' and '#29 can run in parallel with #27/#28' and '#33 can land any time after #26.' Two problems: (1) #27 (backfill script) writes via 'app.observations.create_* helpers' and stamps backfill_run_id — both of those rely on schema additions in #26 (the backfill_run_id column itself). #27 cannot meaningfully be developed in parallel; only its unit tests against the parser logic can. The diagram is misleading. (2) #33 (anti-loop guard) operates on scripts/fine_tune/validate_tool_calls.py — that script exists from v1 (PR #24) and has no dependency on #26. The 'after #26' constraint is wrong; #33 can land first. (3) #30 (recall surface) is marked 'needs schema (#26) merged but is independent of backfill data' — correct in principle, but Step 5's response shape includes 'tool_calls[].input' which is empty/sparse without #28's backfill. Shipping #30 before #28 means /api/observations returns tool_calls: [] for most rows, which is a worse UX than the current narrative-only response (no warning, just a quiet downgrade for the 1410-of-30k+ sessions that have prompts). A feature flag or a 'show legacy if empty' fallback is needed.",
+      "recommendation": "Rewrite the diagram: #26 strictly precedes #27 (the column #27 needs is defined in #26). #33 has NO dependency on #26 and can land first as a self-contained safety net before any data work — re-order it to step 1. Add a guard to #30: ship behind a feature flag (env: AGENT_MEMORY_RECALL_SHAPE=v2) that is off by default in prod until #28 lands; tests can flip the flag. Document that v1 recall callers see no change until the flag flips.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F12",
+      "severity": "medium",
+      "category": "security",
+      "where": "Step 5 lines 222-261",
+      "issue": "Exposing tool_input on the recall path changes the auth surface implicitly. /api/observations and the MCP search tool both currently return summaries that are safe-by-narrative — narratives are LLM-paraphrased and tend to elide raw secrets even if some slipped through redaction. tool_input is the raw-est form of what an agent did. The plan does not state: (a) whether the recall endpoints require auth in current state (app/main.py uses settings.require_auth, but the default is unclear); (b) whether any token tier (read-only vs full) gates access to tool_input vs narrative; (c) whether the MCP search tool surface (used by LM Studio, Anvil, etc., over local socket) inherits the same auth or is implicitly more permissive. Surfacing tool_input over MCP means any local MCP client now sees raw args, including any client other than Claude (e.g., a malicious VS Code extension that registers as an MCP client could enumerate historical secrets).",
+      "recommendation": "Add a Security subsection to Step 5: '(1) /api/observations returning tool_calls[].input requires the same auth tier as the existing endpoint — verify and add a test. (2) The MCP search tool's tool_calls[] response is gated behind a new opt-in env var (AGENT_MEMORY_MCP_EXPOSE_TOOL_INPUT, default off) until a per-client auth model lands; in the default-off state, MCP search returns the existing narrative-only shape. (3) A documented threat-model note: third-party MCP clients accessing this surface should be vetted; add to FAILURE_MODES.md.' This also gives a clean rollback (flip env var).",
+      "blocks_merge": false
+    },
+    {
+      "id": "F13",
+      "severity": "medium",
+      "category": "edge_case",
+      "where": "Step 6 lines 264-307",
+      "issue": "Dataset filters say 'Drop rows where tool_input JSON is empty {} (those are exactly the loop-bug pattern we don't want to train on).' But the empty-args loop bug is the v1 model's pathological output — the same shape can appear LEGITIMATELY in the training data when Claude calls a no-arg tool (e.g., a hypothetical 'list_files' with no args, or a tool whose schema accepts {} as valid). The plan does not distinguish between the two cases. Filtering all empty-args rows trains the model to NEVER emit {} which may be wrong for tools whose schema allows it; and it skews tool distribution unpredictably. Separately: 'Cap any single tool's representation at 20 % of dataset (prevent Bash dominance)' — Bash is realistically 60-70% of any working agent's tool calls. Capping to 20% means discarding 75% of available Bash rows. The plan does not say which discard strategy (random sample, stratify by prompt diversity, prefer longer args). And capping by tool name alone, not by prompt class, may inadvertently optimize for tool diversity at the cost of prompt diversity.",
+      "recommendation": "Refine Step 6 filter to: 'Drop rows where tool_input JSON is empty {} AND the tool's schema does NOT permit empty args. Check the tool schema attached to the row; if schema.required is non-empty, the {} is a v1 loop-bug artifact; otherwise it is a valid call and is kept (and adds anti-loop training signal: the model must learn that {} is sometimes correct).' For the 20% cap, specify the discard strategy: 'stratified down-sample by (prompt-shape, success), preferring rows with longer arguments and distinct prompts; preserve at least 200 unique prompts per tool category before capping.' Add a histogram and prompt-uniqueness check to the test suite.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F14",
+      "severity": "medium",
+      "category": "observability",
+      "where": "Step 7 lines 317-340",
+      "issue": "Retraining acceptance criteria include '0 empty-args emissions' on a 50-prompt eval set, but no in-the-wild observability is added. After v2 ships to LM Studio (or replaces v1 in any agent), how do we know empty-args emissions are 0 in real usage? The plan adds the anti-loop guard at the validator level (Step 8) but the guard suppresses the symptom; the underlying rate must still be measured. Without a production metric, a regression in v3 or in a fine-tune setting tweak goes undetected until a user reports a hang.",
+      "recommendation": "Add to Step 7 an acceptance criterion: 'A counter empty_args_emissions_total is incremented in scripts/fine_tune/validate_tool_calls.py and exposed via /api/stats. The metric is also tagged with model_version (v1, v2, etc.) so we can compare in production. The anti-loop guard logs at WARN every time it suppresses a call, with the same tag.' Document a target: 'empty_args_emissions_total{model=v2} per 1000 tool calls ≤ 1 over the first 7 days of use.'",
+      "blocks_merge": false
+    },
+    {
+      "id": "F15",
+      "severity": "medium",
+      "category": "edge_case",
+      "where": "Step 2 line 141 — 'Resolves cwd → mem_projects (insert if new; populate git_remote via git -C <cwd> remote get-url origin if a git repo)'",
+      "issue": "git_remote derivation has two underspecified behaviors: (a) origin remote is the common case but not universal — repos with only an upstream remote, or with renamed origins (e.g., 'github'), will produce NULL or empty, the same as a non-repo. The plan's dedupe-by-git_remote intent then fails silently for those projects, leaving Dropbox/local forks as separate mem_projects rows. (b) git get-url is a subprocess call from the backfill — running it 686 times (one per existing project, plus new) is fine, but doing it inside a hot loop on every session import is wasted work if 2,367 jsonl sessions share ~700 cwds; needs memoization. (c) credentials in remote URLs (e.g., https://user:token@github.com/...) should be stripped/redacted before storage — git_remote is going into Postgres and will surface in dataset exports.",
+      "recommendation": "Step 2 explicit subroutine: (1) memoize cwd → git_remote within a single backfill run (Python dict keyed by cwd). (2) git_remote fallback: try origin, then upstream, then the first remote; if none, leave NULL and record source_kind='local'. (3) Pass the resulting URL through redact_text() before storage to strip embedded creds. (4) Document expected stable-key dedupe: 'projects are deduped on git_remote when non-NULL; on full_path when NULL.' Add a test for the credential-in-URL case.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F16",
+      "severity": "low",
+      "category": "testability",
+      "where": "Parent acceptance criteria lines 50-60",
+      "issue": "Parent AC line 53 says '≥ 80 % of mem_tool_calls rows have a same-session prev_user_prompt_id.' Two questions: (a) measured over all 54,987 existing rows, or only over rows touched by the backfill? Some live-captured rows in mixed-origin sessions will be permanently un-linkable because their session has no jsonl source. The 80% target is achievable for backfilled rows but maybe not for the union. (b) The metric is a snapshot — re-running it 3 months from now with newly captured rows will drift. The AC needs a measurement window.",
+      "recommendation": "Refine to: '≥ 80 % of mem_tool_calls rows WHERE session_id IN (sessions with at least one mem_user_prompt) have a same-session prev_user_prompt_id, measured immediately after the #28 commit. A separate live-capture AC under #29 requires ≥ 95% of newly captured tool_calls (created_at > #29 merge time) to have prev_user_prompt_id set.' Tie both to a SQL query that can be re-run in CI.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F17",
+      "severity": "low",
+      "category": "scope",
+      "where": "Goals 1-4 and Non-goals lines 33-46",
+      "issue": "Goal 2 ('Surface tool_input on the recall path') is a runtime-surface change that benefits the broader recall feature, not just v2 fine-tuning. Bundling it into the v2 pipeline plan makes the parent issue heavier than it needs to be and ties a user-facing improvement to a model-retraining milestone. If v2 retraining stalls or fails eval, the recall surface fix shouldn't have to wait. This is scope-bundling, not creep, but worth calling out so we don't block one on the other.",
+      "recommendation": "Split Step 5 into its own parent issue (or promote it to a parallel parent) — '#30 recall surface fix' is independently shippable and valuable even if v2 model training never lands. Mark it as 'parallel to v2 fine-tune' rather than a sub-step. Backfill (#27/#28) is still upstream of it for full value, but the code change is decoupled.",
+      "blocks_merge": false
+    },
+    {
+      "id": "F18",
+      "severity": "low",
+      "category": "observability",
+      "where": "Step 4 line 210; HANDOFF.md context",
+      "issue": "The plan diagnoses Step 4 as 'why only 54 / 500 sessions wrote a mem_user_prompts row' with four candidate root causes. None of the candidates is yet investigated; all four assume the WRITE path is the problem. A fifth candidate is missing: the PROMPT-ARRIVAL path on the agent side — Claude Code hooks may fire session-start before the user has typed anything, capturing no prompt, and there may be no later hook that fires per-user-turn (or the per-turn hook may be feature-gated). If that's the case, the fix is fundamentally different (need a per-user-turn hook event), not a 'patch the existing hook' job.",
+      "recommendation": "Add the fifth candidate to Step 4's investigation list explicitly: 'Hook coverage: verify there IS a per-user-turn hook that fires after session-start; if not, the fix may require a new hook event (Claude Code-side) or polling the session jsonl tail. Document the hook contract before patching.' This may surface a dependency on Claude Code itself rather than a code change in this repo.",
+      "blocks_merge": false
+    }
+  ],
+  "missing_acceptance_criteria": [
+    "Hard upper bound on backfill runtime (e.g., 'completes in < 30 min on local DB; if it exceeds 60 min, kill and tune batch size') — currently open-ended.",
+    "Disk-space guard for backfill — importing 50-100k prompt+args rows could easily add several GB to the DB; AC should require a pre-flight pg_database_size check and a soft cap.",
+    "Memory ceiling for backfill process — parsing 2,367 jsonl files with multi-MB content blocks shouldn't OOM; add a max RSS check.",
+    "Pinned PostgreSQL version compatibility — migration 012 uses ALTER TABLE + FK + CONCURRENTLY patterns that have subtle differences between PG 12, 13, 14, 15, 16; AC should state minimum tested version.",
+    "Verification that backfilled rows do NOT trigger live observation-generation queue (covered in F7 recommendation, but should be an explicit AC).",
+    "Explicit numeric target for redaction recall on a benchmark of seeded secrets — e.g., 'redact_json catches ≥ 99% of seeded synthetic secrets in tests/redact/seeded_secrets.jsonl'.",
+    "Acceptance test that re-running --commit AFTER a partial-crash run leaves the DB consistent (covers F6).",
+    "Acceptance criterion that the new metrics in F9 are actually queryable from /api/stats and have non-zero values after Step 4/Step 5 merge.",
+    "Acceptance criterion that empty_args_emissions_total counter (F14) exists and exposes the v1 vs v2 comparison."
+  ],
+  "questions_for_human": [
+    "Is issue #10 (data retention/purge policy) a hard blocker before #28 commits the backfill, or is the 'tag-and-defer' workaround acceptable in the interim? (F4)",
+    "What is the canonical handler location for /api/observations — extend app/main.py in place, or refactor into app/api/observations.py as a Step 0? (F10)",
+    "Should the MCP search tool's exposure of tool_input be opt-in (default off) given the third-party MCP client surface, or is the local-only socket considered trusted? (F12)",
+    "Is the 20% per-tool cap in Step 6 a hard constraint, or negotiable based on actual distribution? Bash is realistically 60-70% of an agent's calls in this corpus. (F13)",
+    "Should the recall-surface change (#30) be split out as its own parent issue parallel to v2 fine-tuning, or kept inside #25? (F17)",
+    "What is the prod PG version? Migration 012 patterns (CONCURRENTLY, NOT VALID FK) require PG ≥ 12. (Missing AC)",
+    "If backfill finds jsonl content older than the audit_retention_days window (30 d), do we import it anyway (most jsonl is older than 30 d) or filter? (F4)",
+    "Is there an existing hook contract document we can reference for Step 4, or does the investigation need to discover it? (F18)"
+  ],
+  "improvements": {
+    "docs_to_update": [
+      "docs/fine_tune/FAILURE_MODES.md — add canonical sections: (a) backfill crash recovery, (b) recall surface secret-leakage threat model, (c) anti-loop guard contract, (d) hook-rollback procedure.",
+      "docs/fine_tune/PIPELINE_RUNBOOK.md — add a 'Backfill from jsonl' phase between Phase 0 (data prep) and Phase 1 (export); document the canonical command and dry-run review protocol.",
+      "docs/agents.md (proposed) — capture this review's recurring patterns (path canonicalization, observability-as-AC, retention-class tagging) for future quality-gate runs.",
+      "CLAUDE.md — add 'Migration safety' note: all schema migrations on tables > 10k rows require CREATE INDEX CONCURRENTLY and NOT VALID FK pattern; auto-apply-on-startup migrations must be runtime-safe."
+    ],
+    "proposed_ci_checks": [
+      "scripts/check_plan_paths.py — for every plan doc in plans/ and docs/fine_tune/, scan for backtick-quoted file paths and assert each one exists in the repo (catches F10 ambiguity automatically).",
+      "scripts/check_migration_safety.py — for every new file in scripts/migrations/, lint that CREATE INDEX is CONCURRENTLY and ADD CONSTRAINT FK is NOT VALID; warn on bare ALTER TABLE on tables with > 10k rows.",
+      "scripts/check_redaction_coverage.py — given a JSONL fixture of seeded secrets, run redact_text() and the proposed recursive redact_json() and assert ≥ 99% catch rate; gate redact.py PRs on this.",
+      "scripts/check_observability_pinned.py — for every PR touching app/main.py, app/queue_worker.py, or mcp_server.py, require either a new test, a log line at INFO+, or a metric counter (enforces strengthened QC item 4).",
+      "Pre-commit hook: forbid 'or' clauses in plan acceptance criteria (catches F3-style ambiguity in future plans)."
+    ],
+    "agents_md_additions": [
+      "Quality-gate runs on plan documents should specifically check for: (1) every file path mentioned exists, (2) every 'or' in an algorithm description is resolved to a single choice, (3) every external dependency (jsonl shape, hook contract, MCP transport) has a named version or pinned contract, (4) every schema change states its locking behavior, (5) every metric mentioned has a paired alert threshold.",
+      "When reviewing data backfill plans: always check (a) idempotency at the row level not just the session level, (b) crash-recovery semantics, (c) retention/purge interaction, (d) redaction enforcement at every write path, (e) memory and disk pre-flight guards.",
+      "When reviewing fine-tune plans: always check (a) production observability for the metric the model is optimizing, (b) rollback story for the model artifact, (c) anti-regression eval set is a strict superset of the previous eval set, (d) per-tool distribution caps are justified against real usage data."
+    ],
+    "proposed_new_skills": [
+      "plan-path-checker skill — given a plan markdown file, extract all referenced file paths and verify existence in the target repo; report missing or ambiguous paths.",
+      "migration-safety-reviewer skill — given a SQL migration, predict its locking behavior on a target table size and propose CONCURRENTLY/NOT VALID rewrites.",
+      "redaction-fuzzer skill — generates synthetic-secret-laden JSONL fixtures to test redact_text() and redact_json() coverage; can be run before any change to redact.py."
+    ]
+  }
+}

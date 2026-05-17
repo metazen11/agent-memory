@@ -23,3 +23,10 @@ fine-tune/generated/
 plans/
 models
 .venv-finetune
+.claude/worktrees/
+
+# Real-world test transcripts (raw model outputs — large, regenerable)
+tests/fine_tune/real_world/*-results.json
+tests/fine_tune/real_world/*.log
+tests/fine_tune/real_world/baselines/
+

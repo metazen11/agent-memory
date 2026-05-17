@@ -30,13 +30,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import logging
 import re
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -54,8 +59,15 @@ from lib import REPO_ROOT, utc_stamp, write_json  # noqa: E402
 DEFAULT_TRAINED_TOOLS = ["Bash", "Read", "Write", "Grep", "Edit"]
 
 
-def _load_trained_tool_schemas(only: list[str] | None = None) -> list[dict]:
-    schemas_file = REPO_ROOT / "data" / "processed" / "qwen25_tools" / "v1" / "tool_schemas.json"
+def _load_trained_tool_schemas(only: list[str] | None = None, dataset_version: str = "v1") -> list[dict]:
+    """Load tool schemas from the dataset the model was trained on.
+
+    v2's tool_schemas.json carries real `description` fields recovered from
+    Claude tool definitions; v1's were placeholders. We prefer the real text
+    when available, since the model saw it during training and is sensitive
+    to system-prompt drift.
+    """
+    schemas_file = REPO_ROOT / "data" / "processed" / "qwen25_tools" / dataset_version / "tool_schemas.json"
     if not schemas_file.exists():
         return _FALLBACK_TOOL_SCHEMAS
     with schemas_file.open() as f:
@@ -65,11 +77,12 @@ def _load_trained_tool_schemas(only: list[str] | None = None) -> list[dict]:
     for name, sch in registry.items():
         if name not in keep:
             continue
+        description = sch.get("description") or f"Tool '{name}' (schema inferred from training data)."
         out.append({
             "type": "function",
             "function": {
                 "name": name,
-                "description": f"Tool '{name}' (schema inferred from training data).",
+                "description": description,
                 "parameters": {
                     "type": "object",
                     "properties": sch.get("properties", {}),
@@ -90,19 +103,49 @@ _FALLBACK_TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "description": {"type": "string"}}, "required": ["command"]}}},
 ]
 
-TOOL_SCHEMAS = _load_trained_tool_schemas() if (REPO_ROOT / "data" / "processed" / "qwen25_tools" / "v1" / "tool_schemas.json").exists() else _FALLBACK_TOOL_SCHEMAS
+def _pick_default_dataset_version() -> str:
+    """Prefer v2 schemas if available, fall back to v1."""
+    for v in ("v2", "v1"):
+        if (REPO_ROOT / "data" / "processed" / "qwen25_tools" / v / "tool_schemas.json").exists():
+            return v
+    return "v1"
+
+
+_DEFAULT_DATASET_VERSION = _pick_default_dataset_version()
+TOOL_SCHEMAS = _load_trained_tool_schemas(dataset_version=_DEFAULT_DATASET_VERSION) if _DEFAULT_DATASET_VERSION else _FALLBACK_TOOL_SCHEMAS
 
 # Two prompt suites — both important:
-#   IN_DISTRIBUTION: mirrors training prompts ("Call tool `X` with appropriate arguments.")
-#       — tests memorization, useful for tiny-pipeline integrity check.
-#   NATURAL: realistic agentic asks — tests generalization, what real LM Studio
-#       users will type.
+#   IN_DISTRIBUTION: realistic single-turn asks that clearly point at one
+#       trained tool — what real users actually type. (NOTE: v1 used a
+#       synthetic shape "Call tool `X` with appropriate arguments." here.
+#       v2 was trained specifically NOT to memorize that shape — it
+#       produced the empty-args loop bug — so the v1 prompts have been
+#       removed.)
+#   NATURAL: open-ended agentic asks — tests generalization on phrasings
+#       the model has not seen.
+#
+# IMPORTANT (v2 caveat): v2's 23,983 training rows are session continuations
+# from real Claude jsonls — predominantly multi-turn shapes where the tool
+# choice is informed by prior turns. Single-turn standalone evaluation is
+# inherently conservative against v2; the chat-loop verification in
+# Phase 9 (50 vague prompts × 5 turns, anti-loop guard) is the more
+# meaningful gate for production behavior.
 IN_DISTRIBUTION_PROMPTS = [
-    "Call tool `Bash` with appropriate arguments.",
-    "Call tool `Read` with appropriate arguments.",
-    "Call tool `Write` with appropriate arguments.",
-    "Call tool `Grep` with appropriate arguments.",
-    "Call tool `Edit` with appropriate arguments.",
+    "Show me the contents of /etc/hosts.",
+    "Open package.json in the project root.",
+    "Print the README.md file.",
+    "Create scripts/build.sh and put `echo build` in it.",
+    "Save the string 'TODO: ship v2' to a file at /tmp/todo.txt.",
+    "Write the line 'hello' to /tmp/notes.md.",
+    "Search the repo for the string 'parse_tool_call'.",
+    "Grep for TODO comments in app/.",
+    "Search src/ for the symbol `redact_json`.",
+    "Change the version string from 1.0.0 to 1.0.1 in package.json.",
+    "Replace `localhost` with `127.0.0.1` in config/settings.py.",
+    "Rename the function `oldName` to `newName` in src/main.py.",
+    "Run `ls -la` in the current directory.",
+    "Check git status.",
+    "List all running docker containers.",
 ]
 
 NATURAL_PROMPTS = [
@@ -126,6 +169,82 @@ class ParseResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     schema_valid: bool = False
     error: str | None = None
+
+
+_CONSECUTIVE_THRESHOLD = 3
+
+
+def _normalize_call(call: dict[str, Any]) -> str:
+    name = call.get("name", "")
+    args = call.get("arguments", {})
+    args_canon = json.dumps(args, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{name}|{args_canon}".encode()).hexdigest()
+
+
+@dataclass
+class AntiLoopDecision:
+    suppress: bool
+    reason: str | None = None
+    streak: int = 0
+
+
+class AntiLoopDetector:
+    """Detects the empty-args infinite-loop pattern observed in v1.
+
+    Tracks the last N normalized tool calls in a conversation. When the same
+    (name, arguments) pair appears `threshold` times in a row, the next
+    identical call is flagged for suppression — the caller should drop the
+    tool_call block and emit a text response instead.
+
+    Stateful per conversation. Instantiate one detector per session.
+
+    The production hook point is in `mcp_server.py` and the Claude hooks;
+    this class lives in the validator so the same logic powers both the
+    runtime guard and the offline eval suite.
+    """
+
+    def __init__(self, threshold: int = _CONSECUTIVE_THRESHOLD, model_version: str | None = None):
+        if threshold < 2:
+            raise ValueError("anti-loop threshold must be >= 2")
+        self.threshold = threshold
+        self.model_version = model_version
+        self._history: deque[str] = deque(maxlen=threshold)
+        self.suppressions = 0
+        self.empty_args_emissions = 0
+
+    def observe(self, call: dict[str, Any]) -> AntiLoopDecision:
+        """Record a tool call; return whether the next emission would loop."""
+        args = call.get("arguments")
+        if args == {} or args is None:
+            self.empty_args_emissions += 1
+
+        sig = _normalize_call(call)
+        self._history.append(sig)
+
+        if len(self._history) < self.threshold:
+            return AntiLoopDecision(suppress=False, streak=self._history.count(sig))
+
+        if all(h == sig for h in self._history):
+            self.suppressions += 1
+            log.warning(
+                "anti_loop_suppress model=%s streak=%s name=%s",
+                self.model_version, self.threshold, call.get("name"),
+            )
+            return AntiLoopDecision(
+                suppress=True,
+                reason=f"{self.threshold} consecutive identical calls",
+                streak=self.threshold,
+            )
+        return AntiLoopDecision(suppress=False, streak=self._history.count(sig))
+
+    def filter_sequence(self, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convenience: filter a known sequence, returning calls that survive."""
+        out: list[dict[str, Any]] = []
+        for c in calls:
+            decision = self.observe(c)
+            if not decision.suppress:
+                out.append(c)
+        return out
 
 
 def parse_tool_calls(text: str, schemas: list[dict]) -> ParseResult:
@@ -176,11 +295,17 @@ def parse_tool_calls(text: str, schemas: list[dict]) -> ParseResult:
 # ---- Backends --------------------------------------------------------------
 
 def _build_prompt_for_llama_cli(prompt: str, schemas: list[dict]) -> str:
-    """Build the full ChatML string Qwen 2.5 expects when tools are in scope."""
+    """Build the full ChatML string Qwen 2.5 expects when tools are in scope.
+
+    Mirrors exactly what tokenizer.apply_chat_template produces on a training
+    row (one tool per line in the <tools> block, "with access to tools."
+    suffix). Drift here causes the model to fall back to echoing the system
+    prompt, which is what happened on v2's first tiny validation run.
+    """
     tools_json = "\n".join(json.dumps(s) for s in schemas)
     return (
         "<|im_start|>system\n"
-        "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n"
+        "You are Qwen, created by Alibaba Cloud. You are a helpful assistant with access to tools.\n\n"
         "# Tools\n\n"
         "You may call one or more functions to assist with the user query.\n\n"
         "You are provided with function signatures within <tools></tools> XML tags:\n"
@@ -218,9 +343,9 @@ def gen_llama_cli(gguf: Path, prompt: str, schemas: list[dict], temperature: flo
 
 
 # Lazy globals for the HF backend (load model exactly once across all trials)
-_HF_TOK = None
-_HF_MODEL = None
-_HF_DEVICE = None
+_HF_TOK: Any = None
+_HF_MODEL: Any = None
+_HF_DEVICE: str | None = None
 
 
 def gen_hf(hf_model_dir: str, prompt: str, schemas: list[dict], temperature: float, max_tokens: int) -> str:
@@ -228,19 +353,21 @@ def gen_hf(hf_model_dir: str, prompt: str, schemas: list[dict], temperature: flo
     BEFORE GGUF conversion — catches merge-time bugs without llama.cpp.
     """
     global _HF_TOK, _HF_MODEL, _HF_DEVICE
+    import torch  # noqa: PLC0415
     if _HF_MODEL is None:
-        import torch  # noqa: PLC0415
         from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
         _HF_DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
         dtype = torch.bfloat16 if _HF_DEVICE == "mps" else torch.float32
         _HF_TOK = AutoTokenizer.from_pretrained(hf_model_dir, local_files_only=True, trust_remote_code=False)
-        _HF_MODEL = AutoModelForCausalLM.from_pretrained(
+        model: Any = AutoModelForCausalLM.from_pretrained(
             hf_model_dir, local_files_only=True, trust_remote_code=False, torch_dtype=dtype,
-        ).to(_HF_DEVICE)
-        _HF_MODEL.eval()
+        )
+        model = model.to(torch.device(_HF_DEVICE))
+        model.eval()
+        _HF_MODEL = model
 
-    import torch  # noqa: PLC0415
+    assert _HF_TOK is not None and _HF_MODEL is not None  # narrow types after lazy init
     messages = [{"role": "user", "content": prompt}]
     text = _HF_TOK.apply_chat_template(messages, tools=schemas, tokenize=False, add_generation_prompt=True)
     inputs = _HF_TOK(text, return_tensors="pt").to(_HF_DEVICE)
@@ -335,6 +462,20 @@ def run(args) -> int:
     parse_rate = n_parsed / n if n else 0.0
     valid_rate = n_schema_valid / n if n else 0.0
 
+    anti_loop_report: dict[str, Any] | None = None
+    if getattr(args, "anti_loop", False):
+        detector = AntiLoopDetector(model_version=args.model_version)
+        for t in trials:
+            for call in t.parse.tool_calls:
+                detector.observe(call)
+        anti_loop_report = {
+            "enabled": True,
+            "threshold": detector.threshold,
+            "suppressions": detector.suppressions,
+            "empty_args_emissions_total": detector.empty_args_emissions,
+            "model_version": detector.model_version,
+        }
+
     # Per-suite breakdown
     def _suite_of(p: str) -> str:
         return "in_distribution" if p in in_dist_set else ("natural" if p in natural_set else "other")
@@ -360,6 +501,7 @@ def run(args) -> int:
         "by_suite": by_suite,
         "min_required_parse_rate": args.min_parse_rate,
         "passed": parse_rate >= args.min_parse_rate,
+        "anti_loop": anti_loop_report,
         "utc": utc_stamp(),
         "trials_detail": [
             {
@@ -389,6 +531,12 @@ def run(args) -> int:
         rate = d["parsed"] / d["trials"] if d["trials"] else 0.0
         print(f"  [{suite_name:16s}] parsed {d['parsed']}/{d['trials']} ({rate:.1%}) schema-valid {d['schema_valid']}/{d['trials']}")
     print(f"  required:      ≥{args.min_parse_rate:.1%}")
+    if anti_loop_report:
+        print(
+            f"  anti-loop:     suppressions={anti_loop_report['suppressions']} "
+            f"empty_args={anti_loop_report['empty_args_emissions_total']} "
+            f"model={anti_loop_report['model_version']}"
+        )
     print(f"  result:        {'PASS' if report['passed'] else 'FAIL'}")
     return 0 if report["passed"] else 1
 
@@ -404,6 +552,14 @@ def main() -> int:
     p.add_argument("--max-tokens", type=int, default=256)
     p.add_argument("--min-parse-rate", type=float, default=0.03, help="Minimum parse rate to pass")
     p.add_argument("--report-dir", default=None)
+    p.add_argument(
+        "--anti-loop", action="store_true",
+        help="Run anti-loop guard across the trial sequence and report suppressions.",
+    )
+    p.add_argument(
+        "--model-version", default=None,
+        help="Tag attached to anti-loop suppression logs and the empty_args counter (e.g. v1, v2).",
+    )
     args = p.parse_args()
 
     if args.backend == "llama-cli" and not args.gguf:

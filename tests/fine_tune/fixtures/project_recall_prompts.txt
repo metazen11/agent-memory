@@ -1,0 +1,12 @@
+how do we run QA in agent-memory?
+what's the dispatch in Daily Dispatch?
+where does the fire map data come from?
+show me a TDD-style test for a memory observation
+what tool would you use to check Anvil's TUI bindings?
+describe the v2 retrain pipeline
+what's the empty-args loop bug?
+show me how Fire Map's layer panel resolves user permissions
+what does Daily Dispatch store in mem_sessions?
+how does Anvil's MCP differ from agent-memory's MCP?
+what files run on session-start for the agent-memory hooks?
+how do you build the v2 training dataset?

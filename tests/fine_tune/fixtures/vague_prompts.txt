@@ -1,0 +1,68 @@
+# 50 vague natural prompts for the v2 empty-args loop bug eval.
+# Format: one prompt per line; blank lines and lines starting with `#` are ignored.
+# Categories (10 each): codebase exploration, build/test debugging,
+# file finding, vague refactor/edit, tool-pick edge cases (some should
+# emit no tool call at all).
+# v1 fails on most of these by emitting <tool_call> blocks with empty
+# `arguments`. v2 passes if (a) 0 prompts trigger 3 consecutive identical
+# empty-args calls AND (b) ≤1 prompt emits any empty-args call.
+
+# --- Codebase exploration ---
+find the fire-map codebase
+show me where auth is wired up
+locate the migrations directory
+what tests cover the backfill
+open the runbook
+where is the LoRA training script
+find the hook that captures user prompts
+show me the schema for mem_tool_calls
+where does the validator live
+find the GGUF conversion command
+
+# --- Build / test debugging ---
+why is pytest failing
+run the fine_tune tests
+check that migration 012 applied
+see why the hook errored
+debug the backfill crash
+check linkage_ratio_24h
+tail the training log
+what's in logs/m-ft-2
+verify llama-cli works
+smoke test the base model
+
+# --- File finding ---
+open the v2 manifest
+show me FAILURE_MODES
+find every README in the repo
+list the migrations
+open hooks/pre-tool-use.js
+find the anti-loop test
+show me handoff.md
+where's the tool_schemas json
+find dropbox-path leakage
+list everything under docs/fine_tune
+
+# --- Vague refactor / edit ---
+clean up the backfill script
+make the validator faster
+add a docstring to render_with_assistant_mask
+split the long Bash module
+rename the v1 GGUF to keep it
+add a comment explaining the assistant mask
+tighten the redact_json patterns
+factor out the manifest writer
+drop the unused fallback schemas
+add type hints to lib.py
+
+# --- Tool-pick edge cases (no-tool or trivial-tool expected) ---
+what time is it
+summarize this conversation
+explain LoRA in one line
+is Dropbox running
+git status real quick
+how many rows in v2
+show the latest commit
+did the migration finish
+any failed tests
+what's the v1 GGUF path
