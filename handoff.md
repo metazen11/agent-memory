@@ -1,6 +1,149 @@
 # Handoff — agent-memory
 
-## Current Status (2026-05-12)
+## Current Status (2026-05-13)
+
+### Fine-tune v1 SHIPPED — PR #24 open, awaiting review
+- Qwen 2.5-3B tool-call LoRA, 80% validator pass rate, 100% on natural prompts.
+- PR: https://github.com/metazen11/agent-memory/pull/24 (single squash commit, 19 files, +2782/-3)
+- Closes issues #15–#22; leaves #23 open (LM Studio manual verification).
+- GGUF at `models/gguf/qwen2.5-3b-toolcalls-q4km.gguf` (SHA `5e174a04…`), 1.8GB Q4_K_M.
+- Loaded in LM Studio at `~/.lmstudio/models/mz/qwen2.5-3b-toolcalls/` (use `~/.lmstudio/...` NOT `~/.cache/lm-studio/...`).
+
+### Loop bug discovered in v1 — drives the v2 plan
+When given vague natural prompts in LM Studio ("find the fire-map codebase"), v1 model emits `<tool_call>` blocks with **empty `arguments`**, gets a generic result back, repeats. Infinite loop until context fills.
+
+Root cause: **83 % of v1 training prompts were synthetic** (`"Call tool 'X' with appropriate arguments"`). The model never had to commit to argument content from a real user prompt. Only 17 % (2,682 rows) came from real Claude conversations. The data was synthesized because the export pipeline didn't have the user prompts linked properly.
+
+### MAJOR FINDING — agent-memory has the right tables, wrong data linkage
+
+The schema for proper turn capture **already exists**:
+- `mem_tool_calls` — **54,987 rows** with full `tool_input` JSON args, response previews, success/error flags ✅
+- `mem_user_prompts` — only **1,410 rows** across **54 of 500** sessions ❌
+- `mem_sessions` — 893 sessions, but most lack matching user_prompts
+- `mem_projects` — 686 projects (`agentMemory`, `fire-map.wfca.com`, etc.) with `full_path` ✅
+
+**Result**: 0 tool_calls can be joined back to a same-session user prompt by FK. The user prompt → tool call linkage was never wired up correctly. 446 sessions captured tool calls but dropped the prompt that originated them.
+
+Meanwhile, **`~/.claude/projects/**/*.jsonl` has the full turn history** for every coding session — user msg + assistant msg + `tool_use` blocks + `tool_result` blocks in proper order. The sample fire-map session alone has 2,067 tool_use blocks. Total across all jsonl is likely **50k-100k tool calls with full args + linked user prompts**.
+
+### LM Studio MCP config
+Updated `~/.lmstudio/mcp.json`: anvil + agent-memory entries now point at `/Users/mz/_CODING/...` (was Dropbox). **Restart LM Studio** to pick up.
+
+### Lookup/recall gap — surfaces narrative, hides tool args
+
+The recall path agents use at runtime (`/api/observations`, session-start
+hints, pre-tool-use hints) currently returns observation **summaries**:
+`title, narrative, facts, concepts, files_*, tool_name, type`. It does
+**not** surface `tool_input` (the actual arguments).
+
+The data IS populated in `mem_tool_calls.tool_input` (54,987 rows) and
+`app/dataset_exports.py` uses it for training export, but the runtime
+recall endpoints don't join to it. Result: an agent can recall "I called
+Bash" but not "I called Bash with `git log --oneline -20`" — exactly the
+detail that prevents the empty-args loop bug at the model level.
+
+**Fix as part of v2 work:**
+1. Extend `/api/observations` response shape with a `tool_calls: [{name,
+   input, response_preview, created_at}]` array (left-join
+   `mem_tool_calls` by `observation_id`).
+2. Update session-start + pre-tool-use hint generators to include 1–3
+   representative `(tool_name, args)` examples from recalled
+   observations. Agent sees actionable specifics, not just narrative.
+3. Same applies to the `mcp__agent-memory__search` MCP tool — its results
+   should include tool args inline so any agent (Claude, Codex, Anvil,
+   the fine-tuned model) gets the same useful detail.
+
+### Fire-map not in Anvil's workspace index
+`~/.anvil/workspace_index.json` (generated 2026-05-12) does not include the `_CODING/fire-map.wfca.com/` tree even though it's under the workspace root. Needs `anvil workspace reindex` or explicit root add — Anvil-side configuration, not agent-memory.
+
+---
+
+## Next Session — Start Here
+
+**Goal: close the agent-memory data gap, then ship v2 fine-tune.**
+
+The schema is right. The data is wrong. The fix is a one-time backfill from
+the Claude jsonl files, plus a small fix to live capture so future sessions
+don't have the same gap. Then v2 dataset export becomes a single SQL query.
+
+### Order of operations (gate each before proceeding)
+
+1. **Decide on two small schema additions** (or skip):
+   - `mem_projects.git_remote` (nullable text) — dedupes Dropbox-vs-local
+     path forks of the same project.
+   - `mem_tool_calls.turn_index` (int) — explicit position within session;
+     `created_at` will tie at millisecond precision during bulk import.
+
+2. **Write `scripts/backfill/backfill_from_claude_jsonl.py`** (new):
+   - Reads every `~/.claude/projects/**/*.jsonl`.
+   - Each jsonl is one session. Filename UUID → `mem_sessions.session_id`.
+   - For each `user` message → `mem_user_prompts` row.
+   - For each assistant `tool_use` block → `mem_tool_calls` row with full
+     `tool_input`, linked to the immediately-prior user prompt of the same
+     session.
+   - For each `tool_result` block → updates that tool_call's response.
+   - Resolves `cwd` → `mem_projects` (insert if new).
+   - **Default = dry-run.** Reports counts of would-import sessions /
+     prompts / tool_calls per project. Idempotent: dedupes on
+     `mem_sessions.session_id` (jsonl UUID).
+
+3. **Run dry-run, review numbers together, then `--commit`.**
+
+4. **Audit the live hooks** (`hooks/session-start.js`,
+   `hooks/pre-tool-use.js`) — figure out why only 54/500 sessions wrote a
+   user_prompt. Likely a missed insert or wrong condition. Fix so future
+   sessions capture both halves from turn one.
+
+5. **Write `fine-tune/build_v2_dataset.py`**: single SQL query joining
+   `mem_tool_calls` → `mem_user_prompts` → `mem_sessions` → `mem_projects`,
+   per-session grouped into multi-turn Qwen 2.5 tool-call format. Outputs
+   to `data/processed/qwen25_tools/v2/`. Should produce **25-35k high-
+   quality multi-turn rows** vs v1's 16k mostly-synthetic.
+
+6. **Open GitHub issue #25** with this plan. High priority.
+
+7. **Retrain** using the pipeline already built. 1.0 epoch this time
+   (v1 was 0.5). Add tool descriptions to schemas before training.
+
+8. **Add `--anti-loop` flag to `validate_tool_calls.py`** — detects 3
+   consecutive identical tool calls and forces text response. Belt-and-
+   suspenders inference guard.
+
+### Two anchor docs
+
+- **`docs/fine_tune/PIPELINE_RUNBOOK.md`** — phase-gated training procedure.
+- **`docs/fine_tune/FAILURE_MODES.md`** — 10 known failures + fixes.
+
+### Sanity checks before starting
+
+```bash
+# DB up?
+curl -s http://localhost:3377/api/health | jq
+
+# Tool call data:
+psql -U mz -d agent_memory -c "SELECT count(*) FROM mem_tool_calls"
+# Expect: 54,987
+
+# User prompts:
+psql -U mz -d agent_memory -c "SELECT count(*) FROM mem_user_prompts"
+# Expect: 1,410 — this is the gap
+
+# Claude jsonl files (source of truth):
+find ~/.claude/projects -name '*.jsonl' -type f | wc -l
+# Expect: 2,367
+
+# PR status:
+gh pr view 24 --repo metazen11/agent-memory
+```
+
+### Critical to remember
+
+- `models/` symlinks to Dropbox cold storage. **Quit Dropbox before any new training run** (`osascript -e 'tell application "Dropbox" to quit'`).
+- Use `.absolute()` not `.resolve()` for paths under `models/` to avoid symlink chase into Dropbox.
+- 24 pytest tests at `tests/fine_tune/` should all pass; run after any change.
+- v1 GGUF (`models/gguf/qwen2.5-3b-toolcalls-q4km.gguf`) is the current ship-it artifact; don't overwrite until v2 is validated.
+
+## Previous Status (2026-05-12)
 
 ### Location Change
 - **Moved from** `~/Dropbox/_CODING/agentMemory/` **to** `~/_CODING/agentMemory/`
