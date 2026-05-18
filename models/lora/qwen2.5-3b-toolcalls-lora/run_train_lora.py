@@ -166,13 +166,17 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=dtype,
 )
 
+LORA_R = int(os.getenv("LORA_R", "16"))
+LORA_ALPHA = int(os.getenv("LORA_ALPHA", str(LORA_R * 2)))
+LORA_DROPOUT = float(os.getenv("LORA_DROPOUT", "0.05"))
 lora_cfg = LoraConfig(
-    r=16,
-    lora_alpha=32,
-    lora_dropout=0.05,
+    r=LORA_R,
+    lora_alpha=LORA_ALPHA,
+    lora_dropout=LORA_DROPOUT,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     task_type="CAUSAL_LM",
 )
+print(f"  lora:          r={LORA_R} alpha={LORA_ALPHA} dropout={LORA_DROPOUT}")
 model = get_peft_model(model, lora_cfg)
 model.print_trainable_parameters()
 

@@ -45,6 +45,14 @@ export WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
 export EARLY_STOP_PATIENCE="${EARLY_STOP_PATIENCE:-3}"
 export LOAD_BEST_AT_END="${LOAD_BEST_AT_END:-1}"
 
+# load_best_model_at_end requires save_steps to be a multiple of eval_steps so
+# the best eval checkpoint is always on disk. Default trainer config has
+# save=250, eval=500 (save more often to survive crashes) which trips
+# validation. Align save=eval=500 — the persisted "best" is whatever eval
+# picks. Lose 250-step crash-recovery granularity, gain load_best semantics.
+export EVAL_STEPS="${EVAL_STEPS:-500}"
+export SAVE_STEPS="${SAVE_STEPS:-500}"
+
 # Output paths (mirror launch_v3.sh)
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="$REPO_ROOT/logs/m-ft-v4.5"
