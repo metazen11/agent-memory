@@ -1,0 +1,212 @@
+{
+  "model": "v3",
+  "n_scenarios": 10,
+  "n_no_turn1_tool_call": 0,
+  "n_empty_turn2_response": 0,
+  "n_regression_same_call": 3,
+  "n_adapted_new_call": 7,
+  "n_adapted_text_answer": 0,
+  "adaptation_rate_of_eligible": 0.7,
+  "trials": [
+    {
+      "i": 1,
+      "user": "find the fire-map codebase",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com/wfca-app/pages/api/health/manifest.ts"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/fire-map.wfca.com",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/_CODING/fire-map.wfca.com/wfca-app/pages/api/health/manifest.ts"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 2,
+      "user": "show me where auth is wired up",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/platform_admin/views.py"
+        }
+      },
+      "synthetic_tool_response": "app/auth.py\napp/middleware/auth_middleware.py\napp/api/login.py",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/platform_admin/views.py"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    },
+    {
+      "i": 3,
+      "user": "locate the migrations directory",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/migrations/005_app_roles.sql"
+        }
+      },
+      "synthetic_tool_response": "scripts/migrations/\n001-initial.sql\n012-prompt-toolcall-linkage.sql",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/scripts/migrations/005_app_roles.sql"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 4,
+      "user": "what tests cover the backfill",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com/tests/test_backfill.py"
+        }
+      },
+      "synthetic_tool_response": "tests/migrations/test_012.py\ntests/test_backfill_jsonl.py",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com/tests/test_backfill_jsonl.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 5,
+      "user": "open the runbook",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/.claude/projects/-Users-mz-Dropbox--CODING-psde-mz-test/memory/MEMORY.md"
+        }
+      },
+      "synthetic_tool_response": "docs/fine_tune/PIPELINE_RUNBOOK.md\ndocs/fine_tune/WIZARD.md",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/.claude/projects/-Users-mz-Dropbox--CODING-psde-mz-test/docs/fine_tune/PIPELINE_RUNBOOK.md"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 6,
+      "user": "show me the dataset builder",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/docs/e2e_demo/06_connector_catalog.png"
+        }
+      },
+      "synthetic_tool_response": "scripts/fine_tune/build_v3_dataset.py\nscripts/fine_tune/build_v4_dataset.py",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/scripts/fine_tune/validate_tool_calls.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 7,
+      "user": "where is the database schema",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/connectors/models.py"
+        }
+      },
+      "synthetic_tool_response": "scripts/init_db.sql\nscripts/migrations/",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/scripts/init-keycloak.sh"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 8,
+      "user": "find the README",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/README.md"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/agentMemory/README.md",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/README.md"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    },
+    {
+      "i": 9,
+      "user": "look at the API routes",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/anvil/anvil/web/routers/console.py"
+        }
+      },
+      "synthetic_tool_response": "app/routes/observations.py\napp/routes/lessons.py\napp/routes/prompts.py",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/anvil/anvil/web/routers/console.py"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    },
+    {
+      "i": 10,
+      "user": "show me the hooks",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/hooks/README.md"
+        }
+      },
+      "synthetic_tool_response": "hooks/user-prompt-submit.js\nhooks/post-tool-use.js\nhooks/session-start.js",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/mz/Dropbox/_CODING/hooks/hooks.json"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    }
+  ]
+}

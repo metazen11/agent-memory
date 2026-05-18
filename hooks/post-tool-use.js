@@ -20,7 +20,14 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const { authHeaders } = require('./auth-header');
+// Resolve sibling modules against the script's real path, not the path node
+// was invoked with. Without this, NODE_PRESERVE_SYMLINKS=1 (or
+// --preserve-symlinks) breaks `require('./auth-header')` when the script is
+// invoked via the ~/.claude/hooks/ symlink — MODULE_NOT_FOUND at cjs loader
+// 1459, surfaces as a red hook-failure banner in Claude Code.
+const { authHeaders } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), 'auth-header')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const SERVER_URL = `${SERVER_BASE}/api/queue`;
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
