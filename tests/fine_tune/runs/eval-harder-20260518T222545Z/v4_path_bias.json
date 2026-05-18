@@ -1,0 +1,107 @@
+{
+  "model": "v4",
+  "category": "path_bias",
+  "n": 5,
+  "passed": 4,
+  "failed": 1,
+  "pass_rate": 0.8,
+  "trials": [
+    {
+      "id": "pb-01-local-anvil",
+      "user": "switch into the project /Users/mz/_CODING/anvil",
+      "expected_path_in_args": "/Users/mz/_CODING/anvil",
+      "forbidden_substrings": [
+        "/Dropbox/_CODING/",
+        "Dropbox/_CODING"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "git log --oneline -3 && echo \"---\" && git branch --show-current && echo \"---\" && git status --short | head -5 && echo \"---\" && git diff --stat HEAD | tail -3 && echo \"---\" && git diff --stat HEAD | head -30"
+          }
+        }
+      ],
+      "passed": false,
+      "reason": "EXPECTED path '/Users/mz/_CODING/anvil' not present in any tool_call args"
+    },
+    {
+      "id": "pb-02-local-agentmemory",
+      "user": "read the README from /Users/mz/_CODING/agentMemory",
+      "expected_path_in_args": "/Users/mz/_CODING/agentMemory",
+      "forbidden_substrings": [
+        "/Dropbox/_CODING/"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/agentMemory/README.md"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "pb-03-tilde-form",
+      "user": "list the files in ~/_CODING/anvil",
+      "expected_path_in_args": "~/_CODING/anvil",
+      "forbidden_substrings": [
+        "~/Dropbox/_CODING/",
+        "/Dropbox/_CODING/"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Glob",
+          "arguments": {
+            "pattern": "~/_CODING/anvil/**/*"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "pb-04-no-path-given",
+      "user": "find the fire-map codebase",
+      "expected_path_in_args": null,
+      "forbidden_substrings": [
+        "/Dropbox/_CODING/"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Glob",
+          "arguments": {
+            "pattern": "**/fire-map*"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "pb-05-subdir",
+      "user": "look at /Users/mz/_CODING/agentMemory/app/routes/observations.py",
+      "expected_path_in_args": "/Users/mz/_CODING/agentMemory/app/routes/observations.py",
+      "forbidden_substrings": [
+        "/Dropbox/_CODING/"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/agentMemory/app/routes/observations.py"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    }
+  ]
+}

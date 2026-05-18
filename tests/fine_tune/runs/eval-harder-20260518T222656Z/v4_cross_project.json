@@ -1,0 +1,116 @@
+{
+  "model": "v4",
+  "category": "cross_project",
+  "n": 5,
+  "passed": 3,
+  "failed": 2,
+  "pass_rate": 0.6,
+  "trials": [
+    {
+      "id": "cp-01-auth-in-agentmemory",
+      "user": "in /Users/mz/_CODING/agentMemory, where is auth wired up?",
+      "expected_path_in_args": "/Users/mz/_CODING/agentMemory",
+      "forbidden_substrings": [
+        "/Users/mz/_CODING/anvil",
+        "/Users/mz/_CODING/psde",
+        "/Users/mz/_CODING/fire-map"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Grep",
+          "arguments": {
+            "pattern": "auth.*middleware|auth.*require|auth.*check",
+            "path": "/Users/mz/_CODING/agentMemory"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "cp-02-connectors-not-in-anvil",
+      "user": "in /Users/mz/_CODING/anvil, find the connector files",
+      "expected_path_in_args": "/Users/mz/_CODING/anvil",
+      "forbidden_substrings": [
+        "unification/apps/connectors",
+        "/psde_mz_test/",
+        "airbyte"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Glob",
+          "arguments": {
+            "pattern": "**/connector*.py"
+          }
+        }
+      ],
+      "passed": false,
+      "reason": "EXPECTED path '/Users/mz/_CODING/anvil' not present in any tool_call args"
+    },
+    {
+      "id": "cp-03-models-py-disambig",
+      "user": "in /Users/mz/_CODING/agentMemory, read app/path_normalize.py",
+      "expected_path_in_args": "/Users/mz/_CODING/agentMemory/app/path_normalize.py",
+      "forbidden_substrings": [
+        "/Users/mz/_CODING/anvil/",
+        "/Users/mz/_CODING/psde",
+        "/Users/mz/_CODING/fire-map"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/agentMemory/app/path_normalize.py"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "cp-04-readme-in-anvil",
+      "user": "show me the README in /Users/mz/_CODING/anvil",
+      "expected_path_in_args": "/Users/mz/_CODING/anvil/README",
+      "forbidden_substrings": [
+        "/Users/mz/_CODING/agentMemory/",
+        "/Users/mz/_CODING/psde",
+        "/Users/mz/_CODING/fire-map"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/anvil/README.md"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "cp-05-tests-dir-agentmemory",
+      "user": "list test files in /Users/mz/_CODING/agentMemory/tests",
+      "expected_path_in_args": "/Users/mz/_CODING/agentMemory/tests",
+      "forbidden_substrings": [
+        "/Users/mz/_CODING/anvil/",
+        "/Users/mz/_CODING/psde",
+        "/Users/mz/_CODING/fire-map"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Glob",
+          "arguments": {
+            "pattern": "tests/**/*.py"
+          }
+        }
+      ],
+      "passed": false,
+      "reason": "EXPECTED path '/Users/mz/_CODING/agentMemory/tests' not present in any tool_call args"
+    }
+  ]
+}
