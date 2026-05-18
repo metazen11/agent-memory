@@ -30,6 +30,7 @@ from app.config import settings
 from app.embeddings import embed_text
 from app.models import normalize_observation_type
 from app.observation_llm import generate_observation, SKIP_TOOLS
+from app.path_normalize import normalize_json, normalize_text
 from app.project import ensure_project
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,9 @@ def parse_jsonl_session(filepath: str) -> dict:
                                             parts.append(rc.get("text", ""))
                                     result_content = "\n".join(parts)
                                 if isinstance(result_content, str):
-                                    tool_calls[idx]["tool_response"] = result_content[:3000]
+                                    # Path normalization (migration 014): rewrite stale
+                                    # /Dropbox/_CODING/ to /_CODING/ at the write boundary.
+                                    tool_calls[idx]["tool_response"] = normalize_text(result_content[:3000])
                     elif isinstance(block, str):
                         text_parts.append(block)
                 joined = "\n".join(text_parts).strip()
@@ -131,9 +134,13 @@ def parse_jsonl_session(filepath: str) -> dict:
                 cleaned = re.sub(r"<system-reminder>.*?</system-reminder>", "", user_text, flags=re.DOTALL).strip()
                 if cleaned and len(cleaned) > 1:
                     prompt_number += 1
+                    # Path normalization (migration 014): rewrite stale
+                    # /Dropbox/_CODING/ to /_CODING/ at the write boundary so
+                    # historical jsonl re-imports don't re-introduce the
+                    # v4 path-bias problem.
                     user_prompts.append({
                         "prompt_number": prompt_number,
-                        "prompt_text": cleaned[:10000],  # cap at 10k chars
+                        "prompt_text": normalize_text(cleaned[:10000]),  # cap at 10k chars
                         "timestamp": entry_ts,
                     })
 
@@ -141,14 +148,19 @@ def parse_jsonl_session(filepath: str) -> dict:
         if role == "assistant" and isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
+                    # Path normalization (migration 014): rewrite stale
+                    # /Dropbox/_CODING/ to /_CODING/ at the write boundary so
+                    # historical jsonl re-imports don't re-introduce the
+                    # v4 path-bias problem. Applied to tool_input (jsonb),
+                    # cwd (text), and last_user_message (text).
                     tc = {
                         "tool_use_id": block.get("id", ""),
                         "tool_name": block.get("name", ""),
-                        "tool_input": block.get("input", {}),
+                        "tool_input": normalize_json(block.get("input", {})),
                         "tool_response": None,
-                        "cwd": entry_cwd,
+                        "cwd": normalize_text(entry_cwd),
                         "timestamp": entry_ts,
-                        "last_user_message": last_user_message,
+                        "last_user_message": normalize_text(last_user_message),
                     }
                     tool_calls.append(tc)
                     pending_results[tc["tool_use_id"]] = len(tool_calls) - 1
@@ -291,6 +303,8 @@ async def process_tool_call(
             except (ValueError, TypeError):
                 pass
 
+        # Path normalization (migration 014): the LLM may regenerate
+        # /Dropbox/_CODING/ paths in narrative/facts/files_*. Strip at write.
         await conn.execute("""
             INSERT INTO mem_observations (
                 session_id, project_id, title, subtitle, type,
@@ -306,15 +320,15 @@ async def process_tool_call(
         """,
             session_db_id,
             project_id,
-            obs_data.get("title", "Untitled"),
-            obs_data.get("subtitle"),
+            normalize_text(obs_data.get("title", "Untitled")),
+            normalize_text(obs_data.get("subtitle")),
             normalize_observation_type(obs_data.get("type", "discovery")),
-            obs_data.get("narrative"),
-            json.dumps(obs_data.get("facts", [])),
-            json.dumps(obs_data.get("concepts", [])),
-            json.dumps(obs_data.get("files_read", [])),
-            json.dumps(obs_data.get("files_modified", [])),
-            raw_text,
+            normalize_text(obs_data.get("narrative")),
+            json.dumps(normalize_json(obs_data.get("facts", []))),
+            json.dumps(normalize_json(obs_data.get("concepts", []))),
+            json.dumps(normalize_json(obs_data.get("files_read", []))),
+            json.dumps(normalize_json(obs_data.get("files_modified", []))),
+            normalize_text(raw_text),
             embedding_str,
             embedding_model_id,
             tool_name,
@@ -419,7 +433,7 @@ async def process_session(
                 ON CONFLICT (session_id) DO UPDATE SET
                     status = 'in_progress', started_at = now(),
                     processed = 0, skipped = 0, errors = 0, last_processed_idx = 0
-            """, sid, filepath, total)
+            """, sid, normalize_text(filepath), total)
     else:
         session_db_id = 0
         project_id = 0

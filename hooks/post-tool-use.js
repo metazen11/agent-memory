@@ -28,6 +28,12 @@ const { spawn } = require('child_process');
 const { authHeaders } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), 'auth-header')
 );
+// Path normalizer mirror of app/path_normalize.py — rewrites stale
+// /Dropbox/_CODING/ → /_CODING/ at the hook boundary so tool_input,
+// tool_response, and cwd never re-enter the DB with the v4 bias prefix.
+const { normalizeText, normalizeJson } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '_path-normalize')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const SERVER_URL = `${SERVER_BASE}/api/queue`;
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
@@ -289,20 +295,29 @@ if (SKIP_TOOLS.has(toolName)) {
 
 // Build queue payload
 const { toolSuccess, toolError } = inferOutcome(input);
-const toolResponsePreview = typeof input.tool_response === 'string'
-  ? input.tool_response.slice(0, 2000)
-  : JSON.stringify(input.tool_response || '').slice(0, 2000);
+// Path normalization (migration 014): tool_input is nested JSON that
+// commonly carries file_path / cwd fields; tool_response and
+// tool_response_preview carry path strings in stdout. Normalize before
+// serializing so the wire payload — and any spool file on the failure
+// path — is already clean.
+const normalizedToolInput = normalizeJson(input.tool_input || null);
+const normalizedToolResponse = (input.tool_response && typeof input.tool_response === 'object')
+  ? normalizeJson(input.tool_response)
+  : normalizeText(input.tool_response);
+const toolResponsePreview = typeof normalizedToolResponse === 'string'
+  ? normalizedToolResponse.slice(0, 2000)
+  : JSON.stringify(normalizedToolResponse || '').slice(0, 2000);
 const payload = JSON.stringify({
   session_id: input.session_id || `session-${Date.now()}`,
   hook_event_name: 'PostToolUse',
   tool_name: toolName,
-  tool_input: input.tool_input || null,
-  tool_response: input.tool_response || null,
+  tool_input: normalizedToolInput,
+  tool_response: normalizedToolResponse || null,
   tool_response_preview: toolResponsePreview,
   tool_success: toolSuccess,
-  tool_error: toolError,
+  tool_error: normalizeText(toolError),
   raw_event: input,
-  cwd: input.cwd || process.cwd(),
+  cwd: normalizeText(input.cwd || process.cwd()),
   last_user_message: null,
   source_system: input.source_system || 'claude-code',
   source_mode: input.source_mode || 'hook',

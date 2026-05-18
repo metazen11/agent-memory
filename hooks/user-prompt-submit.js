@@ -48,6 +48,12 @@ const os = require('os');
 const { authHeaders } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), 'auth-header')
 );
+// Path normalizer mirror of app/path_normalize.py — rewrites stale
+// /Dropbox/_CODING/ → /_CODING/ at the hook boundary so re-fired hooks
+// from a stale shell never reintroduce the v4 path-bias problem.
+const { normalizeText } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '_path-normalize')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -160,10 +166,14 @@ function httpGet(pathAndQuery, timeoutMs) {
 
 function logPrompt(input) {
   // Don't await — let it race the rest of the hook. Errors are swallowed.
+  // Path normalization (migration 014): strip stale /Dropbox/_CODING/ from
+  // both the prompt text and the cwd before POSTing — the server also
+  // normalizes, but doing it here keeps the wire format clean and means
+  // the content_hash on the server side matches what the model saw.
   const payload = JSON.stringify({
     session_id: input.session_id || `session-${Date.now()}`,
-    prompt: input.prompt,
-    cwd: input.cwd || process.cwd(),
+    prompt: normalizeText(input.prompt),
+    cwd: normalizeText(input.cwd || process.cwd()),
     agent_name: 'claude-code',
   });
   const url = new URL(`${SERVER_BASE}/api/prompts`);

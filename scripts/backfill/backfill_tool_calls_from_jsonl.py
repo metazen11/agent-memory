@@ -83,6 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import asyncpg
 
 from app.config import settings
+from app.path_normalize import normalize_json, normalize_text
 from app.project import ensure_project
 from app.redact import redact_json, redact_text
 
@@ -305,10 +306,13 @@ async def _write_session(
 
     for i, tc in enumerate(tool_calls):
         name = tc.get("tool_name", "")
-        tool_input = redact_json(tc.get("tool_input") or {})
-        tool_response = redact_text(tc.get("tool_response")) or None
-        last_user_message = tc.get("last_user_message")
-        cwd = tc.get("cwd")
+        # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
+        # to /_CODING/ at the write boundary so we don't reintroduce the
+        # v4 path-bias problem during re-imports of historical jsonl.
+        tool_input = normalize_json(redact_json(tc.get("tool_input") or {}))
+        tool_response = normalize_text(redact_text(tc.get("tool_response"))) or None
+        last_user_message = normalize_text(tc.get("last_user_message"))
+        cwd = normalize_text(tc.get("cwd"))
 
         # turn_index increments per distinct user message; turn_subindex
         # increments within a multi-tool turn.

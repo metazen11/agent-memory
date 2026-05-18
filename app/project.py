@@ -30,6 +30,7 @@ followed by the rest of ``app/routes/``.
 from pathlib import Path
 
 from app.git_context import resolve_git_context
+from app.path_normalize import normalize_text
 
 
 # ── SQL ───────────────────────────────────────────────
@@ -74,11 +75,16 @@ async def ensure_project(conn, full_path: str) -> int:
     Existing rows from before migration 013 are upgraded in place on first
     use: ``canonical_root_path``, ``git_remote``, and ``source_kind`` get
     filled in via ``COALESCE`` on conflict.
+
+    Path normalization: per migration 014, /Users/mz/Dropbox/_CODING/ is
+    rewritten to /Users/mz/_CODING/ at the write boundary so the v4
+    path-bias regression doesn't recur. See app/path_normalize.py.
     """
+    full_path = normalize_text(full_path) or full_path
     ctx = resolve_git_context(full_path)
 
     if ctx.source_kind == "git" and ctx.canonical_root_path:
-        canonical_path = ctx.canonical_root_path
+        canonical_path = normalize_text(ctx.canonical_root_path) or ctx.canonical_root_path
         name = Path(canonical_path).name or canonical_path
         row = await conn.fetchrow(
             _INSERT_GIT_PROJECT_SQL,

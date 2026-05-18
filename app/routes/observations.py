@@ -8,6 +8,7 @@ from app.db import get_pool
 from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
 from app.git_context import resolve_git_context
+from app.path_normalize import normalize_json, normalize_text
 from app.project import ensure_project, project_path_filter
 
 
@@ -67,7 +68,13 @@ async def queue_observation(item: QueueItem):
     """Accept tool call data for async observation processing."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        project_path = item.cwd or "unknown"
+        # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
+        # to /_CODING/ at the live write boundary. The hooks already
+        # normalize, but a stale shell or non-Claude agent might POST raw
+        # Dropbox paths — strip here as belt-and-suspenders so the DB
+        # invariant holds end-to-end.
+        cwd_norm = normalize_text(item.cwd)
+        project_path = cwd_norm or "unknown"
         project_id = await ensure_project(conn, project_path)
         session_db_id = await _ensure_session(conn, item.session_id, project_id)
         session_row = await conn.fetchrow(
@@ -76,8 +83,11 @@ async def queue_observation(item: QueueItem):
         )
         source_system = item.source_system or (session_row["agent_type"] if session_row else None)
 
-        response_preview = item.tool_response_preview[:2000] if item.tool_response_preview else None
-        tool_input_json = json.dumps(item.tool_input) if item.tool_input else None
+        response_preview_raw = item.tool_response_preview[:2000] if item.tool_response_preview else None
+        response_preview = normalize_text(response_preview_raw)
+        tool_input_norm = normalize_json(item.tool_input) if item.tool_input else None
+        tool_input_json = json.dumps(tool_input_norm) if tool_input_norm else None
+        last_user_message_norm = normalize_text(item.last_user_message)
 
         # Insert into observation queue (for LLM-based observation extraction)
         queue_row = await conn.fetchrow("""
@@ -93,8 +103,8 @@ async def queue_observation(item: QueueItem):
             item.tool_name,
             tool_input_json,
             response_preview,
-            item.cwd,
-            item.last_user_message,
+            cwd_norm,
+            last_user_message_norm,
             source_system,
             item.source_mode,
             item.source_agent,
@@ -105,7 +115,7 @@ async def queue_observation(item: QueueItem):
         # The same resolve_git_context call was used inside ensure_project
         # above; the helper caches per-cwd within the process so this is
         # effectively free for hot paths.
-        git_ctx = resolve_git_context(item.cwd)
+        git_ctx = resolve_git_context(cwd_norm)
 
         # Insert into tool_calls ledger with inferred success/error
         tool_success, tool_error = _infer_tool_success(response_preview)
@@ -122,8 +132,8 @@ async def queue_observation(item: QueueItem):
         """,
             session_db_id, project_id, queue_id,
             item.tool_name, tool_input_json,
-            response_preview, tool_success, tool_error, item.last_user_message,
-            item.cwd, source_system, item.source_mode, item.source_agent,
+            response_preview, tool_success, tool_error, last_user_message_norm,
+            cwd_norm, source_system, item.source_mode, item.source_agent,
             git_ctx.branch, git_ctx.sha,
         )
 
@@ -143,7 +153,12 @@ async def create_observation(obs: ObservationCreate):
     """Create an observation directly (bypasses queue)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        project_id = await ensure_project(conn, obs.project)
+        # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
+        # to /_CODING/ at the write boundary. Applies to project path (text),
+        # narrative / title / subtitle (text), and the list[str] payloads
+        # facts / concepts / files_read / files_modified (jsonb).
+        project_norm = normalize_text(obs.project) or obs.project
+        project_id = await ensure_project(conn, project_norm)
         session_db_id = await _ensure_session(conn, obs.session_id, project_id)
         session_row = await conn.fetchrow(
             "SELECT agent_type FROM mem_sessions WHERE id = $1",
@@ -153,6 +168,13 @@ async def create_observation(obs: ObservationCreate):
 
         # Normalize type before insert
         obs.type = normalize_observation_type(obs.type)
+        obs.title = normalize_text(obs.title) or obs.title
+        obs.subtitle = normalize_text(obs.subtitle)
+        obs.narrative = normalize_text(obs.narrative)
+        obs.facts = normalize_json(obs.facts) if obs.facts else obs.facts
+        obs.concepts = normalize_json(obs.concepts) if obs.concepts else obs.concepts
+        obs.files_read = normalize_json(obs.files_read) if obs.files_read else obs.files_read
+        obs.files_modified = normalize_json(obs.files_modified) if obs.files_modified else obs.files_modified
 
         raw_text = _build_raw_text(obs)
 

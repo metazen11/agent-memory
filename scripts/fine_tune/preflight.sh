@@ -197,6 +197,20 @@ PY
     fi
 fi
 
+# --- J. Data-quality audit (path bias, agentic-narrative fabrication) ----
+# Sees content patterns the builder can't easily catch row-by-row.
+# Refuses pass if any threshold in docs/fine_tune/DATA_QUALITY_GATES.md
+# is exceeded. Skip with SKIP_AUDIT=1 (tiny smoke tests only).
+if [ "$FAIL" -eq 0 ] && [ "${SKIP_AUDIT:-0}" != "1" ]; then
+    echo "  (running data-quality audit — Categories 1 + 8a)"
+    if .venv-finetune/bin/python scripts/fine_tune/audit_dataset.py "$DATASET_DIR" > /tmp/preflight-audit.log 2>&1; then
+        ok "data-quality audit: all categories within threshold"
+    else
+        cat /tmp/preflight-audit.log | sed 's/^/    /'
+        fail "data-quality audit: failures present — see docs/fine_tune/DATA_QUALITY_GATES.md"
+    fi
+fi
+
 echo
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS — pre-flight green."

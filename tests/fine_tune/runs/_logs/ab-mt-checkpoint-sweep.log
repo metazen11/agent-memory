@@ -1,0 +1,213 @@
+Output dir: /Users/mz/_CODING/agentMemory/tests/fine_tune/runs/ab-mt-20260518T205951Z
+Models: ['v1', 'v4-ckpt4750', 'v4-ckpt5000', 'v4']
+
+============================================================
+MODEL: v1 (qwen2.5-3b-toolcalls-q4km.gguf)
+============================================================
+  starting llama-server on :9099...
+  server ready
+  [1/10] find the fire-map codebase
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/components/map)
+     turn2: ✓ adapted (different tool_call)
+           Grep({"pattern": "fire-map|FIRMS|firmsFire", "path": "/Users/mz/_CODING/fire-map.wfca.com"})
+  [2/10] show me where auth is wired up
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/auth/"})
+     turn2: ✓ adapted (text answer)
+           text='Let me check the auth-related files. Here are the key files: - **app/auth.py** — Authentication module - **app/middlewar'
+  [3/10] locate the migrations directory
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/database/etl/sql/m)
+     turn2: ✓ adapted (different tool_call)
+           Bash({"command": "source ../database/etl/venv/bin/activate && python3 db.py prod \"SELECT 'migr)
+  [4/10] what tests cover the backfill
+     turn1: Grep({"pattern": "BACKFILL|backfill", "path": "tests/test_engine_backends.py"})
+     turn2: ✓ adapted (different tool_call)
+           Read({"file_path": "tests/test_backfill_jsonl.py"})
+  [5/10] open the runbook
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/anvil/CLAUDE.md"})
+     turn2: ✓ adapted (different tool_call)
+           Read({"file_path": "/Users/<user>/Dropbox/_CODING/anvil/docs/fine_tune/PIPELINE_RUNBOOK.md"})
+  [6/10] show me the dataset builder
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/components/lay)
+     turn2: ✓ adapted (different tool_call)
+           Read({"file_path": "scripts/fine_tune/build_v4_dataset.py"})
+  [7/10] where is the database schema
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/db/etl/sql)
+     turn2: ✓ adapted (different tool_call)
+           Grep({"pattern": "apply_schemas.py", "path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/w)
+  [8/10] find the README
+     turn1: Read({"file_path": "README.md"})
+     turn2: ✓ adapted (different tool_call)
+           Grep({"_raw": "{\"pattern\": \"memory.*model.*context.*limit.*max.*tokens.*chat.*context.*max.*)
+  [9/10] look at the API routes
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/routes/api/irw)
+     turn2: ✗ REGRESSION (re-emitted identical tool_call)
+           Read({"file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/routes/api/irw)
+  [10/10] show me the hooks
+     turn1: Read({"file_path": "/Users/<user>/Dropbox/_CODING/anvil/anvil/hooks/core.py"})
+     turn2: ✗ REGRESSION (re-emitted identical tool_call)
+           Read({"file_path": "/Users/<user>/Dropbox/_CODING/anvil/anvil/hooks/core.py"})
+  stopping server...
+
+  Adaptation rate (eligible): 80%  (8/10)
+
+============================================================
+MODEL: v4-ckpt4750 (qwen3-4b-toolcalls-v4-ckpt4750-q6k.gguf)
+============================================================
+  starting llama-server on :9099...
+  server ready
+  [1/10] find the fire-map codebase
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com/wfca-app/.git"})
+     turn2: ✓ adapted (text answer)
+           text="The `aws-infrastructure` repo is referenced but not cloned. Let me check if it's a submodule or if we can just use the p"
+  [2/10] show me where auth is wired up
+     turn1: Grep({"pattern": "auth.*required", "path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/)
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's sta"
+  [3/10] locate the migrations directory
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/migrations/000_schema_migrations.sql)
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's sta"
+  [4/10] what tests cover the backfill
+     turn1: Grep({"pattern": "test_backfill", "path": "/Users/mz/Dropbox/_CODING/psde_mz_test/tests/test_ba)
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's sta"
+  [5/10] open the runbook
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/docs/IDENTITY.md"})
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from the old branch context. "
+  [6/10] show me the dataset builder
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/connectors/views.py)
+     turn2: ✓ adapted (text answer)
+           text='The `web_models.py` import fix is already in the PR. Let me check: yes, the `web_models import` is fixed (line 13). Now '
+  [7/10] where is the database schema
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/dbt/models/gold/neris_cleaned.sql"})
+     turn2: ✓ adapted (text answer)
+           text='The `init-trino` script is the one that creates Iceberg tables. Let me check it: it creates `neris_landing`, `neris_clea'
+  [8/10] find the README
+     turn1: Grep({"pattern": "README.md|README.*txt|README.*html", "path": "/Users/mz/Dropbox/_CODING/psde_)
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's con"
+  [9/10] look at the API routes
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/anvil/anvil/web/routers/console.py"})
+     turn2: ✓ adapted (text answer)
+           text='The `console_shell.html` template is the one that gets rendered for the console. Let me check what template the console '
+  [10/10] show me the hooks
+     turn1: Read({"file_path": "/Users/mz/_CODING/hooks/env-guard.js"})
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's con"
+  stopping server...
+
+  Adaptation rate (eligible): 100%  (10/10)
+
+============================================================
+MODEL: v4-ckpt5000 (qwen3-4b-toolcalls-v4-ckpt5000-q6k.gguf)
+============================================================
+  starting llama-server on :9099...
+  server ready
+  [1/10] find the fire-map codebase
+     turn1: Grep({"pattern": "fire-map|FireMap", "path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com"})
+     turn2: ✓ adapted (text answer)
+           text='The `wfca-app/docker-geoserver/Dockerfile` is the one in `wfca-app/` (not `aws-infrastructure/`). Let me check which rep'
+  [2/10] show me where auth is wired up
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/platform_admin/view)
+     turn2: ✓ adapted (text answer)
+           text='The `actions_tactics` table has only 1 row (the demo data). Let me seed it with real data and then run the tests. First,'
+  [3/10] locate the migrations directory
+     turn1: Grep({"pattern": "migrations/|migration.*schema", "path": "/Users/mz/Dropbox/_CODING/psde_mz_te)
+     turn2: ✓ adapted (text answer)
+           text='The test data agent already modified `Makefile` and `docker-compose.yml` — the files are committed. Let me check the cur'
+  [4/10] what tests cover the backfill
+     turn1: Grep({"pattern": "test_backfill|test_backfill_schema|test_backfill_run|test_backfill_rollback",)
+     turn2: ✓ adapted (text answer)
+           text="The plan is committed on branch `feature/backfill-jsonl`. Here's what it covers:\n\n---\n\n**Plan written to `docs/PLAN_AIRB"
+  [5/10] open the runbook
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/docs/IDENTITY.md"})
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from the old branch context. "
+  [6/10] show me the dataset builder
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/docs/e2e_demo/08_connector_wizard.pn)
+     turn2: ✓ adapted (text answer)
+           text="The hook exits 0 and returns valid JSON. The issue isn't in session-start itself. Let me check the settings.json for all"
+  [7/10] where is the database schema
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/dbt/models/gold/response_time_kpis.s)
+     turn2: ✓ adapted (text answer)
+           text='The `init-trino` script is the one that creates Iceberg tables. Let me check its output. But first, let me also check if'
+  [8/10] find the README
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/README.md"})
+     turn2: ✓ adapted (text answer)
+           text="The plan is committed on branch `feature/airbyte-integration-plan`. Here's what it covers:\n\n---\n\n**Plan written to `docs"
+  [9/10] look at the API routes
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/anvil/anvil/web/routers/console.py"})
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's sta"
+  [10/10] show me the hooks
+     turn1: Read({"file_path": "/Users/mz/_CODING/hooks/README.md"})
+     turn2: ✓ adapted (text answer)
+           text='The hook exits 0. The issue is likely that the hook is running but the CLI is still prompting. Let me wait a moment long'
+  stopping server...
+
+  Adaptation rate (eligible): 100%  (10/10)
+
+============================================================
+MODEL: v4 (qwen3-4b-toolcalls-v4-q6k.gguf)
+============================================================
+  starting llama-server on :9099...
+  server ready
+  [1/10] find the fire-map codebase
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/fire-map.wfca.com/wfca-app/.git"})
+     turn2: ✓ adapted (text answer)
+           text="The `wfca-app` repo is **not** tracked by this repo's git. The `wfca-app` directory is a symlink pointing to `/Users/mz/"
+  [2/10] show me where auth is wired up
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/unification/apps/platform_admin/view)
+     turn2: ✓ adapted (text answer)
+           text='The `oidc_backend` is configured but **not wired into the Keycloak OIDC backend**. The `AUTHENTICATION_BACKENDS` in `set'
+  [3/10] locate the migrations directory
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/migrations/005_app_roles.sql"})
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's con"
+  [4/10] what tests cover the backfill
+     turn1: Grep({"pattern": "test_backfill", "path": "/Users/mz/Dropbox/_CODING/psde_mz_test/tests/test_ba)
+     turn2: ✓ adapted (text answer)
+           text="The `git checkout -b` earlier didn't actually switch — looks like the file was written but from a previous session's sta"
+  [5/10] open the runbook
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/docs/README.md"})
+     turn2: ✓ adapted (text answer)
+           text='The `web_models.py` import fix is already in the edited file. Let me re-apply the remaining fixes and commit everything.'
+  [6/10] show me the dataset builder
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/scripts/init-keycloak.sh"})
+     turn2: ✓ adapted (text answer)
+           text='The `web_models.py` import fix is done (line 15). Let me also check that the `web_models` module actually exists and has'
+  [7/10] where is the database schema
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/dbt/models/gold/response_time_kpis.s)
+     turn2: ✓ adapted (text answer)
+           text='The `scripts/init-keycloak.sh` uses `--realm master` which is correct for the Keycloak CLI. The issue is likely the env '
+  [8/10] find the README
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/psde_mz_test/README.md"})
+     turn2: ✓ adapted (text answer)
+           text='The README is stale (old branch, pre-merger state). Let me check the actual state of the work tree and the merged branch'
+  [9/10] look at the API routes
+     turn1: Read({"file_path": "/Users/mz/Dropbox/_CODING/anvil/anvil/web/routers/console.py"})
+     turn2: ✓ adapted (text answer)
+           text="`console_shell.html` was recently rewritten and doesn't have the `_run_console_chat` import. The version in `anvil/web/t"
+  [10/10] show me the hooks
+     turn1: Read({"file_path": "/Users/mz/_CODING/hooks/env-guard.js"})
+     turn2: ✓ adapted (text answer)
+           text="The hook exits 0. The issue is the `#` comment in the first line — the hook's stdin is the user's prompt, not the agent'"
+  stopping server...
+
+  Adaptation rate (eligible): 100%  (10/10)
+
+# Multi-turn adaptation scoreboard
+Generated: 2026-05-18T21:02:00.518186+00:00
+Scenarios: 10, harness: llama-server :9099
+
+| Model | N | NoTurn1Call | EmptyTurn2 | Regression | NewCall | TextAns | Adaptation |
+|-------|--:|------------:|-----------:|-----------:|--------:|--------:|-----------:|
+| v1 | 10 | 0 | 0 | 2 | 7 | 1 | 80% |
+| v4-ckpt4750 | 10 | 0 | 0 | 0 | 0 | 10 | 100% |
+| v4-ckpt5000 | 10 | 0 | 0 | 0 | 0 | 10 | 100% |
+| v4 | 10 | 0 | 0 | 0 | 0 | 10 | 100% |
+
+## Ship gate
+- adaptation_rate ≥ 60% AND regression_same_call ≤ floor(N/5)
+

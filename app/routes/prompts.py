@@ -16,6 +16,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
 from app.db import get_pool
+from app.path_normalize import normalize_text
 from app.project import ensure_project
 from app.redact import redact_text
 
@@ -146,7 +147,12 @@ async def create_prompt(request: Request, body: PromptCreate):
     The prompt text is redacted of known secret shapes before storage.
     """
     pool = await get_pool()
-    redacted = redact_text(body.prompt) or ""
+    # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/ to
+    # /_CODING/ at the write boundary on both the prompt body AND the cwd,
+    # so re-fired hooks from a stale shell never reintroduce the bias path.
+    # Normalize BEFORE hashing so identical normalized prompts dedupe via
+    # the content_hash idempotency key.
+    redacted = normalize_text(redact_text(body.prompt)) or ""
     content_hash = _content_hash(redacted)
 
     async with pool.acquire() as conn:
@@ -154,7 +160,7 @@ async def create_prompt(request: Request, body: PromptCreate):
             # mem_sessions.project_id is NOT NULL, so fall back to the
             # 'unknown' project the way observations.py does for queue
             # writes without a cwd.
-            project_path = body.cwd or "unknown"
+            project_path = normalize_text(body.cwd) or "unknown"
             project_id = await ensure_project(conn, project_path)
 
             session_row = await conn.fetchrow(

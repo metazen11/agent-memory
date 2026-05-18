@@ -28,6 +28,11 @@ Usage:
   .venv-finetune/bin/python scripts/fine_tune/ab_multiturn.py
   .venv-finetune/bin/python scripts/fine_tune/ab_multiturn.py --models v4
   .venv-finetune/bin/python scripts/fine_tune/ab_multiturn.py --prompts 10
+
+  # Compare intermediate checkpoints without touching defaults:
+  .venv-finetune/bin/python scripts/fine_tune/ab_multiturn.py \
+      --model v4=models/gguf/qwen3-4b-toolcalls-v4-q6k.gguf \
+      --model v4-ckpt5000=models/gguf/qwen3-4b-toolcalls-v4-ckpt5000-q6k.gguf
 """
 from __future__ import annotations
 
@@ -48,11 +53,13 @@ import urllib.error
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LLAMA_SERVER = REPO_ROOT / "models" / "llama.cpp" / "build" / "bin" / "llama-server"
 
-MODELS = {
+DEFAULT_MODELS = {
     "v1": REPO_ROOT / "models/gguf/qwen2.5-3b-toolcalls-q4km.gguf",
     "v3": REPO_ROOT / "models/gguf/qwen3-4b-toolcalls-v3-q6k.gguf",
     "v4": REPO_ROOT / "models/gguf/qwen3-4b-toolcalls-v4-q6k.gguf",
 }
+# Mutable, populated either from defaults or --model overrides.
+MODELS: dict[str, Path] = dict(DEFAULT_MODELS)
 
 PORT = 9099  # confirmed free earlier; avoids LM Studio at 1234
 HOST = "127.0.0.1"
@@ -357,15 +364,62 @@ def run_scenarios(model_name: str, gguf: Path, scenarios: list[tuple[str, str]])
     return summary
 
 
+def _parse_model_kv(values: list[str]) -> dict[str, Path]:
+    """Parse repeated --model name=path into an ordered dict."""
+    out: dict[str, Path] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise argparse.ArgumentTypeError(
+                f"--model expects name=path, got: {raw!r}"
+            )
+        name, path_str = raw.split("=", 1)
+        name = name.strip()
+        path_str = path_str.strip()
+        if not name or not path_str:
+            raise argparse.ArgumentTypeError(
+                f"--model name or path is empty: {raw!r}"
+            )
+        out[name] = Path(path_str).expanduser()
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--models", nargs="+", default=["v1", "v3", "v4"],
-                   choices=list(MODELS.keys()))
+    p.add_argument("--models", nargs="+", default=None,
+                   help="Subset of registered model names to run. "
+                        "Defaults to all (v1, v3, v4) when --model is not used, "
+                        "or to all --model entries when --model is used.")
+    p.add_argument("--model", action="append", default=[], metavar="NAME=PATH",
+                   help="Register a model. Repeatable. When any --model is given, "
+                        "the hardcoded {v1,v3,v4} defaults are NOT used.")
     p.add_argument("--prompts", type=int, default=len(SCENARIOS),
                    help=f"Number of scenarios to run (max {len(SCENARIOS)}).")
     p.add_argument("--out-dir", default=None)
     args = p.parse_args()
+
+    # Resolve model registry: explicit --model wins, else hardcoded defaults.
+    if args.model:
+        try:
+            registry = _parse_model_kv(args.model)
+        except argparse.ArgumentTypeError as e:
+            print(f"FAIL: {e}", file=sys.stderr)
+            return 2
+    else:
+        registry = dict(DEFAULT_MODELS)
+    MODELS.clear()
+    MODELS.update(registry)
+
+    # Resolve which subset to actually run.
+    if args.models is None:
+        selected = list(MODELS.keys())
+    else:
+        unknown = [m for m in args.models if m not in MODELS]
+        if unknown:
+            print(f"FAIL: unknown --models entries: {unknown}. "
+                  f"Registered: {list(MODELS.keys())}", file=sys.stderr)
+            return 2
+        selected = args.models
 
     if not LLAMA_SERVER.exists():
         print(f"FAIL: llama-server not at {LLAMA_SERVER}", file=sys.stderr)
@@ -378,9 +432,10 @@ def main() -> int:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output dir: {out_dir}")
+    print(f"Models: {selected}")
 
     all_summaries: dict[str, dict] = {}
-    for model in args.models:
+    for model in selected:
         gguf = MODELS[model]
         if not gguf.exists():
             print(f"SKIP {model}: {gguf} not found")
