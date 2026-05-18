@@ -87,6 +87,15 @@ MULTI_TURN_OVERSAMPLE_FACTOR = 3.5    # 35.8% natural -> ~70% post-oversample
 ERROR_RECOVERY_OVERSAMPLE_FACTOR = 4.0
 MIN_MULTI_TURN_PCT = 0.65             # gate for v4.5
 
+# Change A (v4.5): drop rows where a short user prompt produced a long
+# assistant text turn. These rows teach the model to elaborate from
+# minimal input — the fabrication regression. We've seen v4 invent
+# entire PR numbers + branch names + file lists on prompts like
+# "deploy this" / "let's finish". Threshold: prompt < 30 chars AND
+# trailing assistant text > 600 chars.
+SHORT_PROMPT_MAX_CHARS = 30
+LONG_RESPONSE_MIN_CHARS = 600
+
 # Error-recovery patterns — case-insensitive substring match against
 # the leading 200 chars of the followup assistant text.
 ERROR_RECOVERY_PATTERNS = re.compile(
@@ -163,6 +172,29 @@ ORDER BY session_db_id, turn_index, turn_subindex, tool_call_id
 """
 
 
+def _is_short_prompt_long_response(row: dict) -> bool:
+    """Change A v4.5 — fabrication-source detector.
+
+    True when a multi-turn row pairs a SHORT user prompt with a LONG
+    trailing assistant text turn. These rows teach the model that
+    minimal input licenses elaborated narrative output — the v4
+    fabrication regression. Drop them.
+    """
+    msgs = row.get("messages", [])
+    if len(msgs) < 5 or msgs[-1].get("role") != "assistant":
+        return False
+    user_msg = next((m for m in msgs if m.get("role") == "user"), None)
+    if not user_msg:
+        return False
+    user_text = user_msg.get("content", "")
+    if not isinstance(user_text, str) or len(user_text.strip()) > SHORT_PROMPT_MAX_CHARS:
+        return False
+    last_text = msgs[-1].get("content", "")
+    if not isinstance(last_text, str):
+        return False
+    return len(last_text) > LONG_RESPONSE_MIN_CHARS
+
+
 def _is_error_recovery(row: dict) -> bool:
     """A multi-turn row is 'error-recovery' if the trailing assistant
     text starts with or contains a recovery-pattern phrase."""
@@ -227,6 +259,10 @@ async def run(args) -> int:
         row["retention_class"] = rec["retention_class"]
         # Extend to multi-turn where possible
         row = _extend_to_multi_turn(row, rec, multi_turn_counters)
+        # Change A (v4.5): drop fabrication-source rows (short prompt + long response)
+        if _is_short_prompt_long_response(row):
+            drops["v45_change_a_short_prompt_long_response"] += 1
+            continue
         # Fix #10 gate
         if not _row_has_predicted_tokens(row):
             drops["fix10_zero_predicted_tokens"] += 1
@@ -281,6 +317,22 @@ async def run(args) -> int:
     # Real write path: split, then oversample only train
     rng = random.Random(RANDOM_SEED)
     train, valid = _split_train_valid(capped, rng)
+
+    # Change B (v4.5): concatenate synthesized abstain-on-vague rows onto
+    # train. Counter-examples teach the model to ask for clarification on
+    # short prompts instead of fabricating PR numbers / branches / files.
+    # Source: scripts/fine_tune/synth_abstain_rows.py (generate via
+    # `python scripts/fine_tune/synth_abstain_rows.py --write`).
+    abstain_path = OUTPUT_DIR / "abstain.synth.jsonl"
+    abstain_added = 0
+    if abstain_path.exists():
+        abstain_rows = [json.loads(line) for line in abstain_path.open() if line.strip()]
+        train.extend(abstain_rows)
+        abstain_added = len(abstain_rows)
+        logger.info(f"Added {abstain_added} abstain.synth rows to train.")
+    else:
+        logger.warning(f"abstain.synth.jsonl not found at {abstain_path} "
+                       f"— Change B (abstain counter-examples) NOT applied.")
 
     rng_train = random.Random(RANDOM_SEED + 1)
     train, mt_added = _oversample_by_factor(
@@ -393,6 +445,9 @@ async def run(args) -> int:
             "in_train_final":        er_train,
             "pct_of_train":          round(er_train / max(len(train_final), 1), 4),
         },
+        "v45_change_a_short_prompt_long_response_dropped":
+            drops.get("v45_change_a_short_prompt_long_response", 0),
+        "v45_change_b_abstain_synth_rows_added": abstain_added,
         "fix6_project_tagging": {
             "natural_per_project":   project_natural,
             "oversampled_added":     project_added,

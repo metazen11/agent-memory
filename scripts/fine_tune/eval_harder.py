@@ -100,10 +100,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "Glob",
-            "description": "Find files by glob pattern.",
+            "description": "Find files matching a glob pattern under a root path.",
             "parameters": {
                 "type": "object",
-                "properties": {"pattern": {"type": "string"}},
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob, e.g. '**/*.py'."},
+                    "path": {"type": "string", "description": "Root directory to search under."},
+                },
                 "required": ["pattern"],
             },
         },
