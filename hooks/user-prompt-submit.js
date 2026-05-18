@@ -248,27 +248,18 @@ function formatLessons(lessons) {
     // Lessons only. Project knowledge and recent observations were dropped
     // from the inject: they're low-signal as a push and the model can pull
     // them on demand via search()/get_observations() when actually needed.
-    const fetches = [fetchLessons(project, 'critical', 10)];
-    if (INJECT_GLOBAL_LESSONS && GLOBAL_LESSONS_CAP > 0) {
-      fetches.push(fetchLessons(null, 'critical', GLOBAL_LESSONS_CAP));
-    } else {
-      fetches.push(Promise.resolve([]));
-    }
-
-    const results = await Promise.all(fetches);
+    //
+    // The /api/lessons endpoint now returns project-scoped + truly-global
+    // lessons in one call when a project is passed (see app/routes/lessons.py:
+    // project=None → only project_id IS NULL; project=<path> → that path's
+    // bidirectional-prefix/name-match OR project_id IS NULL). A second fetch
+    // for globals would just duplicate what's already in projectLessons, so
+    // we skip it. GLOBAL_LESSONS_CAP/INJECT_GLOBAL_LESSONS are kept for
+    // backwards compatibility but no longer drive a separate request.
+    const projectLessons = (await fetchLessons(project, 'critical', 10)) || [];
     clearTimeout(budgetTimer);
 
-    const projectLessons = results[0] || [];
-    const globalLessonsRaw = results[1] || [];
-
-    // Filter globals to only those tagged null/empty project_name (truly
-    // unscoped). Cap to GLOBAL_LESSONS_CAP. Dedupe against project lessons.
-    const projectLessonIds = new Set(projectLessons.filter(l => l && l.id).map(l => l.id));
-    const globalLessons = globalLessonsRaw
-      .filter(l => l && l.id && !l.project_name && !projectLessonIds.has(l.id))
-      .slice(0, GLOBAL_LESSONS_CAP);
-
-    const allLessons = [...projectLessons, ...globalLessons];
+    const allLessons = projectLessons.filter(l => l && l.id);
     const ctx = formatLessons(allLessons).trim();
 
     if (!ctx) {
@@ -283,7 +274,7 @@ function formatLessons(lessons) {
       markSessionPrimed(sessionId);
     }
 
-    debug(`injecting ${ctx.length} chars (projectLessons=${projectLessons.length}, globalLessons=${globalLessons.length})`);
+    debug(`injecting ${ctx.length} chars (lessons=${allLessons.length})`);
 
     output({
       hookSpecificOutput: {

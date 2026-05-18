@@ -232,11 +232,17 @@ async def list_observations(
         param_idx = 1
 
         if project:
-            # Support both full paths and short project names
+            # Support both full paths and short project names. For paths, also
+            # match on basename so a moved checkout (e.g. ~/Dropbox/_CODING/X
+            # → ~/_CODING/X) still surfaces its observations without a data
+            # migration on mem_projects.full_path.
             if '/' in project:
+                from pathlib import Path
+                basename = Path(project).name or project
                 clause, param_idx = project_path_filter(param_idx)
-                conditions.append(clause)
-                params.extend([project, project, project])
+                conditions.append(f"({clause} OR p.name = ${param_idx})")
+                params.extend([project, project, project, basename])
+                param_idx += 1
             else:
                 conditions.append(f"p.name = ${param_idx}")
                 params.append(project)

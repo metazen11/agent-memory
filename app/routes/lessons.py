@@ -1,7 +1,7 @@
 import fnmatch
-import json
 import logging
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -148,10 +148,24 @@ async def list_lessons(
         params = []
         pidx = 1
 
+        # Explicit scoping semantics:
+        #   project=<path>  → lessons attached to a project matching that path
+        #                     (bidirectional prefix + basename fallback), OR
+        #                     truly unscoped lessons (project_id IS NULL).
+        #   project=None    → ONLY truly unscoped lessons (project_id IS NULL).
+        # Before this change, project=None returned every lesson regardless of
+        # scope, which leaked other-project lessons into the session-start /
+        # user-prompt-submit injections.
         if project is not None:
+            basename = Path(project).name or project
             clause, pidx = project_path_filter(pidx)
-            conditions.append(clause)
-            params.extend([project, project, project])
+            conditions.append(
+                f"(l.project_id IS NULL OR {clause} OR p.name = ${pidx})"
+            )
+            params.extend([project, project, project, basename])
+            pidx += 1
+        else:
+            conditions.append("l.project_id IS NULL")
 
         if severity is not None:
             conditions.append(f"l.severity = ${pidx}")

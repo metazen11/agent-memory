@@ -489,13 +489,17 @@ debug(`project=${project} cwd=${cwd}`);
   // Step 5: Register session (fire-and-forget)
   registerSession(sessionId, project, cwd);
 
-  // Step 6: Fetch recent observations + search context + active lessons in parallel
-  const [observations, projectContext, projectLessons, globalLessons] = await Promise.all([
+  // Step 6: Fetch recent observations + search context + active lessons in parallel.
+  // The lessons API now returns project-scoped AND truly-global lessons in a
+  // single call when a project path is passed, so we no longer need a second
+  // fetch for globals (which used to leak other-project lessons before the
+  // /api/lessons project=None scoping fix landed in app/routes/lessons.py).
+  const [observations, projectContext, projectLessons] = await Promise.all([
     fetchObservations(project),
     searchProjectContext(project, projectName),
     SESSION_HINTS_ENABLED ? fetchLessons(project, 'critical', 10) : Promise.resolve([]),
-    SESSION_HINTS_ENABLED ? fetchLessons(null, 'critical', 5) : Promise.resolve([]),
   ]);
+  const globalLessons = [];
 
   // Build startup notice block (if services had to be started)
   const noticeBlock = startupNotices.length > 0
