@@ -43,3 +43,25 @@ def redact_text(text: str | None) -> str | None:
         for pattern, replacement in PII_PATTERNS:
             text = pattern.sub(replacement, text)
     return text
+
+
+def redact_json(obj):
+    """Recursively redact every string leaf of a JSON-shaped value.
+
+    Walks dicts and lists; replaces each string leaf with the result of
+    ``redact_text``. Non-string leaves (numbers, bools, None) pass through
+    unchanged. Returns a new structure; the input is not mutated.
+
+    Used by the backfill writer and any other path that ingests nested
+    JSON from external sources (tool_input, tool_response, etc.). The
+    plain ``redact_text`` is only safe for top-level strings; secrets
+    nested inside JSON (e.g. ``{"headers": {"Authorization": "Bearer ..."}}``)
+    would slip past it unless every leaf is walked.
+    """
+    if isinstance(obj, dict):
+        return {k: redact_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_json(v) for v in obj]
+    if isinstance(obj, str):
+        return redact_text(obj)
+    return obj

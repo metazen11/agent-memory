@@ -14,3 +14,17 @@ huggingface-hub>=0.25.0
 pytest>=8.0.0
 pytest-asyncio>=0.24.0
 supabase>=2.0.0
+
+# Fine-tune wizard (scripts/fine_tune/wizard.py + verify_gguf.py)
+# transformers minimum stays at 4.45 — current pipeline does not need 4.57
+# (Qwen3-VL features are out of scope per V3_PLAN.md §10).
+textual>=0.50
+peft>=0.10
+transformers>=4.45
+accelerate>=0.30
+datasets>=2.18
+pyyaml>=6.0
+psutil>=5.9
+rich>=13.0
+jsonschema>=4.18
+prompt_toolkit>=3.0

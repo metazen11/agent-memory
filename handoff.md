@@ -1,276 +1,126 @@
 # Handoff — agent-memory
 
-## Current Status (2026-05-13)
+## ⚠️ Current Status (2026-05-17) — V3 TRAINED BUT REGRESSED, V4 NEXT
 
-### Fine-tune v1 SHIPPED — PR #24 open, awaiting review
-- Qwen 2.5-3B tool-call LoRA, 80% validator pass rate, 100% on natural prompts.
-- PR: https://github.com/metazen11/agent-memory/pull/24 (single squash commit, 19 files, +2782/-3)
-- Closes issues #15–#22; leaves #23 open (LM Studio manual verification).
-- GGUF at `models/gguf/qwen2.5-3b-toolcalls-q4km.gguf` (SHA `5e174a04…`), 1.8GB Q4_K_M.
-- Loaded in LM Studio at `~/.lmstudio/models/mz/qwen2.5-3b-toolcalls/` (use `~/.lmstudio/...` NOT `~/.cache/lm-studio/...`).
+**v3 training completed cleanly** (13h 48m on MPS, exit 0, eval_loss
+0.95 → 0.87, no NaN), but smoke testing showed it **does not fix the
+tool_response adaptation regression** that retracted v2.
 
-### Loop bug discovered in v1 — drives the v2 plan
-When given vague natural prompts in LM Studio ("find the fire-map codebase"), v1 model emits `<tool_call>` blocks with **empty `arguments`**, gets a generic result back, repeats. Infinite loop until context fills.
+### Root cause of v3 regression (diagnosed 2026-05-17)
 
-Root cause: **83 % of v1 training prompts were synthetic** (`"Call tool 'X' with appropriate arguments"`). The model never had to commit to argument content from a real user prompt. Only 17 % (2,682 rows) came from real Claude conversations. The data was synthesized because the export pipeline didn't have the user prompts linked properly.
+**The v3 training dataset is 100% single-turn.** All 22,069 train rows
+are 4-message `system → user → assistant(tool_call) → tool(response)`.
+Zero rows include the follow-up assistant text turn after the tool
+response. The model literally never saw a `tool → assistant` transition
+in training — so it cannot have learned to adapt its second tool call
+based on what came back from the first.
 
-### MAJOR FINDING — agent-memory has the right tables, wrong data linkage
+`build_v3_dataset.py` extracts one row per `mem_tool_calls` entry and
+stops at the tool response. The "text-synth oversample" mechanism only
+flagged single-turn rows that *could have been* multi-turn — never
+actually extended them with the follow-up.
 
-The schema for proper turn capture **already exists**:
-- `mem_tool_calls` — **54,987 rows** with full `tool_input` JSON args, response previews, success/error flags ✅
-- `mem_user_prompts` — only **1,410 rows** across **54 of 500** sessions ❌
-- `mem_sessions` — 893 sessions, but most lack matching user_prompts
-- `mem_projects` — 686 projects (`agentMemory`, `fire-map.wfca.com`, etc.) with `full_path` ✅
+### The deeper data gap
 
-**Result**: 0 tool_calls can be joined back to a same-session user prompt by FK. The user prompt → tool call linkage was never wired up correctly. 446 sessions captured tool calls but dropped the prompt that originated them.
+The DB has `mem_tool_calls` (28,599 rows) and `mem_user_prompts` (5,133
+rows) but **no table for assistant text responses**. The backfill
+pipeline only ingested user prompts and tool calls from `.jsonl`. The
+assistant text turns exist in the source `~/.claude/projects/**/*.jsonl`
+files but were never imported.
 
-Meanwhile, **`~/.claude/projects/**/*.jsonl` has the full turn history** for every coding session — user msg + assistant msg + `tool_use` blocks + `tool_result` blocks in proper order. The sample fire-map session alone has 2,067 tool_use blocks. Total across all jsonl is likely **50k-100k tool calls with full args + linked user prompts**.
+### v3 ship status
 
-### LM Studio MCP config
-Updated `~/.lmstudio/mcp.json`: anvil + agent-memory entries now point at `/Users/mz/_CODING/...` (was Dropbox). **Restart LM Studio** to pick up.
+- **Not shipping.** GGUF lives at `models/gguf/qwen3-4b-toolcalls-v3-q6k.gguf`
+  (3.1 GB, meets ≤6 GB rule), adapter at
+  `models/lora/qwen3-4b-toolcalls-lora/runs/20260516T201839Z-v3-full/`.
+- v1 remains the production model.
 
-### Lookup/recall gap — surfaces narrative, hides tool args
+### What v3 DID ship (infrastructure that survives the model change)
 
-The recall path agents use at runtime (`/api/observations`, session-start
-hints, pre-tool-use hints) currently returns observation **summaries**:
-`title, narrative, facts, concepts, files_*, tool_name, type`. It does
-**not** surface `tool_input` (the actual arguments).
+This branch is mostly infrastructure that v4 will reuse:
 
-The data IS populated in `mem_tool_calls.tool_input` (54,987 rows) and
-`app/dataset_exports.py` uses it for training export, but the runtime
-recall endpoints don't join to it. Result: an agent can recall "I called
-Bash" but not "I called Bash with `git log --oneline -20`" — exactly the
-detail that prevents the empty-args loop bug at the model level.
-
-**Fix as part of v2 work:**
-1. Extend `/api/observations` response shape with a `tool_calls: [{name,
-   input, response_preview, created_at}]` array (left-join
-   `mem_tool_calls` by `observation_id`).
-2. Update session-start + pre-tool-use hint generators to include 1–3
-   representative `(tool_name, args)` examples from recalled
-   observations. Agent sees actionable specifics, not just narrative.
-3. Same applies to the `mcp__agent-memory__search` MCP tool — its results
-   should include tool args inline so any agent (Claude, Codex, Anvil,
-   the fine-tuned model) gets the same useful detail.
-
-### Fire-map not in Anvil's workspace index
-`~/.anvil/workspace_index.json` (generated 2026-05-12) does not include the `_CODING/fire-map.wfca.com/` tree even though it's under the workspace root. Needs `anvil workspace reindex` or explicit root add — Anvil-side configuration, not agent-memory.
+- **Fix #10 zero-label gate**: builder drops rows whose assistant span
+  tokenizes to zero non-special tokens under MAX_LENGTH=1024
+- **`scripts/fine_tune/preflight.sh`**: dataset/disk/symlink/caffeinate
+  checks + zero-label gate verifier (re-runs Fix #10 against on-disk data)
+- **`scripts/fine_tune/launch_v3.sh`**: caffeinate wrapper + Dropbox
+  symlink refusal + heartbeat + PID file
+- **NanGuardAndHeartbeatCallback** in `run_train_lora.py`: fails fast on
+  NaN in train/eval loss, writes `heartbeat.txt` every log step
+- **`docs/training_runs/v3-incident-20260515.md`**: full postmortem of
+  the Dropbox-symlink mid-run kill + NaN-eval false hypothesis
+- **Updated `qwen-finetune` skill iron rules**: models/ + .venv-finetune/
+  MUST be real local dirs, never Dropbox symlinks; caffeinate -di required
+- **GGUF pipeline**: convert + q6k re-quantize works end-to-end on v3
 
 ---
 
-## Next Session — Start Here
+## v4 plan — the actual fix
 
-**Goal: close the agent-memory data gap, then ship v2 fine-tune.**
+Tracked as tasks #13-#16 in `todo.json`.
 
-The schema is right. The data is wrong. The fix is a one-time backfill from
-the Claude jsonl files, plus a small fix to live capture so future sessions
-don't have the same gap. Then v2 dataset export becomes a single SQL query.
+### Phase 1 — Backfill assistant text turns (gating dependency)
 
-### Order of operations (gate each before proceeding)
+The DB has no relational record of assistant text responses. Must
+re-parse `~/.claude/projects/**/*.jsonl` and extract assistant turns,
+especially those following a tool_response. New table:
+`mem_assistant_messages(id, session_id, turn_index, content,
+has_tool_calls, prev_tool_call_id)`. Est: 2-4h.
 
-1. **Decide on two small schema additions** (or skip):
-   - `mem_projects.git_remote` (nullable text) — dedupes Dropbox-vs-local
-     path forks of the same project.
-   - `mem_tool_calls.turn_index` (int) — explicit position within session;
-     `created_at` will tie at millisecond precision during bulk import.
+### Phase 2 — `build_v4_dataset.py`
 
-2. **Write `scripts/backfill/backfill_from_claude_jsonl.py`** (new):
-   - Reads every `~/.claude/projects/**/*.jsonl`.
-   - Each jsonl is one session. Filename UUID → `mem_sessions.session_id`.
-   - For each `user` message → `mem_user_prompts` row.
-   - For each assistant `tool_use` block → `mem_tool_calls` row with full
-     `tool_input`, linked to the immediately-prior user prompt of the same
-     session.
-   - For each `tool_result` block → updates that tool_call's response.
-   - Resolves `cwd` → `mem_projects` (insert if new).
-   - **Default = dry-run.** Reports counts of would-import sessions /
-     prompts / tool_calls per project. Idempotent: dedupes on
-     `mem_sessions.session_id` (jsonl UUID).
+Extend the v3 builder to emit 5-message multi-turn rows when a
+`tool → assistant(text)` transition exists in the source jsonl:
 
-3. **Run dry-run, review numbers together, then `--commit`.**
-
-4. **Audit the live hooks** (`hooks/session-start.js`,
-   `hooks/pre-tool-use.js`) — figure out why only 54/500 sessions wrote a
-   user_prompt. Likely a missed insert or wrong condition. Fix so future
-   sessions capture both halves from turn one.
-
-5. **Write `fine-tune/build_v2_dataset.py`**: single SQL query joining
-   `mem_tool_calls` → `mem_user_prompts` → `mem_sessions` → `mem_projects`,
-   per-session grouped into multi-turn Qwen 2.5 tool-call format. Outputs
-   to `data/processed/qwen25_tools/v2/`. Should produce **25-35k high-
-   quality multi-turn rows** vs v1's 16k mostly-synthetic.
-
-6. **Open GitHub issue #25** with this plan. High priority.
-
-7. **Retrain** using the pipeline already built. 1.0 epoch this time
-   (v1 was 0.5). Add tool descriptions to schemas before training.
-
-8. **Add `--anti-loop` flag to `validate_tool_calls.py`** — detects 3
-   consecutive identical tool calls and forces text response. Belt-and-
-   suspenders inference guard.
-
-### Two anchor docs
-
-- **`docs/fine_tune/PIPELINE_RUNBOOK.md`** — phase-gated training procedure.
-- **`docs/fine_tune/FAILURE_MODES.md`** — 10 known failures + fixes.
-
-### Sanity checks before starting
-
-```bash
-# DB up?
-curl -s http://localhost:3377/api/health | jq
-
-# Tool call data:
-psql -U mz -d agent_memory -c "SELECT count(*) FROM mem_tool_calls"
-# Expect: 54,987
-
-# User prompts:
-psql -U mz -d agent_memory -c "SELECT count(*) FROM mem_user_prompts"
-# Expect: 1,410 — this is the gap
-
-# Claude jsonl files (source of truth):
-find ~/.claude/projects -name '*.jsonl' -type f | wc -l
-# Expect: 2,367
-
-# PR status:
-gh pr view 24 --repo metazen11/agent-memory
+```
+system → user → assistant(tool_call) → tool(response) → assistant(text)
 ```
 
-### Critical to remember
+Label mask covers the trailing assistant text so loss is computed on
+the post-tool-response reasoning. Target distribution:
 
-- `models/` symlinks to Dropbox cold storage. **Quit Dropbox before any new training run** (`osascript -e 'tell application "Dropbox" to quit'`).
-- Use `.absolute()` not `.resolve()` for paths under `models/` to avoid symlink chase into Dropbox.
-- 24 pytest tests at `tests/fine_tune/` should all pass; run after any change.
-- v1 GGUF (`models/gguf/qwen2.5-3b-toolcalls-q4km.gguf`) is the current ship-it artifact; don't overwrite until v2 is validated.
+- ~60% single-turn (current shape, preserves tool-shape learning)
+- ~30% two-turn-with-text-response (the new pattern)
+- ~10% three-turn (rare adaptation cases)
 
-## Previous Status (2026-05-12)
+Preflight audit gate: ≥20% of train rows must have
+`messages[-1].role == 'assistant'`. Est: 2h.
 
-### Location Change
-- **Moved from** `~/Dropbox/_CODING/agentMemory/` **to** `~/_CODING/agentMemory/`
-- `models/` and `.venv-finetune/` are symlinks back to Dropbox (79GB cold storage)
-- Claude hook symlinks at `~/.claude/hooks/agent-memory-*.js` updated to new path
-- Anvil `.mcp.json` updated to new path
+### Phase 3 — Retrain
 
-### Security Sprint (issues #1-#14)
-Shipped in 8 commits to main. Key changes:
+Reuse all v3 infrastructure. ~13h on MPS overnight.
 
-**Auth system:**
-- `REQUIRE_AUTH=true` in `.env` enables Bearer token auth on all endpoints
-- `TRUSTED_AGENTS=anvil,claude,codex,gemini,python-httpx` bypasses auth for known localhost callers
-- Hooks send `X-Agent-Name: claude` header for trusted bypass
-- Token CLI: `python -m app.cli setup` generates tokens for default agents
-- Token management: `python -m app.cli create-token|list-tokens|revoke-token`
+### Phase 4 — Permanent multi-turn A/B harness
 
-**Currently auth is ON** (`REQUIRE_AUTH=true`) with trusted agents bypass active.
+Build `tests/fine_tune/multi_turn_ab.py` (10 prompts × up to 5 turns
+× 3 models). Score: useful_answer, loop_rate, tool_response_adaptation_rate,
+path_correctness. Ship gate: v4 ≥ v1 baseline on all four. Est: 2h
+to build, 1h to run.
 
-**Other security:**
-- Host bound to `127.0.0.1` (was `0.0.0.0`)
-- `trust_remote_code` removed from embeddings (configurable via `EMBEDDING_TRUST_REMOTE_CODE`)
-- CORS middleware locked to localhost origins
-- Rate limiting enabled (100 writes/min, 500 reads/min)
-- Audit logging enabled (writes_only mode)
-- Secret redaction enabled by default (`REDACT_SECRETS=true`)
-- PG trust auth warning on startup
+### Phase 5 — Ship gate
 
-**New features:**
-- `GET/POST /api/prompts` — searchable user prompt history (1,410 indexed)
-- `POST /api/prompts/search` — FTS search over prompts
-- Migrations 008-011 auto-apply on startup
+- GGUF Q6_K ≤ 6 GB
+- LM Studio integration test
+- `chmod 444` shipped GGUF
+- Update CHANGELOG, HANDOFF, run report
 
-### Known Issue — PreToolUse Hook Error in Claude
-The `pre-tool-use.js` hook may show errors in Claude sessions started before the auth changes. **Fix: restart Claude Code session** so the updated hook code and env vars load.
+**Total wall-clock to working v4: ~22 hours (mostly overnight).
+Hands-on: ~7-8 hours.**
 
-If error persists after restart, check:
-1. Symlinks point to `~/_CODING/` not `~/Dropbox/`: `ls -la ~/.claude/hooks/agent-memory-*.js`
-2. Service is running: `curl http://localhost:3377/api/health`
-3. Auth bypass works: `curl -H 'X-Agent-Name: claude' http://localhost:3377/api/prompts?limit=1`
+---
 
-### GitHub Issues
-14 issues at metazen11/agent-memory. Closed by commits: #1-#8, #12, #13. Remaining:
-- #9 TLS/HTTPS support (low priority)
-- #10 Data retention/purge policy (medium)
-- #11 Web UI — existing `archive/memory-explorer.html` in anvil repo ready to integrate
-- #14 Move off Dropbox on second Mac
+## Branch contract reminder
 
-## Setup on New Machine
+- Agent work lands on `dev` via reconciler (squash + force-with-lease)
+- PRs only on `dev → main` (the human review gate)
+- No agent-opened PRs for individual features
+- See `~/.claude/agents/reconciler.md` for the full contract
 
-```bash
-# 1. Clone/pull
-cd ~/_CODING/agentMemory && git pull
+---
 
-# 2. Install deps
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
+## Reference
 
-# 3. Run migrations (auto on startup)
-.venv/bin/uvicorn app.main:app --port 3377 --host 127.0.0.1
-
-# 4. Generate tokens
-.venv/bin/python -m app.cli setup
-
-# 5. Set env
-echo 'REQUIRE_AUTH=true' >> .env
-echo 'export AGENT_MEMORY_TOKEN="<claude-token-from-step-4>"' >> ~/.zshenv
-
-# 6. Update Claude hook symlinks
-cd ~/.claude/hooks
-ln -sf ~/_CODING/agentMemory/hooks/session-start.js agent-memory-session-start.js
-ln -sf ~/_CODING/agentMemory/hooks/session-end.js agent-memory-session-end.js
-ln -sf ~/_CODING/agentMemory/hooks/pre-tool-use.js agent-memory-pre-tool-use.js
-ln -sf ~/_CODING/agentMemory/hooks/post-tool-use.js agent-memory-post-tool-use.js
-ln -sf ~/_CODING/agentMemory/hooks/ensure-services.js agent-memory-ensure-services.js
-```
-
-## Fine-tune/Training State
-
-**Current canonical path: Qwen 2.5-3B-Instruct.** Pipeline is end-to-end working as of 2026-05-13.
-
-Reading order for next session:
-- [AGENTS.md](AGENTS.md) — overview + file map.
-- [docs/fine_tune/PIPELINE_RUNBOOK.md](docs/fine_tune/PIPELINE_RUNBOOK.md) — phase-gated procedure.
-- [docs/fine_tune/FAILURE_MODES.md](docs/fine_tune/FAILURE_MODES.md) — known failures + fixes.
-- [docs/training_notes.md](docs/training_notes.md) — historical notes; **Qwen 3.5 9B and Gemma 4 paths are deprecated** (Qwen 3.5 was a hybrid SSM model — wrong arch for llama.cpp; Gemma 4 has tensor mismatch).
-
-**Pipeline validated end-to-end:**
-- Base: `models/base/qwen2.5-3b-instruct/` (HF rev `aa8e7253...`)
-- Dataset: `data/processed/qwen25_tools/v1/` (16,944/16,966 kept = 99.87%; PII scrub: 47 bearer / 4 sk- / 21,687 paths)
-- Training script: `models/lora/qwen2.5-3b-toolcalls-lora/run_train_lora.py` (reusable via MODEL_SLUG env)
-- **Full GGUF: `models/gguf/qwen2.5-3b-toolcalls-q4km.gguf`** (1.8GB Q4_K_M, SHA `5e174a04...`)
-- Training: 16,096 train / 848 valid, 0.5 epoch, 2012 steps, 3h15m wall-clock on M3 Max MPS bf16
-- Loss: **2.25 → 0.83** (63% reduction); eval_loss NaN is benign (MPS bf16 quirk, see FAILURE_MODES.md §9)
-- Validator: **16/20 (80%) parseable**, **100% on natural prompts**, all schema-valid
-- Run report: [docs/training_runs/M-FT-1-full-v1.md](docs/training_runs/M-FT-1-full-v1.md)
-
-**Next step is LM Studio integration** — `scripts/fine_tune/lmstudio_smoke.sh models/gguf/qwen2.5-3b-toolcalls-q4km.gguf 0.5`.
-
-`models/` is a symlink to Dropbox cold storage. Quit Dropbox before training to prevent sync corruption.
-
-## Feature Toggles
-
-- `AGENT_MEMORY_HINTS_ENABLED` (global default)
-- `AGENT_MEMORY_SESSION_HINTS_ENABLED` (session-start hints)
-- `AGENT_MEMORY_PRE_TOOL_HINTS_ENABLED` (pre-tool warnings)
-- Terminal toggle interface: `node scripts/hints-config.js status|set|tui`
-- Cross-platform install packs for Claude/Codex/Anvil: `.sh`, `.js`, and Windows `.cmd` launchers.
-
-## Resume Commands
-
-### Service & Auth
-
-```bash
-# Check service health
-curl http://localhost:3377/api/health
-
-# List tokens
-python -m app.cli list-tokens
-
-# Search prompts
-curl -H 'X-Agent-Name: claude' 'http://localhost:3377/api/prompts/search' \
-  -H 'Content-Type: application/json' -d '{"query":"auth","limit":5}'
-
-# Check toggle state
-node scripts/hints-config.js status
-```
-
-### Training
-
-See [docs/training_notes.md](docs/training_notes.md) for all training commands, merge/GGUF steps, and warnings.
+- `docs/fine_tune/V3_PLAN.md` — the planned-but-only-partially-realized v3 spec
+- `docs/training_runs/v3-incident-20260515.md` — Dropbox-kill + NaN postmortem
+- `docs/fine_tune/V2_RWT_RETRACTION.md` — the v2 retraction analysis
+- `~/.claude/skills/qwen-finetune/skill.md` — operator runbook

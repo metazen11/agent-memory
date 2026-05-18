@@ -163,3 +163,87 @@ training script. Whatever you set MODEL_SLUG to becomes the path.
 default in the current script is `qwen2.5-3b-instruct`, which produces
 `models/lora/qwen2.5-3b-instruct-toolcalls-lora/`. (Note the `-instruct-`
 in the middle — that's the full slug, not a typo.)
+
+## 11. Empty-args infinite loop in LM Studio
+
+**Symptom:** Vague natural prompts ("find the fire-map codebase") cause the
+model to emit `<tool_call>` blocks with empty `arguments`, get a generic
+tool-result back, then emit the same empty-args call again. Loop continues
+until the context window fills.
+
+**Root cause:** v1 dataset was 83 % synthetic prompts of the form
+`"Call tool 'X' with appropriate arguments."` — the model never had to
+commit to argument content from a real user prompt. v2 fixes this at the
+training-data level by backfilling from `~/.claude/projects/**/*.jsonl`.
+
+**Mitigation (belt-and-suspenders):** `AntiLoopDetector` in
+`scripts/fine_tune/validate_tool_calls.py`. Tracks the last N normalized
+tool calls in a conversation; on the 3rd consecutive identical call,
+suppresses the tool_call block and forces a text response. Emits WARN log
+tagged with `model_version`. Increments `empty_args_emissions_total`
+counter for production observability.
+
+Enable in offline eval:
+```bash
+python scripts/fine_tune/validate_tool_calls.py \
+    --backend openai --model qwen25-toolcalls \
+    --anti-loop --model-version v2
+```
+
+Production hook points (not yet wired): `mcp_server.py` and the Claude
+hooks. Wiring is part of issue #33 retrain follow-up.
+
+Tests: `tests/fine_tune/test_anti_loop.py` (10 unit tests).
+
+## 12. Context window feels short (32k native ceiling)
+
+**Symptom:** Long agentic conversations or large file reads push the model
+past its 32,768-token native context and trigger truncation / loss of
+earlier context. User notices "the model forgot what we talked about"
+mid-session.
+
+**Root cause:** Qwen 2.5-3B-Instruct's positional encoding caps at 32k
+(`max_position_embeddings: 32768`, `rope_theta: 1000000.0` in
+`models/base/qwen2.5-3b-instruct/config.json`). This ceiling is a
+base-model property — **LoRA fine-tuning cannot raise it.** Our v1 and v2
+GGUFs both inherit 32k.
+
+The training-time `MAX_LENGTH` knob (default 1024 full, 512 tiny) controls
+how much of each training row contributes to the loss. It does NOT cap
+inference context; an inference client served from the same GGUF can use
+the full 32k regardless of `MAX_LENGTH`.
+
+**Mitigation 1 — request larger context at serve time:**
+
+```bash
+# llama-server: ask for the full native 32k
+models/llama.cpp/build/bin/llama-server \
+  -m models/gguf/qwen2.5-3b-toolcalls-v2-q4km.gguf \
+  -c 32768 --jinja --port 8088
+```
+
+LM Studio: model load → context length slider → 32768.
+
+**Mitigation 2 — YaRN extrapolation (officially supported by Qwen 2.5):**
+
+Pushes effective window to 128k+ at small quality cost past the native
+band. llama-server flag form:
+
+```bash
+models/llama.cpp/build/bin/llama-server \
+  -m models/gguf/qwen2.5-3b-toolcalls-v2-q4km.gguf \
+  -c 131072 \
+  --rope-scaling yarn \
+  --rope-scale 4 \
+  --yarn-orig-ctx 32768 \
+  --jinja --port 8088
+```
+
+LM Studio: model load → Advanced → RoPE scaling → YaRN, scale 4, orig
+context 32768. Restart server. Test with a long-context probe before
+relying on it for production workloads.
+
+**True fix (if 32k native is fundamentally insufficient):** swap base
+model to a longer-context Qwen 2.5 variant (e.g., `Qwen2.5-7B-Instruct-1M`
+gives 1M native context). That's a separate retrain ticket, not a v2
+follow-up.
