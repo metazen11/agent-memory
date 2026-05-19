@@ -197,13 +197,40 @@ async def list_tools():
         Tool(
             name="memory_search_guide",
             description=(
-                "3-LAYER WORKFLOW (ALWAYS FOLLOW):\n"
-                "1. search(query) → Get index with IDs (~50-100 tokens/result)\n"
-                "2. timeline(anchor=ID) → Get context around interesting results\n"
-                "3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs\n"
-                "NEVER fetch full details without filtering first. 10x token savings."
+                "PREFERRED: recall(query, project, k=5) — one call returns top-k full observations.\n"
+                "Use the 3-step primitives only when you need to triage many results:\n"
+                "  1. search(query) → IDs+titles index\n"
+                "  2. timeline(anchor=ID) → session context\n"
+                "  3. get_observations([IDs]) → full bodies"
             ),
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="recall",
+            description=(
+                "PREFERRED entry point for memory lookup. One call: ranks via "
+                "search() + hydrates full bodies via get_observations(). Use "
+                "this for the common case 'what do I know about X?' instead "
+                "of the 3-step search→timeline→get_observations dance. "
+                "Returns up to k (default 5, max 20) full observations, "
+                "ranked by hybrid vector+FTS+keyword RRF with recency boost. "
+                "Use the 3-step primitives only when you need to triage a "
+                "large result set before hydrating, or to walk session "
+                "context via timeline."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language query — same shape as search()."},
+                    "k": {"type": "integer", "description": "How many full observations to return (default 5, max 20).", "default": 5},
+                    "project": {"type": "string", "description": "Filter by project name or path."},
+                    "type": {"type": "string", "description": "Filter by observation type: discovery|bugfix|feature|refactor|decision|change|pattern|gotcha"},
+                    "dateStart": {"type": "string", "description": "Filter from date (ISO, e.g. 2026-02-01)."},
+                    "dateEnd": {"type": "string", "description": "Filter until date (ISO)."},
+                },
+                "required": ["query"],
+                "additionalProperties": True,
+            },
         ),
         Tool(
             name="search",
@@ -353,14 +380,19 @@ async def call_tool(name: str, arguments: dict):
     try:
         if name == "memory_search_guide":
             return [TextContent(type="text", text=(
-                "3-LAYER WORKFLOW (ALWAYS FOLLOW):\n"
-                "1. search(query) → Get index with IDs (~50-100 tokens/result)\n"
-                "2. timeline(anchor=ID) → Get context around interesting results\n"
-                "3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs\n"
-                "NEVER fetch full details without filtering first. 10x token savings."
+                "PREFERRED:\n"
+                "  recall(query, project=..., k=5) → top-k full observations in one call.\n"
+                "  Use this for almost all memory lookups.\n\n"
+                "ADVANCED (3-step) — only when triaging a large result set:\n"
+                "  1. search(query) → index with IDs (~50-100 tokens/result)\n"
+                "  2. timeline(anchor=ID) → session context around a result\n"
+                "  3. get_observations([IDs]) → full bodies for chosen IDs"
             ))]
         pool = await get_pool()
-        if name == "search":
+        if name == "recall":
+            result = await _recall(pool, arguments)
+            return _annotate_success_content_with_hint(result)
+        elif name == "search":
             result = await _search(pool, arguments)
             return _annotate_success_content_with_hint(result)
         elif name == "get_observations":
@@ -578,6 +610,63 @@ async def _get_observations(pool, args):
             })
 
         return [TextContent(type="text", text=json.dumps(results, indent=2) + VISIBILITY_REMINDER)]
+
+
+async def _recall(pool, args):
+    """One-shot recall: search → top-k → hydrate to full observations.
+
+    Composes _search (RRF + recency-boosted ranking) with _get_observations
+    (full bodies). Replaces the 3-tool dance for the common case where the
+    caller just wants "the best matching memories, fully expanded."
+
+    Accepts the same filters as search (query, project, type, dateStart,
+    dateEnd) plus k (default 5, max 20). Backwards-compatible: search,
+    timeline, and get_observations remain available unchanged.
+    """
+    query = args.get("query")
+    if not query:
+        return [TextContent(type="text", text=_json_error_payload("query is required", code="INVALID_ARGUMENT"))]
+
+    k = min(max(int(args.get("k", 5)), 1), 20)
+
+    # Reuse _search's ranking. limit=k so we don't hydrate more than asked.
+    search_args = {key: args[key] for key in ("query", "project", "type", "obs_type", "dateStart", "dateEnd") if key in args}
+    search_args["limit"] = k
+    search_content = await _search(pool, search_args)
+
+    # _search returns one TextContent whose text is JSON + VISIBILITY_REMINDER.
+    # Strip the reminder, parse the JSON, take the ids.
+    raw = search_content[0].text
+    if VISIBILITY_REMINDER in raw:
+        raw = raw.split(VISIBILITY_REMINDER, 1)[0]
+    try:
+        ranked = json.loads(raw)
+    except json.JSONDecodeError:
+        return [TextContent(type="text", text=_json_error_payload("search returned non-JSON", code="TOOL_EXCEPTION"))]
+
+    if not ranked:
+        return [TextContent(type="text", text=json.dumps([], indent=2) + VISIBILITY_REMINDER)]
+
+    ids = [r["id"] for r in ranked]
+    score_by_id = {r["id"]: r.get("score") for r in ranked}
+
+    # Hydrate via _get_observations, then re-attach score + preserve search rank order.
+    full_content = await _get_observations(pool, {"ids": ids})
+    full_raw = full_content[0].text
+    if VISIBILITY_REMINDER in full_raw:
+        full_raw = full_raw.split(VISIBILITY_REMINDER, 1)[0]
+    full_rows = json.loads(full_raw)
+
+    by_id = {row["id"]: row for row in full_rows}
+    merged = []
+    for oid in ids:
+        row = by_id.get(oid)
+        if not row:
+            continue
+        row["score"] = score_by_id.get(oid)
+        merged.append(row)
+
+    return [TextContent(type="text", text=json.dumps(merged, indent=2) + VISIBILITY_REMINDER)]
 
 
 async def _timeline(pool, args):

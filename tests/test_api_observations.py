@@ -152,3 +152,32 @@ async def test_search_observations_fts_only(client, test_project):
     assert resp.status_code == 200
     data = resp.json()
     assert data["mode"] == "fts"
+
+
+@pytest.mark.asyncio
+async def test_recall_one_call(client, test_project):
+    """POST /api/recall returns hydrated observations in one round-trip."""
+    resp = await client.post("/api/recall", json={
+        "query": "test observation",
+        "project": test_project,
+        "k": 3,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "observations" in data
+    # Same shape as /api/observations/search — full ObservationOut rows.
+    assert data["mode"] == "hybrid"
+    assert len(data["observations"]) <= 3
+
+
+@pytest.mark.asyncio
+async def test_recall_clamps_k(client, test_project):
+    """k is clamped to [1, 20]."""
+    resp = await client.post("/api/recall", json={
+        "query": "x",
+        "project": test_project,
+        "k": 999,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["observations"]) <= 20

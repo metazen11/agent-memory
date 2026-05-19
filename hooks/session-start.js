@@ -69,28 +69,20 @@ function output(obj) {
 
 const MCP_HINT = `# Agent Memory (MCP)
 
-You have access to a persistent memory system via MCP tools (server: "agent-memory").
-This stores observations from all past coding sessions — bugs found, decisions made,
-patterns discovered, files modified. Use it to avoid repeating mistakes and build on prior work.
+Persistent memory across past sessions — observations, bugs, decisions, patterns.
 
-**When to search memory:**
-- Before starting unfamiliar work ("have I solved this before?")
-- When debugging ("did I hit this bug in a previous session?")
-- When making architecture decisions ("what did I decide last time?")
-- When the user asks about past work or previous sessions
+**Preferred:** \`recall(query, project=<cwd>, k=5)\` — one call, returns top-k full
+observations ranked by hybrid vector+FTS+keyword RRF with recency boost. Use this
+for "have I seen X before?", "what did I decide about Y?", "how did I fix Z?".
 
-**3-layer search workflow (saves 10x tokens):**
-1. \`search(query)\` → Get index with IDs and titles (~50-100 tokens/result)
-2. \`timeline(anchor=ID)\` → See what happened around an interesting result
-3. \`get_observations([IDs])\` → Fetch full details ONLY for relevant IDs
+**save_memory(text, project=<cwd>)** — record important findings for future sessions.
 
-**Never skip to step 3.** Always filter with search first.
+**Advanced (3-step, kept for triaging large result sets):**
+\`search(query)\` → IDs+titles → \`timeline(anchor=ID)\` for session context →
+\`get_observations([IDs])\` for full bodies. Most lookups don't need this.
 
-**save_memory(text)** — Manually save important findings for future sessions.
-
-**IMPORTANT — Project scoping:**
-When using \`create_lesson\`, \`search_lessons\`, \`search\`, or \`save_memory\`, ALWAYS pass the \`project\` parameter
-with the full project path (cwd) to scope results. The current project path is provided below.`;
+**Always pass \`project=<cwd>\`** on recall/search/save_memory/create_lesson/search_lessons
+so results stay scoped. Current cwd is shown below.`;
 
 // ── Memory visibility rules ─────────────────────────────────
 

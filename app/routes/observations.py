@@ -3,6 +3,7 @@ import logging
 import re
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.db import get_pool
 from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
@@ -320,6 +321,38 @@ async def get_observation(obs_id: int):
             raise HTTPException(status_code=404, detail="Observation not found")
 
         return _row_to_obs(row)
+
+
+# ── Recall (preferred one-call entry point) ───────────
+
+class RecallRequest(BaseModel):
+    """Recall request — search + hydrate in one call.
+
+    Convenience wrapper over /api/observations/search with k=5 default and
+    hybrid mode. Returns full ObservationOut rows ranked by relevance.
+    Existing /api/observations/search remains for callers that want to
+    tune limit/mode/cross_project explicitly.
+    """
+    query: str
+    project: str | None = None
+    cross_project: bool = False
+    type: list[str] | None = None
+    k: int = 5
+
+
+@router.post("/api/recall", response_model=SearchResult)
+async def recall(req: RecallRequest):
+    """One-call recall: search + hydrate, top-k full observations."""
+    k = max(1, min(req.k, 20))
+    search_req = SearchRequest(
+        query=req.query,
+        project=req.project,
+        cross_project=req.cross_project,
+        type=req.type,
+        limit=k,
+        mode="hybrid",
+    )
+    return await search_observations(search_req)
 
 
 # ── Hybrid search ─────────────────────────────────────
