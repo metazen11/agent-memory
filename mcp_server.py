@@ -195,6 +195,25 @@ server = Server("agent-memory")
 async def list_tools():
     return [
         Tool(
+            name="abilities_memory",
+            description=(
+                "Live operator manual for the agent-memory MCP server. "
+                "Returns a single text block with: how-to-use, project-scoping "
+                "rules, memory-visibility rules, lesson auto-inject behavior, "
+                "and a dynamically-rendered inventory of every tool this "
+                "server exposes (including this one). Pass `project=<cwd>` "
+                "for project-scoped lesson + observation counts. Call this "
+                "once per session if you want the full cheat sheet — most of "
+                "the time you only need `recall(query, project, k=5)`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Optional. Project path (full cwd) for scoped counts."},
+                },
+            },
+        ),
+        Tool(
             name="memory_search_guide",
             description=(
                 "PREFERRED: recall(query, project, k=5) — one call returns top-k full observations.\n"
@@ -378,6 +397,10 @@ async def list_tools():
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
+        if name == "abilities_memory":
+            pool = await get_pool()
+            result = await _abilities_memory(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         if name == "memory_search_guide":
             return [TextContent(type="text", text=(
                 "PREFERRED:\n"
@@ -987,6 +1010,145 @@ async def _export_training_dataset(pool, args):
 async def _training_export_guide():
     payload = build_training_export_guide()
     return [TextContent(type="text", text=json.dumps(payload, indent=2) + VISIBILITY_REMINDER)]
+
+
+# ── abilities_memory: live operator manual ─────────────────
+
+# Static prose (behavior rules) — the parts that don't change tool-to-tool.
+# Tool inventory is rendered LIVE from list_tools() so this never lies after
+# someone adds/renames a tool.
+_ABILITIES_MEMORY_PROLOGUE = """# agent-memory — operator manual
+
+Persistent cross-session memory: observations (bugs, decisions, patterns,
+gotchas), lessons (CRITICAL rules learned from past mistakes), and tool-call
+history.
+
+## How to use this server
+
+**Default path:** `recall(query, project=<cwd>, k=5)` returns top-k full
+observations in one call (hybrid vector+FTS+keyword RRF with recency boost).
+Use it for "have I seen X before?", "what did I decide about Y?", "how did I
+fix Z?".
+
+**Advanced 3-step (only when triaging a large result set):**
+`search(query)` → IDs+titles → `timeline(anchor=ID)` for session context →
+`get_observations([IDs])` for full bodies. Most lookups don't need this.
+
+## Project scoping (REQUIRED)
+
+Every read/write tool accepts a `project` parameter. **Always pass the
+current cwd verbatim as `project`.** Without it, results leak across
+projects or get attached to an "unknown" bucket.
+
+The server applies a basename-fallback when matching `project` against
+`mem_projects.full_path`, so moved checkouts (e.g. `~/Dropbox/_CODING/X →
+~/_CODING/X`) still resolve to the same row.
+
+## Memory visibility (MUST FOLLOW)
+
+When you use memory tools, show the user what you found. Do not silently
+consume results — format as a visible `Memory recall:` block:
+
+> **Memory recall:** Found 3 relevant memories for "auth bug"
+> 1. [bugfix] Fixed JWT refresh token race condition (2026-02-15)
+> 2. [decision] Switched to httpOnly cookies for token storage (2026-02-14)
+> 3. [pattern] Auth errors often caused by stale Redis cache (2026-02-12)
+
+Periodic memory check: every ~10 prompts in a long session, run a `recall()`
+against the current task and report what you find.
+
+## Lessons fire automatically — you do NOT fetch them
+
+The `user-prompt-submit` hook injects active CRITICAL lessons (project-scoped
++ truly-global) at the top of every user prompt under `<agent-memory>...
+</agent-memory>`. You see them inline. Do not call `search_lessons` just to
+re-read what's already in your context.
+
+If a lesson has a paired enforcement artifact (PreToolUse hook, runtime check,
+CI gate), it should be deactivated in the DB — the system enforces, not the
+model. Tell the user when you suspect a lesson has been superseded.
+"""
+
+
+async def _abilities_memory(pool, args=None):
+    """Operator manual for the agent-memory MCP server.
+
+    Rendered live so it never drifts from reality:
+      • Tool inventory comes from list_tools() — adding/renaming a tool
+        automatically updates the manual.
+      • Counts (active lessons, observations) come from the DB at call time.
+      • `project` arg (optional) scopes the counts to a specific cwd.
+    """
+    args = args or {}
+    project = args.get("project")
+
+    # ── Live tool inventory ──
+    tools = await list_tools()
+    tool_lines = []
+    for t in tools:
+        # Truncate descriptions to one line for the manual — full description
+        # is still available via the tool list itself.
+        desc = (t.description or "").strip().split("\n")[0]
+        if len(desc) > 220:
+            desc = desc[:217] + "…"
+        # Render required params if the input schema declares any.
+        req = []
+        try:
+            schema = t.inputSchema or {}
+            req = list(schema.get("required") or [])
+        except Exception:
+            pass
+        sig = f"({', '.join(req)})" if req else "()"
+        tool_lines.append(f"- `{t.name}{sig}` — {desc}")
+    tools_block = "## Available tools (live)\n\n" + "\n".join(tool_lines) + "\n"
+
+    # ── Live counts ──
+    stats_lines = []
+    async with pool.acquire() as conn:
+        # Active CRITICAL lessons for this project (path-prefix + basename +
+        # truly-global) — mirrors the server-side filter in /api/lessons.
+        if project:
+            from pathlib import Path as _P
+            basename = _P(project).name or project
+            lesson_count = await conn.fetchval("""
+                SELECT count(*) FROM mem_lessons l
+                LEFT JOIN mem_projects p ON p.id = l.project_id
+                WHERE l.active = true AND l.severity = 'critical'
+                  AND (l.project_id IS NULL
+                       OR p.full_path = $1
+                       OR p.full_path LIKE $2 || '/%'
+                       OR $3 LIKE p.full_path || '/%'
+                       OR p.name = $4)
+            """, project, project, project, basename)
+            obs_count = await conn.fetchval("""
+                SELECT count(*) FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE p.full_path = $1
+                   OR p.full_path LIKE $2 || '/%'
+                   OR $3 LIKE p.full_path || '/%'
+                   OR p.name = $4
+            """, project, project, project, basename)
+            stats_lines.append(f"Project: `{project}`")
+            stats_lines.append(f"Active CRITICAL lessons in scope: {lesson_count}")
+            stats_lines.append(f"Observations recorded for this project: {obs_count}")
+        else:
+            lesson_count = await conn.fetchval(
+                "SELECT count(*) FROM mem_lessons WHERE active=true AND severity='critical'"
+            )
+            obs_count = await conn.fetchval("SELECT count(*) FROM mem_observations")
+            stats_lines.append("Project: <unscoped — pass `project` arg for project-scoped counts>")
+            stats_lines.append(f"Active CRITICAL lessons (all projects): {lesson_count}")
+            stats_lines.append(f"Observations (all projects): {obs_count}")
+    stats_block = "## Current state (live)\n\n" + "\n".join(stats_lines) + "\n"
+
+    body = (
+        _ABILITIES_MEMORY_PROLOGUE
+        + "\n"
+        + stats_block
+        + "\n"
+        + tools_block
+    )
+    return [TextContent(type="text", text=body)]
 
 
 # ── Main ──────────────────────────────────────────────────────
