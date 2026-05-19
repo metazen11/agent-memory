@@ -14,6 +14,7 @@ from app.routes.sessions import router as sessions_router
 from app.routes.admin import router as admin_router
 from app.routes.lessons import router as lessons_router
 from app.routes.prompts import router as prompts_router
+from app.routes.tool_calls import router as tool_calls_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +92,7 @@ app.include_router(sessions_router)
 app.include_router(admin_router)
 app.include_router(lessons_router)
 app.include_router(prompts_router)
+app.include_router(tool_calls_router)
 
 
 if __name__ == "__main__":
