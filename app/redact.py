@@ -13,6 +13,14 @@ SECRET_PATTERNS = [
     (re.compile(r"gho_[A-Za-z0-9]{36,}"), "[REDACTED:github_oauth]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED:gitlab_token]"),
     (re.compile(r"xox[bpors]-[A-Za-z0-9-]{10,}"), "[REDACTED:slack_token]"),
+    (
+        re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+"),
+        "[REDACTED:slack_webhook]",
+    ),
+    (
+        re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"),
+        "[REDACTED:discord_webhook]",
+    ),
     (re.compile(r"mem_[A-Za-z0-9_-]{32,}"), "[REDACTED:agent_memory_token]"),
     (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", re.I), "[REDACTED:bearer_token]"),
     (

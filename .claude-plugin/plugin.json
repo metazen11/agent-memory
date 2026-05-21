@@ -1,7 +1,7 @@
 {
   "name": "agent-memory",
   "description": "Persistent cross-session memory for AI coding agents. Records what was learned, built, fixed, and decided, then makes it searchable via hybrid vector + full-text search. Drop-in replacement for claude-mem.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "metazen11",
     "email": "metazen@artofmetazen.com"
@@ -17,5 +17,8 @@
     "embeddings",
     "observations",
     "claude-mem-replacement"
-  ]
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
 }

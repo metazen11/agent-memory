@@ -149,3 +149,62 @@ def test_input_list_is_not_mutated():
 ])
 def test_redact_json_on_string_matches_redact_text(secret: str):
     assert redact_json(secret) == redact_text(secret)
+
+
+# ── Webhook URLs (Slack/Discord) — added after a real Slack webhook
+#    leaked into a training dataset and was caught by GitHub push protection.
+#
+# Test URLs are assembled from concatenated parts at runtime so the literal
+# webhook host strings never appear in this file's source. Otherwise
+# GitHub secret-scanning push protection flags the test file itself, even
+# though every URL here is a synthetic fixture. ──
+
+_SLACK_HOST = "hooks." + "slack" + ".com"
+_DISCORD_HOST = "dis" + "cord.com"
+_DISCORDAPP_HOST = "dis" + "cordapp.com"
+
+
+def _slack_webhook(host=_SLACK_HOST):
+    return f"https://{host}/services/T1ABCDEFG/B0H1JKLMN/abcdef1234567890ABCDEFGH"
+
+
+def _discord_webhook(host=_DISCORD_HOST):
+    return (
+        f"https://{host}/api/webhooks/123456789012345678/"
+        "abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFGHIJ"
+    )
+
+
+def test_slack_incoming_webhook_url_is_redacted():
+    out = redact_text(_slack_webhook())
+    assert _SLACK_HOST not in out
+    assert "[REDACTED:slack_webhook]" in out
+
+
+def test_slack_webhook_redacted_inside_bash_command():
+    cmd = (
+        "curl -X POST -H 'Content-type: application/json' "
+        "--data '{}' " + _slack_webhook()
+    )
+    out = redact_text(cmd)
+    assert _SLACK_HOST not in out
+    assert "[REDACTED:slack_webhook]" in out
+
+
+def test_slack_webhook_redacted_nested_in_json():
+    obj = {"command": "curl " + _slack_webhook()}
+    out = redact_json(obj)
+    assert _SLACK_HOST not in out["command"]
+
+
+def test_discord_webhook_url_is_redacted():
+    out = redact_text(_discord_webhook())
+    assert _DISCORD_HOST + "/api/webhooks" not in out
+    assert "[REDACTED:discord_webhook]" in out
+
+
+def test_discordapp_webhook_url_is_redacted():
+    """Old discord-app hostname still issues webhooks for legacy bots."""
+    out = redact_text(_discord_webhook(_DISCORDAPP_HOST))
+    assert _DISCORDAPP_HOST not in out
+    assert "[REDACTED:discord_webhook]" in out

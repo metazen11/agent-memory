@@ -2,8 +2,7 @@
   "mcpServers": {
     "agent-memory": {
       "type": "stdio",
-      "command": "./.venv/bin/python",
-      "args": ["./mcp_server.py"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp.sh"
     }
   }
 }
