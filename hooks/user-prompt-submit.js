@@ -65,6 +65,15 @@ const TOTAL_BUDGET_MS = 4000;
 // first-prompt tracking under the same agent-agnostic memory root.
 const PRIMED_DIR = path.join(os.homedir(), '.agent-memory', 'primed', 'claude-code');
 
+// Per-session turn counter for lesson-inject throttling. We re-inject the
+// lesson block every Nth prompt (default 10) to keep CRITICAL rules in the
+// model's recent window without burning tokens on every turn.
+const TURN_DIR = path.join(os.homedir(), '.agent-memory', 'turns', 'claude-code');
+const LESSON_INJECT_INTERVAL = Math.max(
+  1,
+  parseInt(process.env.AGENT_MEMORY_LESSON_INJECT_INTERVAL || '10', 10),
+);
+
 function envFlagEnabled(name, defaultValue = true) {
   const raw = process.env[name];
   if (raw == null || raw === '') return defaultValue;
@@ -136,6 +145,30 @@ function markSessionPrimed(sessionId) {
   } catch (e) {
     debug(`failed to write sentinel: ${e.message}`);
   }
+}
+
+// Increment + return this session's turn count. Falls back to 1 (always
+// inject) if filesystem access fails — losing the throttle is preferable to
+// silently dropping CRITICAL lessons.
+function bumpTurn(sessionId) {
+  if (!sessionId) return 1;
+  const file = path.join(TURN_DIR, sessionId);
+  let prev = 0;
+  try {
+    prev = parseInt(fs.readFileSync(file, 'utf8'), 10);
+    if (!Number.isFinite(prev) || prev < 0) prev = 0;
+  } catch {
+    prev = 0;
+  }
+  const next = prev + 1;
+  try {
+    fs.mkdirSync(TURN_DIR, { recursive: true });
+    fs.writeFileSync(file, String(next));
+  } catch (e) {
+    debug(`failed to write turn counter: ${e.message}`);
+    return 1; // safe fallback: always inject
+  }
+  return next;
 }
 
 // ── HTTP helpers ────────────────────────────────────────────
@@ -246,7 +279,19 @@ function formatLessons(lessons) {
   const projectName = path.basename(cwd);
   const isFirstPrompt = !sessionPrimed(sessionId);
 
-  debug(`session=${sessionId} firstPrompt=${isFirstPrompt} project=${project}`);
+  // Throttle: inject the lesson block on turn 1 and every Nth turn after
+  // (default N=10). Other turns skip the DB roundtrip entirely. Lessons
+  // stay enforced by the PreToolUse hook regardless of injection.
+  const turn = bumpTurn(sessionId);
+  const shouldInject = (turn === 1) || (turn % LESSON_INJECT_INTERVAL === 1);
+
+  debug(`session=${sessionId} firstPrompt=${isFirstPrompt} turn=${turn} shouldInject=${shouldInject} project=${project}`);
+
+  if (!shouldInject) {
+    if (isFirstPrompt) markSessionPrimed(sessionId);
+    allow();
+    return;
+  }
 
   // Wall-clock budget so we never blow the 5s hook timeout.
   const budgetTimer = setTimeout(() => {
