@@ -62,6 +62,16 @@ def _validate_trigger_on(lesson: LessonCreate) -> None:
             status_code=400,
             detail=f"trigger_on must be one of {VALID_TRIGGER_ON}",
         )
+    if lesson.trigger_on == "input" and not lesson.trigger_tool and not lesson.trigger_pattern:
+        # Refuses broad-match input lessons (no tool AND no pattern) — they
+        # would fire on every Edit/Write/Bash/NotebookEdit call and dominate
+        # the systemMessage budget. DB CHECK constraint chk_input_trigger_has_filter
+        # (migration 016) is the belt; this is the suspenders that returns a
+        # clean 400 instead of letting the DB error surface as a 500.
+        raise HTTPException(
+            status_code=400,
+            detail="trigger_tool or trigger_pattern required when trigger_on='input' (a lesson without either would match every tool call)",
+        )
     if lesson.trigger_on == "output" and not lesson.trigger_output_pattern:
         raise HTTPException(
             status_code=400,
@@ -232,6 +242,19 @@ async def match_lessons(
             conditions.append(f"(l.trigger_tool IS NULL OR l.trigger_tool = ${pidx})")
             params.append(tool_name)
             pidx += 1
+
+        # Broad-match guard for input triggers: refuse to fire a lesson that
+        # has neither a trigger_tool NOR a trigger_pattern. Such a lesson
+        # would match every Edit/Write/Bash/NotebookEdit call and dominate
+        # the systemMessage budget. The DB has a CHECK constraint that
+        # prevents new rows in this state (migration 016), but this filter
+        # is the runtime safety net for legacy rows that pre-date it. The
+        # output/file_scope/phase trigger types have their own
+        # required-field CHECK constraints already.
+        if trigger_on == "input":
+            conditions.append(
+                "(l.trigger_tool IS NOT NULL OR l.trigger_pattern IS NOT NULL)"
+            )
 
         # Project scope: strict one-directional match. A lesson fires only
         # when the caller's cwd IS the lesson's project path or is nested
