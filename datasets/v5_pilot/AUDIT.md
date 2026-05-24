@@ -9,7 +9,7 @@
 | stage | count |
 |---|---|
 | db rows pulled | 15000 |
-| dropped: excluded project | 210 |
+| dropped: excluded project | 274 |
 | dropped: unknown project | 0 |
 | dropped: cwd excluded prefix (/tmp etc) | 0 |
 | dropped: cwd outside workspace | 923 |
@@ -45,9 +45,9 @@
 | project | rows |
 |---|---|
 | anvil | 859 |
-| my-repo | 143 |
+| my-repo | 187 |
 | mz-personal-archived | 64 |
-| my-project | 26 |
+| my-project | 46 |
 | DailyDispatch.local | 20 |
 | lib | 19 |
 | b | 1 |

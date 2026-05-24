@@ -32,6 +32,26 @@ SECRET_PATTERNS = [
     ),
     (re.compile(r"(?:password|passwd|pwd)\s*[=:]\s*\S+", re.I), "[REDACTED:password]"),
     (re.compile(r"(?:postgresql|mysql|mongodb)://[^\s]+@[^\s]+", re.I), "[REDACTED:connection_string]"),
+    # JWT (HS256/RS256/etc): three url-safe-base64 segments joined by dots.
+    # Caught a real expired RMS bearer leaking into datasets/v5_pilot/train.jsonl
+    # at PR #51 audit. The header segment always starts with "eyJ" because the
+    # JSON {"alg": ...} prefix is fixed. Min 10 chars per segment to avoid
+    # false-positives on short dotted identifiers.
+    (
+        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+        "[REDACTED:jwt]",
+    ),
+    # Session cookie patterns — generic 32+ char hex value bound to a
+    # session-ish key. Catches the kind of `session: <hex>` literal the
+    # auditor flagged at train.jsonl:1986 without being aggressive enough to
+    # eat git SHAs etc. (those don't have the "session" tag in front).
+    (
+        re.compile(
+            r"\b(?:session|sessionid|sess|jsessionid|sid)\b\s*[=:]\s*[a-fA-F0-9]{32,}",
+            re.I,
+        ),
+        "[REDACTED:session_cookie]",
+    ),
 ]
 
 PII_PATTERNS = [

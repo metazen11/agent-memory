@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
-from app.project import ensure_project, project_path_filter
+from app.project import ensure_project, project_path_filter, project_path_filter_strict
 
 MAX_PATTERN_LEN = 500
 VALID_TRIGGER_ON = ("input", "output", "phase", "file_scope")
@@ -233,11 +233,16 @@ async def match_lessons(
             params.append(tool_name)
             pidx += 1
 
-        # Project scope
+        # Project scope: strict one-directional match. A lesson fires only
+        # when the caller's cwd IS the lesson's project path or is nested
+        # inside it. Truly unscoped lessons (project_id IS NULL) still fire.
+        # Parent-cwd does NOT match child-project lessons — that's the leak
+        # this endpoint had before, where /Users/mz pulled in lessons from
+        # every project under /Users/mz/_CODING/*.
         if project:
-            path_clause, pidx = project_path_filter(pidx)
+            path_clause, pidx = project_path_filter_strict(pidx)
             conditions.append(f"(l.project_id IS NULL OR {path_clause})")
-            params.extend([project, project, project])
+            params.extend([project, project])
         else:
             conditions.append("l.project_id IS NULL")
 

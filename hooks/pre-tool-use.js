@@ -14,6 +14,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { authHeaders } = require('./auth-header');
@@ -159,12 +160,37 @@ debug(`tool=${toolName} project=${project}`);
 const toolInputPreview = extractToolInputPreview(toolName, toolInput);
 debug(`preview=${toolInputPreview.slice(0, 100)}`);
 
+// Once-per-session reminder when no lessons match. Marker lives in the OS
+// temp dir keyed by session_id so it auto-clears with reboots and never
+// collides across sessions. If no session_id is provided, suppress the
+// reminder rather than reminding on every tool call.
+function shouldEmitEmptyReminder(sessionId) {
+  if (!sessionId) return false;
+  const safeId = String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+  const marker = path.join(os.tmpdir(), `agent-memory-reminded-${safeId}`);
+  try {
+    if (fs.existsSync(marker)) return false;
+    fs.writeFileSync(marker, String(Date.now()));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const sessionId = input.session_id || '';
+
 (async () => {
   const matches = await fetchLessonMatches(toolName, toolInputPreview, project);
 
   if (!Array.isArray(matches) || matches.length === 0) {
     debug('No lesson matches');
-    output({});
+    if (shouldEmitEmptyReminder(sessionId)) {
+      output({
+        systemMessage: 'agent-memory: no active lessons match this tool call. For recent project context, call the `search` skill (semantic+text search of past observations) or `timeline` (context window around an anchor). Pass `project="<cwd>"`.',
+      });
+    } else {
+      output({});
+    }
     return;
   }
 

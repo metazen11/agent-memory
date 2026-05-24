@@ -92,6 +92,73 @@ async def test_match_lessons_no_match(client, test_project):
 
 
 @pytest.mark.asyncio
+async def test_match_lessons_parent_cwd_does_not_match_child_project(client, test_prefix):
+    """Regression: a lesson scoped to /tmp/<prefix>/child must NOT fire when
+    the caller's cwd is the parent /tmp/<prefix>.
+
+    Before the strict path filter, the bidirectional helper let parent cwds
+    pull in lessons from every child project, which caused global spam at
+    /Users/mz level for lessons scoped to /Users/mz/_CODING/<repo>.
+    """
+    child = f"/tmp/{test_prefix}/child-project"
+    parent = f"/tmp/{test_prefix}"
+
+    # Create a lesson with a broad pattern in the child project — without the
+    # bug fix, calling match from the parent would return this.
+    resp = await client.post("/api/lessons", json={
+        "title": "Child-scoped lesson (regression test)",
+        "rule": "Must not leak to parent cwd",
+        "severity": "warning",
+        "project": child,
+        "trigger_tool": "Bash",
+        "trigger_pattern": ".*",
+    })
+    assert resp.status_code == 200
+    child_lesson_id = resp.json()["id"]
+    _created_lesson_ids.append(child_lesson_id)
+
+    # Match from parent cwd — child lesson must NOT appear.
+    resp = await client.get("/api/lessons/match", params={
+        "tool_name": "Bash",
+        "tool_input_preview": "ls",
+        "project": parent,
+    })
+    assert resp.status_code == 200
+    matched_ids = [l["id"] for l in resp.json()]
+    assert child_lesson_id not in matched_ids, (
+        f"Child-project lesson {child_lesson_id} leaked into parent cwd match. "
+        f"Matched IDs: {matched_ids}"
+    )
+
+    # Sanity: match from inside the child project — lesson SHOULD appear.
+    resp = await client.get("/api/lessons/match", params={
+        "tool_name": "Bash",
+        "tool_input_preview": "ls",
+        "project": child,
+    })
+    assert resp.status_code == 200
+    matched_ids = [l["id"] for l in resp.json()]
+    assert child_lesson_id in matched_ids, (
+        f"Child-project lesson {child_lesson_id} missing when matched from "
+        f"its own cwd. Matched IDs: {matched_ids}"
+    )
+
+    # Sanity: match from a nested grandchild cwd — lesson SHOULD also appear.
+    grandchild = f"{child}/src/lib"
+    resp = await client.get("/api/lessons/match", params={
+        "tool_name": "Bash",
+        "tool_input_preview": "ls",
+        "project": grandchild,
+    })
+    assert resp.status_code == 200
+    matched_ids = [l["id"] for l in resp.json()]
+    assert child_lesson_id in matched_ids, (
+        f"Lesson {child_lesson_id} missing when matched from grandchild "
+        f"cwd {grandchild}. Matched IDs: {matched_ids}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_lesson(client):
     if not _created_lesson_ids:
         pytest.skip("No lessons created")
