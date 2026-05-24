@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.db import get_pool
 from app.dataset_exports import fetch_tool_call_rows, build_dataset_records
 from app.project import project_path_filter
+from app.redact import redact_json, redact_text
 from app.training_export_guide import build_training_export_guide
 
 logger = logging.getLogger(__name__)
@@ -200,17 +201,32 @@ async def export_tool_calls(
             ORDER BY tc.created_at ASC
         """, *params)
 
+        # Redact secrets at the export boundary. Ingest-side redaction is the
+        # primary defense, but historical rows pre-date some patterns (e.g.
+        # Slack webhooks landed in the v5 pilot dataset) and any new pattern
+        # added to redact.py can re-scrub older data on export. tool_input is
+        # nested JSON (auth headers, query params); the other text fields are
+        # flat strings.
+        def _redact_row(r):
+            return {
+                "tool_input": redact_json(r["tool_input"]) if r["tool_input"] else None,
+                "tool_response_preview": redact_text(r["tool_response_preview"]),
+                "tool_error": redact_text(r["tool_error"]),
+                "prompt_text": redact_text(r["prompt_text"]),
+            }
+
         if format == "csv":
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(["id", "tool_name", "tool_input", "tool_response_preview",
                              "tool_success", "tool_error", "source_agent", "project", "created_at"])
             for r in rows:
+                red = _redact_row(r)
                 writer.writerow([
                     r["id"], r["tool_name"],
-                    json.dumps(r["tool_input"]) if r["tool_input"] else "",
-                    (r["tool_response_preview"] or "")[:500],
-                    r["tool_success"], r["tool_error"] or "",
+                    json.dumps(red["tool_input"]) if red["tool_input"] else "",
+                    (red["tool_response_preview"] or "")[:500],
+                    r["tool_success"], red["tool_error"] or "",
                     r["source_agent"] or "", r["project_name"],
                     r["created_at"].isoformat() if r["created_at"] else "",
                 ])
@@ -220,14 +236,15 @@ async def export_tool_calls(
         # JSONL
         lines = []
         for r in rows:
+            red = _redact_row(r)
             lines.append(json.dumps({
                 "id": r["id"],
                 "tool_name": r["tool_name"],
-                "tool_input": r["tool_input"],
-                "tool_response_preview": r["tool_response_preview"],
+                "tool_input": red["tool_input"],
+                "tool_response_preview": red["tool_response_preview"],
                 "tool_success": r["tool_success"],
-                "tool_error": r["tool_error"],
-                "prompt_text": r["prompt_text"],
+                "tool_error": red["tool_error"],
+                "prompt_text": red["prompt_text"],
                 "source_agent": r["source_agent"],
                 "project": r["project_name"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
