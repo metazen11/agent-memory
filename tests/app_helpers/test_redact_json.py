@@ -208,3 +208,82 @@ def test_discordapp_webhook_url_is_redacted():
     out = redact_text(_discord_webhook(_DISCORDAPP_HOST))
     assert _DISCORDAPP_HOST not in out
     assert "[REDACTED:discord_webhook]" in out
+
+
+# ── JWTs ─────────────────────────────────────────────────────────────────
+#
+# Real-world failure: a signed HS256 JWT (expired) was caught at PR #51 audit
+# embedded in an assistant tool_call argument in
+# datasets/v5_pilot/train.jsonl:4100. The model would have been trained to
+# emit it verbatim. The header prefix "eyJ" is structural (base64 of
+# `{"alg":...`), so it's reliable as a detector. Test JWTs here are
+# synthetic and assembled at runtime to avoid secret-scanning false alarms.
+
+
+def _synthetic_jwt():
+    # Header / payload / sig — each segment is well past the 10-char
+    # min so the regex matches. Real JWTs are much longer; the lower
+    # bound exists to avoid eating short dotted identifiers like
+    # "eyJ.eyJ.x" in arbitrary text.
+    return (
+        "ey" + "Jhbgci0iJIUzI1NiIsInR5c"
+        + "."
+        + "ey" + "JzdWIiOiIxMjM0NTY3ODk"
+        + "."
+        + "_signature-part-here-padded"
+    )
+
+
+def test_jwt_token_is_redacted():
+    out = redact_text(_synthetic_jwt())
+    assert "[REDACTED:jwt]" in out
+    assert "eyJ" not in out
+
+
+def test_jwt_nested_in_tool_call_arguments_is_redacted():
+    """Mirror of the real PR #51 leak: JWT inside an assistant tool_call."""
+    obj = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "function": {
+                    "name": "Bash",
+                    "arguments": {
+                        "command": "curl -H 'Authorization: Bearer " + _synthetic_jwt() + "' https://api.example",
+                    },
+                }
+            }
+        ],
+    }
+    out = redact_json(obj)
+    cmd = out["tool_calls"][0]["function"]["arguments"]["command"]
+    # Bearer pattern catches the whole "Bearer <token>" first; either way
+    # the literal JWT must not survive.
+    assert "eyJ" not in cmd
+
+
+def test_short_dotted_string_is_not_treated_as_jwt():
+    """Don't false-positive on short dotted identifiers."""
+    out = redact_text("eyJ.eyJ.x")
+    assert "[REDACTED:jwt]" not in out
+
+
+# ── Session cookies ──────────────────────────────────────────────────────
+
+
+def test_session_cookie_hex_value_is_redacted():
+    # 32-char lowercase hex
+    out = redact_text("session: fb97243eb480448595be8e3ed7f93704")
+    assert "[REDACTED:session_cookie]" in out
+    assert "fb97243eb480448595be8e3ed7f93704" not in out
+
+
+def test_jsessionid_is_redacted():
+    out = redact_text("JSESSIONID=abcdef0123456789abcdef0123456789")
+    assert "[REDACTED:session_cookie]" in out
+
+
+def test_git_sha_is_not_redacted_as_session_cookie():
+    """Bare 40-char hex must not be eaten — it could be a git SHA."""
+    out = redact_text("commit abcdef0123456789abcdef0123456789abcdef01")
+    assert "[REDACTED:session_cookie]" not in out
