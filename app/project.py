@@ -124,3 +124,34 @@ def project_path_filter(param_idx: int) -> tuple[str, int]:
         f" OR ${param_idx + 2} LIKE p.full_path || '/%')"
     )
     return clause, param_idx + 3
+
+
+def project_path_filter_strict(param_idx: int) -> tuple[str, int]:
+    """Strict, one-directional variant of ``project_path_filter`` for actions
+    that should fire only inside their owning project.
+
+    A row matches when the caller's cwd IS the project path or is nested
+    inside it. A parent cwd does NOT match a child project — this is the
+    difference from the bidirectional variant, which leaks child-project
+    rows when the caller is at a parent (e.g. ``/Users/mz`` matching all
+    lessons under ``/Users/mz/_CODING/*``).
+
+    Used by lesson matching so a CRITICAL lesson scoped to project X never
+    fires while the caller is working in unrelated project Y. The same
+    parameter is bound twice (as $N, $N+1).
+
+    Usage::
+
+        clause, next_idx = project_path_filter_strict(pidx)
+        # clause = "(p.full_path = $3 OR $4 LIKE p.full_path || '/%')"
+        # next_idx = 5
+        params.extend([cwd, cwd])  # bind 2 times
+
+    Returns:
+        (sql_clause, next_param_idx)
+    """
+    clause = (
+        f"(p.full_path = ${param_idx}"
+        f" OR ${param_idx + 1} LIKE p.full_path || '/%')"
+    )
+    return clause, param_idx + 2
