@@ -27,10 +27,14 @@ async def test_create_lesson(client, test_project):
 
 @pytest.mark.asyncio
 async def test_create_global_lesson(client):
+    # trigger_pattern is required for trigger_on='input' (the default) since
+    # migration 016 — a lesson with neither trigger_tool nor trigger_pattern
+    # would broad-match every tool call and dominate the systemMessage budget.
     resp = await client.post("/api/lessons", json={
         "title": "Global test lesson",
         "rule": "Never skip validation",
         "severity": "critical",
+        "trigger_pattern": "test-only-pattern-no-real-match",
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -47,6 +51,73 @@ async def test_create_lesson_invalid_regex_returns_400(client):
         "trigger_pattern": "[invalid(",
     })
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_broad_match_input_lesson_returns_400(client):
+    """Regression: an input-triggered lesson with neither trigger_tool nor
+    trigger_pattern is refused by the API. Such a lesson would fire on
+    every Edit/Write/Bash/NotebookEdit call and dominate the systemMessage
+    budget — the synth-lesson #86 ('never X') was the canonical bad case.
+    """
+    resp = await client.post("/api/lessons", json={
+        "title": "Broad-match attempt",
+        "rule": "Would match everything",
+        "severity": "warning",
+        # trigger_on defaults to 'input'; no trigger_tool, no trigger_pattern
+    })
+    assert resp.status_code == 400
+    assert "trigger_tool or trigger_pattern" in resp.json()["detail"].lower() or \
+           "every tool call" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_match_endpoint_skips_broad_match_input_lessons(client, test_prefix):
+    """Regression: even if a broad-match input lesson exists in the DB
+    (e.g. a legacy row that pre-dates migration 016's CHECK constraint),
+    /api/lessons/match must not return it. The runtime filter in
+    app/routes/lessons.py is the suspenders to the DB constraint's belt.
+    """
+    # Insert directly via psql_wrapper to bypass the API validator; this
+    # simulates a legacy broad-match row that pre-dates the CHECK constraint.
+    import subprocess
+    title = f"legacy-broad-match-{test_prefix}"
+    insert_sql = (
+        "INSERT INTO mem_lessons (title, rule, severity, trigger_on, "
+        "raw_text, active) "
+        f"VALUES ('{title}', 'legacy broad match', 'warning', 'input', "
+        f"'{title}', true) "
+        "RETURNING id;"
+    )
+    result = subprocess.run(
+        ["bash", "/Users/mz/_CODING/agentMemory/scripts/psql_wrapper.sh", "-tA", "-c", insert_sql],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        # CHECK constraint may already be VALIDATEd, in which case insert
+        # fails — that's actually the goal of migration 016, so skip.
+        pytest.skip(f"DB rejected legacy insert (constraint is fully validated): {result.stderr}")
+    legacy_id = int(result.stdout.strip())
+
+    try:
+        # Match endpoint must NOT return our legacy broad-match row
+        resp = await client.get("/api/lessons/match", params={
+            "tool_name": "Bash",
+            "tool_input_preview": "ls -la",
+        })
+        assert resp.status_code == 200
+        matched_ids = [l["id"] for l in resp.json()]
+        assert legacy_id not in matched_ids, (
+            f"Legacy broad-match lesson {legacy_id} leaked through the "
+            f"match endpoint despite runtime filter. Matched: {matched_ids}"
+        )
+    finally:
+        # Clean up the legacy row
+        subprocess.run(
+            ["bash", "/Users/mz/_CODING/agentMemory/scripts/psql_wrapper.sh", "-c",
+             f"DELETE FROM mem_lessons WHERE id = {legacy_id};"],
+            capture_output=True, text=True, timeout=10,
+        )
 
 
 @pytest.mark.asyncio
