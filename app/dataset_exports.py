@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from app.redact import redact_json, redact_text
+
 
 _PROBLEM_PATTERNS = [
     re.compile(r"permission denied", re.IGNORECASE),
@@ -63,6 +65,11 @@ def _parse_jsonb(value: Any) -> Any:
 
 def _base_record(row: dict[str, Any], include_observations: bool) -> dict[str, Any]:
     prompt = _norm_prompt(row.get("prompt_text"), row.get("last_user_message"))
+    # Redact at the dataset-record boundary: every downstream export type
+    # (sft, trajectory, preference) flows through this function, so one
+    # patch here covers all of them. Ingest-side redaction is the primary
+    # defense; this catches historical rows ingested before a pattern was
+    # added (e.g. Slack webhooks that landed in the v5 pilot dataset).
     rec = {
         "tool_call_id": row["id"],
         "project": row.get("project_name"),
@@ -71,12 +78,12 @@ def _base_record(row: dict[str, Any], include_observations: bool) -> dict[str, A
         "source_agent": row.get("source_agent"),
         "source_system": row.get("source_system"),
         "source_mode": row.get("source_mode"),
-        "prompt_text": prompt,
+        "prompt_text": redact_text(prompt),
         "tool_name": row.get("tool_name"),
-        "tool_input": _parse_jsonb(row.get("tool_input")),
-        "tool_response_preview": row.get("tool_response_preview"),
+        "tool_input": redact_json(_parse_jsonb(row.get("tool_input"))),
+        "tool_response_preview": redact_text(row.get("tool_response_preview")),
         "tool_success": row.get("tool_success"),
-        "tool_error": row.get("tool_error"),
+        "tool_error": redact_text(row.get("tool_error")),
         "reward": _compute_reward(row),
         "is_problematic": _is_problematic(row),
         "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,

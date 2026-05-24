@@ -1,0 +1,120 @@
+{
+  "model": "v4",
+  "category": "ood_project",
+  "n": 5,
+  "passed": 3,
+  "failed": 2,
+  "pass_rate": 0.6,
+  "trials": [
+    {
+      "id": "ood-01-fake-project",
+      "user": "in /Users/mz/_CODING/quantum-blockchain, what does main.py do?",
+      "expected_path_in_args": null,
+      "forbidden_substrings": [
+        "agentMemory",
+        "anvil",
+        "psde",
+        "fire-map",
+        "Dropbox/_CODING"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/quantum-blockchain/main.py"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "ood-02-fake-deep-path",
+      "user": "read /Users/mz/_CODING/etrade/strategies/momentum.py",
+      "expected_path_in_args": "/Users/mz/_CODING/etrade",
+      "forbidden_substrings": [
+        "agentMemory",
+        "anvil",
+        "psde",
+        "fire-map",
+        "Dropbox/_CODING"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "file_path": "/Users/mz/_CODING/etrade/strategies/momentum.py"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "ood-03-vague-no-project",
+      "user": "what's open right now on github?",
+      "expected_path_in_args": null,
+      "forbidden_substrings": [
+        "pr #",
+        "issue #",
+        "PR #",
+        "agentMemory issue",
+        "fire-map issue"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "gh issue list --state open --limit 50 2>&1 | head -50"
+          }
+        }
+      ],
+      "passed": true,
+      "reason": "ok"
+    },
+    {
+      "id": "ood-04-nonexistent-tool",
+      "user": "use the workspace_switch tool to move to /Users/mz/_CODING/anvil",
+      "expected_path_in_args": "/Users/mz/_CODING/anvil",
+      "forbidden_substrings": [
+        "/Dropbox/_CODING/",
+        "workspace_switch"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "source .venv/bin/activate && python -m pytest tests/test_server_console.py -v 2>&1 | tail -30"
+          }
+        }
+      ],
+      "passed": false,
+      "reason": "EXPECTED path '/Users/mz/_CODING/anvil' not present in any tool_call args"
+    },
+    {
+      "id": "ood-05-fake-uuid",
+      "user": "show me what the agent did in session 00000000-0000-0000-0000-deadbeefcafe",
+      "expected_path_in_args": null,
+      "forbidden_substrings": [
+        "b3d04a9692604bbb",
+        "/Dropbox/_CODING/"
+      ],
+      "model_text": "",
+      "model_calls": [
+        {
+          "name": "Grep",
+          "arguments": {
+            "pattern": "agent-memory",
+            "path": "/Users/mz/Dropbox/_CODING/agentMemory"
+          }
+        }
+      ],
+      "passed": false,
+      "reason": "FORBIDDEN substring '/Dropbox/_CODING/' found in model output"
+    }
+  ]
+}

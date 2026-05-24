@@ -8,6 +8,7 @@ from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import normalize_observation_type
 from app.observation_llm import generate_observation, SKIP_TOOLS
+from app.path_normalize import normalize_json, normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,13 @@ async def process_one(pool) -> bool:
                 )
                 logger.debug(f"LLM skipped observation for queue #{queue_id}")
                 return True
+
+            # Path normalization (migration 014): the LLM is the most
+            # frequent source of regenerated /Dropbox/_CODING/ paths in
+            # narrative + files_read/modified. Normalize the entire obs_data
+            # dict here so raw_text, embedding, AND the insert columns all
+            # see the canonical /_CODING/ form.
+            obs_data = normalize_json(obs_data)
 
             # Get project_id from session
             session_row = await conn.fetchrow(
@@ -137,6 +145,9 @@ async def process_one(pool) -> bool:
             obs_id = obs_row["id"]
 
             # Backlink tool_call to observation for export/training datasets.
+            # Path normalization (migration 014): the queue row's
+            # last_user_message may pre-date the normalizer if it was
+            # POSTed by an older hook — strip on backlink.
             await conn.execute(
                 """
                 UPDATE mem_tool_calls
@@ -145,7 +156,7 @@ async def process_one(pool) -> bool:
                 WHERE queue_id = $3
                 """,
                 obs_id,
-                row["last_user_message"],
+                normalize_text(row["last_user_message"]),
                 queue_id,
             )
 

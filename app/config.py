@@ -34,7 +34,12 @@ class Settings(BaseSettings):
 
     # Redaction
     redact_secrets: bool = True
-    redact_pii: bool = False
+    # PII redaction defaults ON. This repo ships training datasets that are
+    # publicly distributed via the plugin marketplace, so emails / SSNs in
+    # captured prompts and tool outputs would leak through to public artifacts
+    # unless explicitly stripped. Operators that want raw PII (private
+    # research datasets, etc.) can set AGENT_MEMORY_REDACT_PII=false in .env.
+    redact_pii: bool = True
 
     # Rate limiting
     rate_limit_enabled: bool = True

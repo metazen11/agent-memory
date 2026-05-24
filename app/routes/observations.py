@@ -3,10 +3,13 @@ import logging
 import re
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.db import get_pool
 from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
+from app.git_context import resolve_git_context
+from app.path_normalize import normalize_json, normalize_text
 from app.project import ensure_project, project_path_filter
 
 
@@ -66,7 +69,13 @@ async def queue_observation(item: QueueItem):
     """Accept tool call data for async observation processing."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        project_path = item.cwd or "unknown"
+        # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
+        # to /_CODING/ at the live write boundary. The hooks already
+        # normalize, but a stale shell or non-Claude agent might POST raw
+        # Dropbox paths — strip here as belt-and-suspenders so the DB
+        # invariant holds end-to-end.
+        cwd_norm = normalize_text(item.cwd)
+        project_path = cwd_norm or "unknown"
         project_id = await ensure_project(conn, project_path)
         session_db_id = await _ensure_session(conn, item.session_id, project_id)
         session_row = await conn.fetchrow(
@@ -75,8 +84,11 @@ async def queue_observation(item: QueueItem):
         )
         source_system = item.source_system or (session_row["agent_type"] if session_row else None)
 
-        response_preview = item.tool_response_preview[:2000] if item.tool_response_preview else None
-        tool_input_json = json.dumps(item.tool_input) if item.tool_input else None
+        response_preview_raw = item.tool_response_preview[:2000] if item.tool_response_preview else None
+        response_preview = normalize_text(response_preview_raw)
+        tool_input_norm = normalize_json(item.tool_input) if item.tool_input else None
+        tool_input_json = json.dumps(tool_input_norm) if tool_input_norm else None
+        last_user_message_norm = normalize_text(item.last_user_message)
 
         # Insert into observation queue (for LLM-based observation extraction)
         queue_row = await conn.fetchrow("""
@@ -92,13 +104,19 @@ async def queue_observation(item: QueueItem):
             item.tool_name,
             tool_input_json,
             response_preview,
-            item.cwd,
-            item.last_user_message,
+            cwd_norm,
+            last_user_message_norm,
             source_system,
             item.source_mode,
             item.source_agent,
         )
         queue_id = queue_row["id"]
+
+        # Resolve git context for branch + sha tagging at moment of call.
+        # The same resolve_git_context call was used inside ensure_project
+        # above; the helper caches per-cwd within the process so this is
+        # effectively free for hot paths.
+        git_ctx = resolve_git_context(cwd_norm)
 
         # Insert into tool_calls ledger with inferred success/error
         tool_success, tool_error = _infer_tool_success(response_preview)
@@ -107,15 +125,17 @@ async def queue_observation(item: QueueItem):
             (
                 session_id, project_id, queue_id, tool_name, tool_input,
                 tool_response_preview, tool_success, tool_error,
-                prompt_text, cwd, source_system, source_mode, source_agent
+                prompt_text, cwd, source_system, source_mode, source_agent,
+                git_branch, git_sha
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING id
         """,
             session_db_id, project_id, queue_id,
             item.tool_name, tool_input_json,
-            response_preview, tool_success, tool_error, item.last_user_message,
-            item.cwd, source_system, item.source_mode, item.source_agent,
+            response_preview, tool_success, tool_error, last_user_message_norm,
+            cwd_norm, source_system, item.source_mode, item.source_agent,
+            git_ctx.branch, git_ctx.sha,
         )
 
         # Backlink queue row to tool_call
@@ -134,7 +154,12 @@ async def create_observation(obs: ObservationCreate):
     """Create an observation directly (bypasses queue)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        project_id = await ensure_project(conn, obs.project)
+        # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
+        # to /_CODING/ at the write boundary. Applies to project path (text),
+        # narrative / title / subtitle (text), and the list[str] payloads
+        # facts / concepts / files_read / files_modified (jsonb).
+        project_norm = normalize_text(obs.project) or obs.project
+        project_id = await ensure_project(conn, project_norm)
         session_db_id = await _ensure_session(conn, obs.session_id, project_id)
         session_row = await conn.fetchrow(
             "SELECT agent_type FROM mem_sessions WHERE id = $1",
@@ -144,6 +169,13 @@ async def create_observation(obs: ObservationCreate):
 
         # Normalize type before insert
         obs.type = normalize_observation_type(obs.type)
+        obs.title = normalize_text(obs.title) or obs.title
+        obs.subtitle = normalize_text(obs.subtitle)
+        obs.narrative = normalize_text(obs.narrative)
+        obs.facts = normalize_json(obs.facts) if obs.facts else obs.facts
+        obs.concepts = normalize_json(obs.concepts) if obs.concepts else obs.concepts
+        obs.files_read = normalize_json(obs.files_read) if obs.files_read else obs.files_read
+        obs.files_modified = normalize_json(obs.files_modified) if obs.files_modified else obs.files_modified
 
         raw_text = _build_raw_text(obs)
 
@@ -223,11 +255,17 @@ async def list_observations(
         param_idx = 1
 
         if project:
-            # Support both full paths and short project names
+            # Support both full paths and short project names. For paths, also
+            # match on basename so a moved checkout (e.g. ~/Dropbox/_CODING/X
+            # → ~/_CODING/X) still surfaces its observations without a data
+            # migration on mem_projects.full_path.
             if '/' in project:
+                from pathlib import Path
+                basename = Path(project).name or project
                 clause, param_idx = project_path_filter(param_idx)
-                conditions.append(clause)
-                params.extend([project, project, project])
+                conditions.append(f"({clause} OR p.name = ${param_idx})")
+                params.extend([project, project, project, basename])
+                param_idx += 1
             else:
                 conditions.append(f"p.name = ${param_idx}")
                 params.append(project)
@@ -283,6 +321,38 @@ async def get_observation(obs_id: int):
             raise HTTPException(status_code=404, detail="Observation not found")
 
         return _row_to_obs(row)
+
+
+# ── Recall (preferred one-call entry point) ───────────
+
+class RecallRequest(BaseModel):
+    """Recall request — search + hydrate in one call.
+
+    Convenience wrapper over /api/observations/search with k=5 default and
+    hybrid mode. Returns full ObservationOut rows ranked by relevance.
+    Existing /api/observations/search remains for callers that want to
+    tune limit/mode/cross_project explicitly.
+    """
+    query: str
+    project: str | None = None
+    cross_project: bool = False
+    type: list[str] | None = None
+    k: int = 5
+
+
+@router.post("/api/recall", response_model=SearchResult)
+async def recall(req: RecallRequest):
+    """One-call recall: search + hydrate, top-k full observations."""
+    k = max(1, min(req.k, 20))
+    search_req = SearchRequest(
+        query=req.query,
+        project=req.project,
+        cross_project=req.cross_project,
+        type=req.type,
+        limit=k,
+        mode="hybrid",
+    )
+    return await search_observations(search_req)
 
 
 # ── Hybrid search ─────────────────────────────────────

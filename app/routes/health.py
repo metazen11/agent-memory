@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from app.db import get_pool
 from app.embeddings import check_embeddings
@@ -44,3 +47,37 @@ async def health():
     result["status"] = "ok" if db_ok and emb_ok else "degraded"
 
     return result
+
+
+# Path resolved relative to this file so a moved checkout still finds the
+# doc. agent-memory/app/routes/health.py → ../../docs/INTEGRATION.md.
+_INTEGRATION_DOC_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "docs" / "INTEGRATION.md"
+)
+
+
+@router.get("/api/integration_guide", response_class=PlainTextResponse)
+async def integration_guide():
+    """Return the agent-memory integration guide as markdown.
+
+    Hosts and agents can `curl` this on first contact to learn the
+    contract without reading the repo. Same content as
+    docs/INTEGRATION.md — that file is the source of truth.
+    """
+    try:
+        return _INTEGRATION_DOC_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Integration guide missing on disk. Expected at "
+                f"{_INTEGRATION_DOC_PATH}. The doc lives at "
+                "docs/INTEGRATION.md in the agent-memory repo; "
+                "make sure your installation includes it."
+            ),
+        )
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read integration guide: {e}",
+        )

@@ -1,14 +1,14 @@
 import fnmatch
-import json
 import logging
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
-from app.project import ensure_project, project_path_filter
+from app.project import ensure_project, project_path_filter, project_path_filter_strict
 
 MAX_PATTERN_LEN = 500
 VALID_TRIGGER_ON = ("input", "output", "phase", "file_scope")
@@ -148,10 +148,24 @@ async def list_lessons(
         params = []
         pidx = 1
 
+        # Explicit scoping semantics:
+        #   project=<path>  → lessons attached to a project matching that path
+        #                     (bidirectional prefix + basename fallback), OR
+        #                     truly unscoped lessons (project_id IS NULL).
+        #   project=None    → ONLY truly unscoped lessons (project_id IS NULL).
+        # Before this change, project=None returned every lesson regardless of
+        # scope, which leaked other-project lessons into the session-start /
+        # user-prompt-submit injections.
         if project is not None:
+            basename = Path(project).name or project
             clause, pidx = project_path_filter(pidx)
-            conditions.append(clause)
-            params.extend([project, project, project])
+            conditions.append(
+                f"(l.project_id IS NULL OR {clause} OR p.name = ${pidx})"
+            )
+            params.extend([project, project, project, basename])
+            pidx += 1
+        else:
+            conditions.append("l.project_id IS NULL")
 
         if severity is not None:
             conditions.append(f"l.severity = ${pidx}")
@@ -219,11 +233,16 @@ async def match_lessons(
             params.append(tool_name)
             pidx += 1
 
-        # Project scope
+        # Project scope: strict one-directional match. A lesson fires only
+        # when the caller's cwd IS the lesson's project path or is nested
+        # inside it. Truly unscoped lessons (project_id IS NULL) still fire.
+        # Parent-cwd does NOT match child-project lessons — that's the leak
+        # this endpoint had before, where /Users/mz pulled in lessons from
+        # every project under /Users/mz/_CODING/*.
         if project:
-            path_clause, pidx = project_path_filter(pidx)
+            path_clause, pidx = project_path_filter_strict(pidx)
             conditions.append(f"(l.project_id IS NULL OR {path_clause})")
-            params.extend([project, project, project])
+            params.extend([project, project])
         else:
             conditions.append("l.project_id IS NULL")
 

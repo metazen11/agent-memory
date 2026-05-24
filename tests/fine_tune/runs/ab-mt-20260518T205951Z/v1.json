@@ -1,0 +1,210 @@
+{
+  "model": "v1",
+  "n_scenarios": 10,
+  "n_no_turn1_tool_call": 0,
+  "n_empty_turn2_response": 0,
+  "n_regression_same_call": 2,
+  "n_adapted_new_call": 7,
+  "n_adapted_text_answer": 1,
+  "adaptation_rate_of_eligible": 0.8,
+  "trials": [
+    {
+      "i": 1,
+      "user": "find the fire-map codebase",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/components/map/"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/fire-map.wfca.com",
+      "turn2_text": "The codebase is at `/Users/mz/_CODING/fire-map.wfca.com`. Let me check the structure and find the fire map code. Let me search for the fire map files.",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "fire-map|FIRMS|firmsFire",
+          "path": "/Users/mz/_CODING/fire-map.wfca.com"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 2,
+      "user": "show me where auth is wired up",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/auth/"
+        }
+      },
+      "synthetic_tool_response": "app/auth.py\napp/middleware/auth_middleware.py\napp/api/login.py",
+      "turn2_text": "Let me check the auth-related files. Here are the key files: - **app/auth.py** \u2014 Authentication module - **app/middleware/auth_middleware.py** \u2014 Middleware for JWT authentication - **app/api/login.py** \u2014 Login endpoint (OAuth2) - **app/api/protected.py** \u2014 Protected routes (requires JWT) - **app/routes/landform_routes.py** \u2014 Landform routes (requires JWT) - **app/routes/api_routes.py** \u2014 API routes (requires JWT) - **app/routes/irwin_routes.py** \u2014 IRWIN routes (requires JWT) - **app/routes/map_routes.py** \u2014 Map routes (requires JWT) - **app/routes/layer_switch_routes.py** \u2014 Layer switch routes (requires JWT) - **app/routes/observation_routes.py** \u2014 Observation routes (requires JWT) - **app/routes/irwin_incident_routes.py** \u2014 IRWIN incident routes (requires JWT) - **app/routes/irwin_forecast_routes.py** \u2014 IRWIN forecast routes (requires JWT) - **app/routes/irwin_smoke_routes.py** \u2014 IRWIN smoke routes (requires JWT) - **app/routes/irwin_smoke_detail_routes.py** \u2014 IRWIN smoke detail routes (requires JWT) - **app",
+      "turn2_tool_call": null,
+      "verdict": "\u2713 adapted (text answer)"
+    },
+    {
+      "i": 3,
+      "user": "locate the migrations directory",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/database/etl/sql/migrations"
+        }
+      },
+      "synthetic_tool_response": "scripts/migrations/\n001-initial.sql\n012-prompt-toolcall-linkage.sql",
+      "turn2_text": "The migrations directory contains 2 files: `001-initial.sql` and `012-prompt-toolcall-linkage.sql`. Let me check the current state of the database and the migration files. I'll start by checking the current schema and then read the migration files.",
+      "turn2_tool_call": {
+        "name": "Bash",
+        "arguments": {
+          "command": "source ../database/etl/venv/bin/activate && python3 db.py prod \"SELECT 'migrations' AS table, '012-prompt-toolcall-linkage.sql' AS filename, '012-prompt-toolcall-linkage.sql' AS description, '' AS content\""
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 4,
+      "user": "what tests cover the backfill",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "BACKFILL|backfill",
+          "path": "tests/test_engine_backends.py"
+        }
+      },
+      "synthetic_tool_response": "tests/migrations/test_012.py\ntests/test_backfill_jsonl.py",
+      "turn2_text": "The tests for backfill are in `tests/migrations/` and `tests/test_backfill_jsonl.py`. Let me check what's in `test_backfill_jsonl.py` to understand the coverage.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "tests/test_backfill_jsonl.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 5,
+      "user": "open the runbook",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/anvil/CLAUDE.md"
+        }
+      },
+      "synthetic_tool_response": "docs/fine_tune/PIPELINE_RUNBOOK.md\ndocs/fine_tune/WIZARD.md",
+      "turn2_text": "The runbook is at docs/fine_tune/PIPELINE_RUNBOOK.md. Let me read it to understand the current state of the fine-tuning pipeline. Then we can plan the next steps.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/anvil/docs/fine_tune/PIPELINE_RUNBOOK.md"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 6,
+      "user": "show me the dataset builder",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/components/layout/DetectionDetail.tsx"
+        }
+      },
+      "synthetic_tool_response": "scripts/fine_tune/build_v3_dataset.py\nscripts/fine_tune/build_v4_dataset.py",
+      "turn2_text": "The two files are in the same directory. Let me read them both. The `build_v4_dataset.py` file is the one we need. Let me read it.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "scripts/fine_tune/build_v4_dataset.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 7,
+      "user": "where is the database schema",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/db/etl/sql/apply_schemas.py"
+        }
+      },
+      "synthetic_tool_response": "scripts/init_db.sql\nscripts/migrations/",
+      "turn2_text": "The schema files are in `src/lib/db/etl/sql/apply_schemas.py` and `scripts/`. Let me check what's in the scripts/ directory. Let me search for the schema files there.",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "apply_schemas.py",
+          "path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 8,
+      "user": "find the README",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "README.md"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/agentMemory/README.md",
+      "turn2_text": "",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "_raw": "{\"pattern\": \"memory.*model.*context.*limit.*max.*tokens.*chat.*context.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*chat.*context.*limit.*max.*tokens.*"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 9,
+      "user": "look at the API routes",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/routes/api/irwinApiRoutes.ts"
+        }
+      },
+      "synthetic_tool_response": "app/routes/observations.py\napp/routes/lessons.py\napp/routes/prompts.py",
+      "turn2_text": "Those are the three routes you mentioned. Let me check the API routes file to see if they're included. The API routes file is in the same directory as the routes files. Let me check it.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/routes/api/irwinApiRoutes.ts"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    },
+    {
+      "i": 10,
+      "user": "show me the hooks",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/anvil/anvil/hooks/core.py"
+        }
+      },
+      "synthetic_tool_response": "hooks/user-prompt-submit.js\nhooks/post-tool-use.js\nhooks/session-start.js",
+      "turn2_text": "The hooks directory contains the following files:\n\n- **user-prompt-submit.js** \u2014 The user prompt submission hook\n- **post-tool-use.js** \u2014 The post-tool execution hook\n- **session-start.js** \u2014 The session start hook\n\nLet me check what's in each file. I'll read them all.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/anvil/anvil/hooks/core.py"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    }
+  ]
+}

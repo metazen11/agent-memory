@@ -13,6 +13,14 @@ SECRET_PATTERNS = [
     (re.compile(r"gho_[A-Za-z0-9]{36,}"), "[REDACTED:github_oauth]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED:gitlab_token]"),
     (re.compile(r"xox[bpors]-[A-Za-z0-9-]{10,}"), "[REDACTED:slack_token]"),
+    (
+        re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+"),
+        "[REDACTED:slack_webhook]",
+    ),
+    (
+        re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"),
+        "[REDACTED:discord_webhook]",
+    ),
     (re.compile(r"mem_[A-Za-z0-9_-]{32,}"), "[REDACTED:agent_memory_token]"),
     (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", re.I), "[REDACTED:bearer_token]"),
     (
@@ -24,6 +32,26 @@ SECRET_PATTERNS = [
     ),
     (re.compile(r"(?:password|passwd|pwd)\s*[=:]\s*\S+", re.I), "[REDACTED:password]"),
     (re.compile(r"(?:postgresql|mysql|mongodb)://[^\s]+@[^\s]+", re.I), "[REDACTED:connection_string]"),
+    # JWT (HS256/RS256/etc): three url-safe-base64 segments joined by dots.
+    # Caught a real expired RMS bearer leaking into datasets/v5_pilot/train.jsonl
+    # at PR #51 audit. The header segment always starts with "eyJ" because the
+    # JSON {"alg": ...} prefix is fixed. Min 10 chars per segment to avoid
+    # false-positives on short dotted identifiers.
+    (
+        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+        "[REDACTED:jwt]",
+    ),
+    # Session cookie patterns — generic 32+ char hex value bound to a
+    # session-ish key. Catches the kind of `session: <hex>` literal the
+    # auditor flagged at train.jsonl:1986 without being aggressive enough to
+    # eat git SHAs etc. (those don't have the "session" tag in front).
+    (
+        re.compile(
+            r"\b(?:session|sessionid|sess|jsessionid|sid)\b\s*[=:]\s*[a-fA-F0-9]{32,}",
+            re.I,
+        ),
+        "[REDACTED:session_cookie]",
+    ),
 ]
 
 PII_PATTERNS = [
@@ -43,3 +71,25 @@ def redact_text(text: str | None) -> str | None:
         for pattern, replacement in PII_PATTERNS:
             text = pattern.sub(replacement, text)
     return text
+
+
+def redact_json(obj):
+    """Recursively redact every string leaf of a JSON-shaped value.
+
+    Walks dicts and lists; replaces each string leaf with the result of
+    ``redact_text``. Non-string leaves (numbers, bools, None) pass through
+    unchanged. Returns a new structure; the input is not mutated.
+
+    Used by the backfill writer and any other path that ingests nested
+    JSON from external sources (tool_input, tool_response, etc.). The
+    plain ``redact_text`` is only safe for top-level strings; secrets
+    nested inside JSON (e.g. ``{"headers": {"Authorization": "Bearer ..."}}``)
+    would slip past it unless every leaf is walked.
+    """
+    if isinstance(obj, dict):
+        return {k: redact_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_json(v) for v in obj]
+    if isinstance(obj, str):
+        return redact_text(obj)
+    return obj

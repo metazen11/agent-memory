@@ -20,7 +20,14 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
-const { authHeaders } = require('./auth-header');
+// Resolve sibling modules against the script's real path, not the path node
+// was invoked with. Without this, NODE_PRESERVE_SYMLINKS=1 (or
+// --preserve-symlinks) breaks `require('./auth-header')` when the script is
+// invoked via the ~/.claude/hooks/ symlink — MODULE_NOT_FOUND at cjs loader
+// 1459, surfaces as a red hook-failure banner in Claude Code.
+const { authHeaders } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), 'auth-header')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -58,49 +65,12 @@ function output(obj) {
   process.exit(0);
 }
 
-// ── MCP usage hint ──────────────────────────────────────────
-
-const MCP_HINT = `# Agent Memory (MCP)
-
-You have access to a persistent memory system via MCP tools (server: "agent-memory").
-This stores observations from all past coding sessions — bugs found, decisions made,
-patterns discovered, files modified. Use it to avoid repeating mistakes and build on prior work.
-
-**When to search memory:**
-- Before starting unfamiliar work ("have I solved this before?")
-- When debugging ("did I hit this bug in a previous session?")
-- When making architecture decisions ("what did I decide last time?")
-- When the user asks about past work or previous sessions
-
-**3-layer search workflow (saves 10x tokens):**
-1. \`search(query)\` → Get index with IDs and titles (~50-100 tokens/result)
-2. \`timeline(anchor=ID)\` → See what happened around an interesting result
-3. \`get_observations([IDs])\` → Fetch full details ONLY for relevant IDs
-
-**Never skip to step 3.** Always filter with search first.
-
-**save_memory(text)** — Manually save important findings for future sessions.
-
-**IMPORTANT — Project scoping:**
-When using \`create_lesson\`, \`search_lessons\`, \`search\`, or \`save_memory\`, ALWAYS pass the \`project\` parameter
-with the full project path (cwd) to scope results. The current project path is provided below.`;
-
-// ── Memory visibility rules ─────────────────────────────────
-
-const MEMORY_VISIBILITY_RULES = `## Memory Visibility Rules (MUST FOLLOW)
-
-**When you use memory tools (search, get_observations, timeline, save_memory), you MUST show the user what was returned.**
-Do NOT silently consume memory results — always print a brief summary so the user knows what memories were found and used.
-
-Example format when using search results:
-> **Memory recall:** Found 3 relevant memories for "auth bug"
-> 1. [bugfix] Fixed JWT refresh token race condition (2026-02-15)
-> 2. [decision] Switched to httpOnly cookies for token storage (2026-02-14)
-> 3. [pattern] Auth errors often caused by stale Redis cache (2026-02-12)
-
-**Periodic memory check:** Every ~10 prompts in a session, proactively search memory for context related to your current task. Print what you find (or "No relevant memories found").
-
-**At session start:** Briefly mention the recent memories shown above so the user knows you have context.`;
+// ── Preamble strings moved to abilities_memory() MCP tool ─────────
+// The full operator manual (MCP_HINT, MEMORY_VISIBILITY_RULES, project
+// scoping rules, tool inventory, project counts) now lives in
+// mcp_server.py::_abilities_memory and is fetched on demand. Keeping the
+// per-session preamble tiny prevents Claude Code's <persisted-output> from
+// truncating the payload above its ~2KB preview cap.
 
 // ── Health check ────────────────────────────────────────────
 
@@ -317,105 +287,11 @@ function registerSession(sessionId, project, cwd) {
   req.end();
 }
 
-// ── Fetch active lessons ────────────────────────────
-
-function fetchLessons(project, severity, limit) {
-  return new Promise((resolve) => {
-    const params = new URLSearchParams({ active: 'true', limit: String(limit) });
-    if (project) params.set('project', project);
-    if (severity) params.set('severity', severity);
-
-    const url = new URL(`${SERVER_BASE}/api/lessons?${params}`);
-    const req = http.get({
-      headers: { ...authHeaders() },
-      hostname: url.hostname,
-      port: url.port,
-      path: `${url.pathname}${url.search}`,
-      timeout: 3000,
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => { req.destroy(); resolve([]); });
-  });
-}
-
-// ── Fetch recent observations ───────────────────────────────
-
-function fetchObservations(project) {
-  return new Promise((resolve) => {
-    const url = new URL(`${SERVER_BASE}/api/observations?project=${encodeURIComponent(project)}&limit=5`);
-    const req = http.get({
-      headers: { ...authHeaders() },
-      hostname: url.hostname,
-      port: url.port,
-      path: `${url.pathname}${url.search}`,
-      timeout: 3000,
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => { req.destroy(); resolve([]); });
-  });
-}
-
-// ── Search for high-value project context ────────────────────
-
-function searchProjectContext(project, projectName) {
-  return new Promise((resolve) => {
-    // Search for decisions, patterns, gotchas, and bugfixes — the high-value types
-    const payload = JSON.stringify({
-      query: `${projectName} architecture decisions patterns configuration`,
-      project: project,
-      type: ['decision', 'pattern', 'gotcha', 'bugfix'],
-      limit: 10,
-    });
-
-    const url = new URL(`${SERVER_BASE}/api/observations/search`);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: 'POST',
-      headers: { ...authHeaders(),
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-      },
-      timeout: 5000,
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const result = JSON.parse(data);
-          resolve(result.observations || []);
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => { req.destroy(); resolve([]); });
-    req.write(payload);
-    req.end();
-  });
-}
+// fetchLessons / fetchObservations / searchProjectContext removed —
+// the preamble no longer pushes lessons/observations/project-context on
+// session start. The model pulls them on demand via abilities_memory(),
+// recall(), search(), and search_lessons() MCP tools. Lessons themselves
+// still inject every prompt via user-prompt-submit.js (unchanged).
 
 // ── Main ────────────────────────────────────────────────────
 
@@ -430,7 +306,6 @@ const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const project = cwd;
 const projectName = path.basename(cwd);
 const sessionId = input.session_id || `session-${Date.now()}`;
-const projectCtx = `\n\n**Current project:** \`${projectName}\` (path: \`${cwd}\`)\nUse \`project="${project}"\` when calling create_lesson, search_lessons, search, or save_memory.`;
 debug(`project=${project} cwd=${cwd}`);
 
 (async () => {
@@ -457,7 +332,9 @@ debug(`project=${project} cwd=${cwd}`);
     debug('Services still not healthy after retries');
     output({
       systemMessage: SESSION_HINTS_ENABLED
-        ? `${MCP_HINT}${projectCtx}\n\n⚠ agent-memory services are not running. Run \`node install.js --start\` to start them.`
+        ? `# agent-memory degraded\n\n⚠ agent-memory services are not running for cwd \`${cwd}\`. ` +
+          `Run \`node install.js --start\` from the agent-memory repo to start them. ` +
+          `Memory tools will return errors until services come back.`
         : '⚠ agent-memory services are not running. Run `node install.js --start` to start them.',
     });
     return;
@@ -482,95 +359,34 @@ debug(`project=${project} cwd=${cwd}`);
   // Step 5: Register session (fire-and-forget)
   registerSession(sessionId, project, cwd);
 
-  // Step 6: Fetch recent observations + search context + active lessons in parallel
-  const [observations, projectContext, projectLessons, globalLessons] = await Promise.all([
-    fetchObservations(project),
-    searchProjectContext(project, projectName),
-    SESSION_HINTS_ENABLED ? fetchLessons(project, 'critical', 10) : Promise.resolve([]),
-    SESSION_HINTS_ENABLED ? fetchLessons(null, 'critical', 5) : Promise.resolve([]),
-  ]);
-
-  // Build startup notice block (if services had to be started)
+  // Step 6: Emit a minimal preamble. The session-start systemMessage used to
+  // carry the MCP usage manual + visibility rules + 10 critical lessons + 10
+  // project-knowledge observations + 5 recent observations (~15KB total),
+  // which blew past Claude Code's ~2KB <persisted-output> preview cap so the
+  // tail got file-stashed and never reached the model.
+  //
+  // Lessons still fire every turn via the user-prompt-submit hook — that's
+  // the load-bearing surface. The operator manual + project counts + tool
+  // inventory moved to the `abilities_memory()` MCP tool, which the model
+  // can pull on demand (and which renders LIVE from list_tools() + DB
+  // counts, so it never drifts).
   const noticeBlock = startupNotices.length > 0
     ? `**Startup:** ${startupNotices.join(' → ')}\n\n`
     : '';
 
-  // Deduplicate global + project lessons by id
-  const lessonMap = new Map();
-  const rawLessons = [
-    ...(Array.isArray(globalLessons) ? globalLessons : []),
-    ...(Array.isArray(projectLessons) ? projectLessons : []),
-  ];
-  for (const l of rawLessons) {
-    if (l?.id) lessonMap.set(l.id, l);
-  }
-  const allLessons = [...lessonMap.values()];
-
-  // Format lessons block
-  let lessonsBlock = '';
-  if (allLessons.length > 0) {
-    const severityIcon = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
-    const lessonLines = allLessons.map((l, i) => {
-      const icon = severityIcon[l.severity] || 'LESSON';
-      const scope = l.project_name ? `[${l.project_name}]` : '[global]';
-      return `  ${i + 1}. ${icon} ${scope}: ${l.rule}`;
-    });
-    lessonsBlock = `## Active Lessons\n\nThese lessons were learned from past mistakes. Follow them.\n\n${lessonLines.join('\n')}\n\n`;
-    debug(`Injecting ${allLessons.length} lessons`);
-  }
-
-  const hasObservations = Array.isArray(observations) && observations.length > 0;
-  const hasContext = Array.isArray(projectContext) && projectContext.length > 0;
-
-  if (!hasObservations && !hasContext && allLessons.length === 0) {
-    debug('No recent observations, context, or lessons — injecting MCP hint only');
-    output({
-      systemMessage: SESSION_HINTS_ENABLED
-        ? `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}`
-        : `${noticeBlock}agent-memory is online. Session-start hint injection is disabled (\`AGENT_MEMORY_SESSION_HINTS_ENABLED=0\`).`,
-    });
-    return;
-  }
-
-  // Format recent activity (chronological: oldest first, titles only)
-  let recentCtx = '';
-  if (hasObservations) {
-    const sorted = observations.reverse();
-    const lines = sorted.map((obs, i) => {
-      const date = obs.created_at ? obs.created_at.replace('T', ' ').slice(0, 19) : '';
-      const type = obs.type ? `[${obs.type}]` : '';
-      return `  ${i + 1}. ${date} ${type} ${obs.title}`;
-    });
-    recentCtx = `## Recent Activity\n\n${lines.join('\n')}\n\n`;
-  }
-
-  // Format project knowledge (rich — includes narratives and facts)
-  let knowledgeCtx = '';
-  if (hasContext) {
-    // Deduplicate against recent observations
-    const recentIds = new Set(hasObservations ? observations.map(o => o.id) : []);
-    const unique = projectContext.filter(o => !recentIds.has(o.id));
-
-    if (unique.length > 0) {
-      const lines = unique.map((obs, i) => {
-        const type = obs.type ? `[${obs.type}]` : '';
-        let entry = `  ${i + 1}. ${type} **${obs.title}**`;
-        if (obs.narrative) entry += `\n     ${obs.narrative}`;
-        if (obs.facts && Array.isArray(obs.facts)) {
-          const facts = typeof obs.facts === 'string' ? JSON.parse(obs.facts) : obs.facts;
-          if (facts.length > 0) {
-            entry += '\n     ' + facts.slice(0, 3).map(f => `• ${f}`).join('\n     ');
-          }
-        }
-        return entry;
-      });
-      knowledgeCtx = `## Project Knowledge (from past sessions)\n\nKey decisions, patterns, and gotchas for "${projectName}":\n\n${lines.join('\n\n')}\n\n`;
-    }
-  }
-
-  const msg = SESSION_HINTS_ENABLED
-    ? `${noticeBlock}${MCP_HINT}${projectCtx}\n\n${MEMORY_VISIBILITY_RULES}\n\n${lessonsBlock}${knowledgeCtx}${recentCtx}`
+  const stub = SESSION_HINTS_ENABLED
+    ? (
+        `${noticeBlock}` +
+        `# agent-memory online\n` +
+        `Project: \`${projectName}\` (cwd: \`${cwd}\`)\n\n` +
+        `Pass \`project="${project}"\` on every memory tool call. ` +
+        `Active CRITICAL lessons are injected automatically on every prompt ` +
+        `under \`<agent-memory>\` — you do not need to fetch them.\n\n` +
+        `For the full operator manual + live tool inventory + project counts, ` +
+        `call \`abilities_memory(project="${project}")\` once per session.`
+      )
     : `${noticeBlock}agent-memory is online. Session-start hint injection is disabled (\`AGENT_MEMORY_SESSION_HINTS_ENABLED=0\`).`;
-  debug(`Injecting hint=${SESSION_HINTS_ENABLED} + ${allLessons.length} lessons + ${hasContext ? projectContext.length : 0} knowledge + ${hasObservations ? observations.length : 0} recent`);
-  output({ systemMessage: msg });
+
+  debug(`Injecting stub preamble (${stub.length} chars)`);
+  output({ systemMessage: stub });
 })();

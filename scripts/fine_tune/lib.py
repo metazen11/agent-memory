@@ -75,6 +75,18 @@ MODELS: dict[str, ModelSpec] = {
         family="qwen25",
         chat_template_style="qwen25-tools",
     ),
+    "qwen3-4b": ModelSpec(
+        slug="qwen3-4b",
+        hf_repo="Qwen/Qwen3-4B",
+        family="qwen3",
+        chat_template_style="qwen3-tools",
+    ),
+    "qwen3-8b": ModelSpec(
+        slug="qwen3-8b",
+        hf_repo="Qwen/Qwen3-8B",
+        family="qwen3",
+        chat_template_style="qwen3-tools",
+    ),
 }
 
 

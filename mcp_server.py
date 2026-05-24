@@ -195,15 +195,61 @@ server = Server("agent-memory")
 async def list_tools():
     return [
         Tool(
+            name="abilities_memory",
+            description=(
+                "Live operator manual for the agent-memory MCP server. "
+                "Returns a single text block with: how-to-use, project-scoping "
+                "rules, memory-visibility rules, lesson auto-inject behavior, "
+                "and a dynamically-rendered inventory of every tool this "
+                "server exposes (including this one). Pass `project=<cwd>` "
+                "for project-scoped lesson + observation counts. Call this "
+                "once per session if you want the full cheat sheet — most of "
+                "the time you only need `recall(query, project, k=5)`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Optional. Project path (full cwd) for scoped counts."},
+                },
+            },
+        ),
+        Tool(
             name="memory_search_guide",
             description=(
-                "3-LAYER WORKFLOW (ALWAYS FOLLOW):\n"
-                "1. search(query) → Get index with IDs (~50-100 tokens/result)\n"
-                "2. timeline(anchor=ID) → Get context around interesting results\n"
-                "3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs\n"
-                "NEVER fetch full details without filtering first. 10x token savings."
+                "PREFERRED: recall(query, project, k=5) — one call returns top-k full observations.\n"
+                "Use the 3-step primitives only when you need to triage many results:\n"
+                "  1. search(query) → IDs+titles index\n"
+                "  2. timeline(anchor=ID) → session context\n"
+                "  3. get_observations([IDs]) → full bodies"
             ),
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="recall",
+            description=(
+                "PREFERRED entry point for memory lookup. One call: ranks via "
+                "search() + hydrates full bodies via get_observations(). Use "
+                "this for the common case 'what do I know about X?' instead "
+                "of the 3-step search→timeline→get_observations dance. "
+                "Returns up to k (default 5, max 20) full observations, "
+                "ranked by hybrid vector+FTS+keyword RRF with recency boost. "
+                "Use the 3-step primitives only when you need to triage a "
+                "large result set before hydrating, or to walk session "
+                "context via timeline."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language query — same shape as search()."},
+                    "k": {"type": "integer", "description": "How many full observations to return (default 5, max 20).", "default": 5},
+                    "project": {"type": "string", "description": "Filter by project name or path."},
+                    "type": {"type": "string", "description": "Filter by observation type: discovery|bugfix|feature|refactor|decision|change|pattern|gotcha"},
+                    "dateStart": {"type": "string", "description": "Filter from date (ISO, e.g. 2026-02-01)."},
+                    "dateEnd": {"type": "string", "description": "Filter until date (ISO)."},
+                },
+                "required": ["query"],
+                "additionalProperties": True,
+            },
         ),
         Tool(
             name="search",
@@ -351,16 +397,25 @@ async def list_tools():
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     try:
+        if name == "abilities_memory":
+            pool = await get_pool()
+            result = await _abilities_memory(pool, arguments)
+            return _annotate_success_content_with_hint(result)
         if name == "memory_search_guide":
             return [TextContent(type="text", text=(
-                "3-LAYER WORKFLOW (ALWAYS FOLLOW):\n"
-                "1. search(query) → Get index with IDs (~50-100 tokens/result)\n"
-                "2. timeline(anchor=ID) → Get context around interesting results\n"
-                "3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs\n"
-                "NEVER fetch full details without filtering first. 10x token savings."
+                "PREFERRED:\n"
+                "  recall(query, project=..., k=5) → top-k full observations in one call.\n"
+                "  Use this for almost all memory lookups.\n\n"
+                "ADVANCED (3-step) — only when triaging a large result set:\n"
+                "  1. search(query) → index with IDs (~50-100 tokens/result)\n"
+                "  2. timeline(anchor=ID) → session context around a result\n"
+                "  3. get_observations([IDs]) → full bodies for chosen IDs"
             ))]
         pool = await get_pool()
-        if name == "search":
+        if name == "recall":
+            result = await _recall(pool, arguments)
+            return _annotate_success_content_with_hint(result)
+        elif name == "search":
             result = await _search(pool, arguments)
             return _annotate_success_content_with_hint(result)
         elif name == "get_observations":
@@ -578,6 +633,63 @@ async def _get_observations(pool, args):
             })
 
         return [TextContent(type="text", text=json.dumps(results, indent=2) + VISIBILITY_REMINDER)]
+
+
+async def _recall(pool, args):
+    """One-shot recall: search → top-k → hydrate to full observations.
+
+    Composes _search (RRF + recency-boosted ranking) with _get_observations
+    (full bodies). Replaces the 3-tool dance for the common case where the
+    caller just wants "the best matching memories, fully expanded."
+
+    Accepts the same filters as search (query, project, type, dateStart,
+    dateEnd) plus k (default 5, max 20). Backwards-compatible: search,
+    timeline, and get_observations remain available unchanged.
+    """
+    query = args.get("query")
+    if not query:
+        return [TextContent(type="text", text=_json_error_payload("query is required", code="INVALID_ARGUMENT"))]
+
+    k = min(max(int(args.get("k", 5)), 1), 20)
+
+    # Reuse _search's ranking. limit=k so we don't hydrate more than asked.
+    search_args = {key: args[key] for key in ("query", "project", "type", "obs_type", "dateStart", "dateEnd") if key in args}
+    search_args["limit"] = k
+    search_content = await _search(pool, search_args)
+
+    # _search returns one TextContent whose text is JSON + VISIBILITY_REMINDER.
+    # Strip the reminder, parse the JSON, take the ids.
+    raw = search_content[0].text
+    if VISIBILITY_REMINDER in raw:
+        raw = raw.split(VISIBILITY_REMINDER, 1)[0]
+    try:
+        ranked = json.loads(raw)
+    except json.JSONDecodeError:
+        return [TextContent(type="text", text=_json_error_payload("search returned non-JSON", code="TOOL_EXCEPTION"))]
+
+    if not ranked:
+        return [TextContent(type="text", text=json.dumps([], indent=2) + VISIBILITY_REMINDER)]
+
+    ids = [r["id"] for r in ranked]
+    score_by_id = {r["id"]: r.get("score") for r in ranked}
+
+    # Hydrate via _get_observations, then re-attach score + preserve search rank order.
+    full_content = await _get_observations(pool, {"ids": ids})
+    full_raw = full_content[0].text
+    if VISIBILITY_REMINDER in full_raw:
+        full_raw = full_raw.split(VISIBILITY_REMINDER, 1)[0]
+    full_rows = json.loads(full_raw)
+
+    by_id = {row["id"]: row for row in full_rows}
+    merged = []
+    for oid in ids:
+        row = by_id.get(oid)
+        if not row:
+            continue
+        row["score"] = score_by_id.get(oid)
+        merged.append(row)
+
+    return [TextContent(type="text", text=json.dumps(merged, indent=2) + VISIBILITY_REMINDER)]
 
 
 async def _timeline(pool, args):
@@ -898,6 +1010,145 @@ async def _export_training_dataset(pool, args):
 async def _training_export_guide():
     payload = build_training_export_guide()
     return [TextContent(type="text", text=json.dumps(payload, indent=2) + VISIBILITY_REMINDER)]
+
+
+# ── abilities_memory: live operator manual ─────────────────
+
+# Static prose (behavior rules) — the parts that don't change tool-to-tool.
+# Tool inventory is rendered LIVE from list_tools() so this never lies after
+# someone adds/renames a tool.
+_ABILITIES_MEMORY_PROLOGUE = """# agent-memory — operator manual
+
+Persistent cross-session memory: observations (bugs, decisions, patterns,
+gotchas), lessons (CRITICAL rules learned from past mistakes), and tool-call
+history.
+
+## How to use this server
+
+**Default path:** `recall(query, project=<cwd>, k=5)` returns top-k full
+observations in one call (hybrid vector+FTS+keyword RRF with recency boost).
+Use it for "have I seen X before?", "what did I decide about Y?", "how did I
+fix Z?".
+
+**Advanced 3-step (only when triaging a large result set):**
+`search(query)` → IDs+titles → `timeline(anchor=ID)` for session context →
+`get_observations([IDs])` for full bodies. Most lookups don't need this.
+
+## Project scoping (REQUIRED)
+
+Every read/write tool accepts a `project` parameter. **Always pass the
+current cwd verbatim as `project`.** Without it, results leak across
+projects or get attached to an "unknown" bucket.
+
+The server applies a basename-fallback when matching `project` against
+`mem_projects.full_path`, so moved checkouts (e.g. `~/Dropbox/_CODING/X →
+~/_CODING/X`) still resolve to the same row.
+
+## Memory visibility (MUST FOLLOW)
+
+When you use memory tools, show the user what you found. Do not silently
+consume results — format as a visible `Memory recall:` block:
+
+> **Memory recall:** Found 3 relevant memories for "auth bug"
+> 1. [bugfix] Fixed JWT refresh token race condition (2026-02-15)
+> 2. [decision] Switched to httpOnly cookies for token storage (2026-02-14)
+> 3. [pattern] Auth errors often caused by stale Redis cache (2026-02-12)
+
+Periodic memory check: every ~10 prompts in a long session, run a `recall()`
+against the current task and report what you find.
+
+## Lessons fire automatically — you do NOT fetch them
+
+The `user-prompt-submit` hook injects active CRITICAL lessons (project-scoped
++ truly-global) at the top of every user prompt under `<agent-memory>...
+</agent-memory>`. You see them inline. Do not call `search_lessons` just to
+re-read what's already in your context.
+
+If a lesson has a paired enforcement artifact (PreToolUse hook, runtime check,
+CI gate), it should be deactivated in the DB — the system enforces, not the
+model. Tell the user when you suspect a lesson has been superseded.
+"""
+
+
+async def _abilities_memory(pool, args=None):
+    """Operator manual for the agent-memory MCP server.
+
+    Rendered live so it never drifts from reality:
+      • Tool inventory comes from list_tools() — adding/renaming a tool
+        automatically updates the manual.
+      • Counts (active lessons, observations) come from the DB at call time.
+      • `project` arg (optional) scopes the counts to a specific cwd.
+    """
+    args = args or {}
+    project = args.get("project")
+
+    # ── Live tool inventory ──
+    tools = await list_tools()
+    tool_lines = []
+    for t in tools:
+        # Truncate descriptions to one line for the manual — full description
+        # is still available via the tool list itself.
+        desc = (t.description or "").strip().split("\n")[0]
+        if len(desc) > 220:
+            desc = desc[:217] + "…"
+        # Render required params if the input schema declares any.
+        req = []
+        try:
+            schema = t.inputSchema or {}
+            req = list(schema.get("required") or [])
+        except Exception:
+            pass
+        sig = f"({', '.join(req)})" if req else "()"
+        tool_lines.append(f"- `{t.name}{sig}` — {desc}")
+    tools_block = "## Available tools (live)\n\n" + "\n".join(tool_lines) + "\n"
+
+    # ── Live counts ──
+    stats_lines = []
+    async with pool.acquire() as conn:
+        # Active CRITICAL lessons for this project (path-prefix + basename +
+        # truly-global) — mirrors the server-side filter in /api/lessons.
+        if project:
+            from pathlib import Path as _P
+            basename = _P(project).name or project
+            lesson_count = await conn.fetchval("""
+                SELECT count(*) FROM mem_lessons l
+                LEFT JOIN mem_projects p ON p.id = l.project_id
+                WHERE l.active = true AND l.severity = 'critical'
+                  AND (l.project_id IS NULL
+                       OR p.full_path = $1
+                       OR p.full_path LIKE $2 || '/%'
+                       OR $3 LIKE p.full_path || '/%'
+                       OR p.name = $4)
+            """, project, project, project, basename)
+            obs_count = await conn.fetchval("""
+                SELECT count(*) FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE p.full_path = $1
+                   OR p.full_path LIKE $2 || '/%'
+                   OR $3 LIKE p.full_path || '/%'
+                   OR p.name = $4
+            """, project, project, project, basename)
+            stats_lines.append(f"Project: `{project}`")
+            stats_lines.append(f"Active CRITICAL lessons in scope: {lesson_count}")
+            stats_lines.append(f"Observations recorded for this project: {obs_count}")
+        else:
+            lesson_count = await conn.fetchval(
+                "SELECT count(*) FROM mem_lessons WHERE active=true AND severity='critical'"
+            )
+            obs_count = await conn.fetchval("SELECT count(*) FROM mem_observations")
+            stats_lines.append("Project: <unscoped — pass `project` arg for project-scoped counts>")
+            stats_lines.append(f"Active CRITICAL lessons (all projects): {lesson_count}")
+            stats_lines.append(f"Observations (all projects): {obs_count}")
+    stats_block = "## Current state (live)\n\n" + "\n".join(stats_lines) + "\n"
+
+    body = (
+        _ABILITIES_MEMORY_PROLOGUE
+        + "\n"
+        + stats_block
+        + "\n"
+        + tools_block
+    )
+    return [TextContent(type="text", text=body)]
 
 
 # ── Main ──────────────────────────────────────────────────────

@@ -1,0 +1,212 @@
+{
+  "model": "v1",
+  "n_scenarios": 10,
+  "n_no_turn1_tool_call": 0,
+  "n_empty_turn2_response": 0,
+  "n_regression_same_call": 1,
+  "n_adapted_new_call": 8,
+  "n_adapted_text_answer": 1,
+  "adaptation_rate_of_eligible": 0.9,
+  "trials": [
+    {
+      "i": 1,
+      "user": "find the fire-map codebase",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/popups/firmsPopup.ts"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/fire-map.wfca.com",
+      "turn2_text": "The codebase is at `/Users/mz/_CODING/fire-map.wfca.com`. Let me check if the FIRMS popup code exists there. I'll search for it in the source directory.",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "FIRMSPopup|firmsPopup",
+          "path": "/Users/mz/_CODING/fire-map.wfca.com"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 2,
+      "user": "show me where auth is wired up",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/auth/"
+        }
+      },
+      "synthetic_tool_response": "app/auth.py\napp/middleware/auth_middleware.py\napp/api/login.py",
+      "turn2_text": "Those are the main files. Let me check what's wired up in the app. I'll search for auth-related imports and middleware registration. Let me start by reading the files you mentioned and then search for auth-related imports. Then I'll check the middleware stack.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/auth/auth.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 3,
+      "user": "locate the migrations directory",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/migrations"
+        }
+      },
+      "synthetic_tool_response": "scripts/migrations/\n001-initial.sql\n012-prompt-toolcall-linkage.sql",
+      "turn2_text": "The migrations directory contains 2 files: `001-initial.sql` and `012-prompt-toolcall-linkage.sql`. Let me check what's in them. I'll read both files to understand their contents.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/migrations/001-initial.sql"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 4,
+      "user": "what tests cover the backfill",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "BACKFILL.*test",
+          "path": "tests/test_engine_backends.py"
+        }
+      },
+      "synthetic_tool_response": "tests/migrations/test_012.py\ntests/test_backfill_jsonl.py",
+      "turn2_text": "The tests covering the backfill feature are in two files:\n\n1. **tests/migrations/test_012.py** \u2014 tests the migration 012 implementation\n2. **tests/test_backfill_jsonl.py** \u2014 tests the backfill feature itself\n\nThe migration test covers the actual migration implementation, while the backfill test verifies the feature works as expected. Both are important \u2014 the migration test ensures the migration code is correct, and the backfill test ensures the feature itself works. Both are passing. Let me check the current state of the feature.",
+      "turn2_tool_call": null,
+      "verdict": "\u2713 adapted (text answer)"
+    },
+    {
+      "i": 5,
+      "user": "open the runbook",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/CLAUDE.md"
+        }
+      },
+      "synthetic_tool_response": "docs/fine_tune/PIPELINE_RUNBOOK.md\ndocs/fine_tune/WIZARD.md",
+      "turn2_text": "The runbook is at docs/fine_tune/PIPELINE_RUNBOOK.md. Let me read it to understand the current state of the fine-tuning pipeline. Then I'll plan the next steps. Let me read the runbook.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/docs/fine_tune/PIPELINE_RUNBOOK.md"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 6,
+      "user": "show me the dataset builder",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/components/layout/DetectionDetail.tsx"
+        }
+      },
+      "synthetic_tool_response": "scripts/fine_tune/build_v3_dataset.py\nscripts/fine_tune/build_v4_dataset.py",
+      "turn2_text": "The two files you're looking for are in the `scripts/fine_tune` directory. Let me check their contents. I'll read both files and show you the relevant parts.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "scripts/fine_tune/build_v3_dataset.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 7,
+      "user": "where is the database schema",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/db/etl/sql/apply_schemas.py"
+        }
+      },
+      "synthetic_tool_response": "scripts/init_db.sql\nscripts/migrations/",
+      "turn2_text": "The schema files are in `scripts/` \u2014 `init_db.sql` is the main one, and `migrations/` contains numbered schema files. Let me check the current state of the database and what needs to be applied. I'll read the `apply_schemas.py` file to see what's already done and what's pending. Then I'll run the migrations. Let me start by reading the `apply_schemas.py` file.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/lib/db/etl/sql/apply_schemas.py"
+        }
+      },
+      "verdict": "\u2717 REGRESSION (re-emitted identical tool_call)"
+    },
+    {
+      "i": 8,
+      "user": "find the README",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/README.md"
+        }
+      },
+      "synthetic_tool_response": "/Users/mz/_CODING/agentMemory/README.md",
+      "turn2_text": "The README is in the agentMemory directory, not the wfca-app directory. Let me check the wfca-app README instead. I'll search for the README in the wfca-app directory.",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "README",
+          "path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 9,
+      "user": "look at the API routes",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "api route",
+          "path": "src/routes/api/"
+        }
+      },
+      "synthetic_tool_response": "app/routes/observations.py\napp/routes/lessons.py\napp/routes/prompts.py",
+      "turn2_text": "The API routes are in three files: observations.py, lessons.py, and prompts.py. Let me check what's in each. I'll start with observations.py.",
+      "turn2_tool_call": {
+        "name": "Grep",
+        "arguments": {
+          "pattern": "api route",
+          "path": "app/routes/observations.py"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    },
+    {
+      "i": 10,
+      "user": "show me the hooks",
+      "turn1_text": "",
+      "turn1_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/hooks/useSatelliteSnapshot.ts"
+        }
+      },
+      "synthetic_tool_response": "hooks/user-prompt-submit.js\nhooks/post-tool-use.js\nhooks/session-start.js",
+      "turn2_text": "All the hooks are in the same directory. Let me check their contents. I'll start with the most recent one.",
+      "turn2_tool_call": {
+        "name": "Read",
+        "arguments": {
+          "file_path": "/Users/<user>/Dropbox/_CODING/fire-map.wfca.com/wfca-app/src/hooks/session-start.js"
+        }
+      },
+      "verdict": "\u2713 adapted (different tool_call)"
+    }
+  ]
+}

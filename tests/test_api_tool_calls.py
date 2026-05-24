@@ -87,3 +87,92 @@ async def test_export_dataset_preference_pairs(client, test_project, test_prefix
     pair = next((item for item in payload["items"] if item["prompt_text"] == prompt), None)
     assert pair is not None
     assert pair["chosen"]["reward"] >= pair["rejected"]["reward"]
+
+
+# Synthetic secret strings used by the redaction tests below. These match
+# SECRET_PATTERNS in app/redact.py — the OpenAI-style key is 51 chars to
+# clear the 48+ minimum length, the bearer token is 30 chars to clear the
+# 20+ minimum. Keep these inline so the test is self-documenting and
+# doesn't drift if patterns change.
+_FAKE_OPENAI_KEY = "sk-" + "A" * 48
+_FAKE_BEARER = "Bearer " + "B" * 30
+
+
+@pytest.mark.asyncio
+async def test_export_jsonl_redacts_secrets(client, test_project, test_prefix):
+    """Regression: /api/tool-calls/export must redact secrets in tool_input,
+    tool_response_preview, and prompt_text before writing JSONL output.
+
+    The queue endpoint normalizes paths but does NOT redact, so raw secrets
+    posted through /api/queue land in mem_tool_calls verbatim. The export
+    boundary is the last line of defense before secrets leave the system in
+    a fine-tuning dataset.
+    """
+    session_id = f"{test_prefix}-export-redact-jsonl"
+    await client.post(
+        "/api/queue",
+        json={
+            "session_id": session_id,
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "echo ok",
+                "headers": {"Authorization": _FAKE_BEARER},
+            },
+            "tool_response_preview": f"response with {_FAKE_OPENAI_KEY} embedded",
+            "cwd": test_project,
+            "last_user_message": f"prompt mentioning {_FAKE_OPENAI_KEY}",
+            "source_system": "tests",
+            "source_mode": "integration",
+            "source_agent": "pytest",
+        },
+    )
+
+    resp = await client.get(
+        "/api/tool-calls/export",
+        params={"project": test_project, "format": "jsonl"},
+    )
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert _FAKE_OPENAI_KEY not in body, "OpenAI-style key leaked into JSONL export"
+    assert _FAKE_BEARER not in body, "Bearer token leaked into JSONL export"
+    assert "[REDACTED:openai_key]" in body
+    assert "[REDACTED:bearer_token]" in body
+
+
+@pytest.mark.asyncio
+async def test_export_dataset_redacts_secrets(client, test_project, test_prefix):
+    """Regression: /api/tool-calls/export/dataset must redact secrets across
+    all dataset_type variants (sft, trajectory, preference) since they all
+    flow through _base_record in app/dataset_exports.py.
+    """
+    session_id = f"{test_prefix}-export-redact-dataset"
+    await client.post(
+        "/api/queue",
+        json={
+            "session_id": session_id,
+            "tool_name": "Bash",
+            "tool_input": {"token": _FAKE_OPENAI_KEY},
+            "tool_response_preview": f"leaked {_FAKE_BEARER} in response",
+            "cwd": test_project,
+            "last_user_message": "harmless prompt",
+            "source_system": "tests",
+            "source_mode": "integration",
+            "source_agent": "pytest",
+        },
+    )
+
+    resp = await client.get(
+        "/api/tool-calls/export/dataset",
+        params={
+            "dataset_type": "sft",
+            "project": test_project,
+            "include_errors": "true",
+            "limit": 200,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert _FAKE_OPENAI_KEY not in body, "OpenAI-style key leaked into SFT dataset export"
+    assert _FAKE_BEARER not in body, "Bearer token leaked into SFT dataset export"

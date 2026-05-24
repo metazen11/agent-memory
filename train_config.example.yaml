@@ -1,0 +1,72 @@
+# Example train_config.yaml for scripts/fine_tune/wizard.py
+#
+# Generate a real one interactively:
+#     .venv-finetune/bin/python scripts/fine_tune/wizard.py
+#
+# Or run non-interactively from this file:
+#     .venv-finetune/bin/python scripts/fine_tune/wizard.py --config train_config.yaml --no-tui
+#
+# Schema is documented and validated by wizard.py --print-config-schema.
+
+# ---- base model ---------------------------------------------------------
+# HF repo id ("Qwen/Qwen3-4B") or a local path to a snapshot.
+# Known slugs the wizard auto-resolves: qwen3-4b, qwen3-8b, qwen3.5-9b.
+base_model: Qwen/Qwen3-4B
+# Pin a specific HF revision SHA when reproducibility matters.
+# null = use the default branch (whatever is current). Wizard records the
+# resolved SHA in models/base/<slug>/REVISION.txt either way.
+base_revision: null
+
+# ---- dataset ------------------------------------------------------------
+dataset:
+  # Where rows come from. "agent_memory_db" runs build_v3_dataset.py against
+  # the live Postgres; "jsonl_corpus" reuses a prebuilt corpus on disk.
+  source: agent_memory_db
+  # Inclusive date range for source rows. "today" is resolved at run time.
+  date_range: [2026-03-29, today]
+  # Project tags to oversample. Each tagged row is sampled at 2x natural
+  # rate, capped at 25% of the training set per project.
+  projects:
+    - agent-memory
+    - fire-map
+    - daily-dispatch
+    - anvil
+  # The 8 V3_PLAN.md §5 fixes. Default state matches V3_PLAN §5 defaults.
+  filters:
+    stop_after_tool_call: true        # fix #1 — truncate assistant turn at </tool_call>
+    text_synthesis_oversample: true   # fix #2 — 2x tool_response -> text-answer rows
+    negative_reemit_pairs: false      # fix #3 — DPO pairs deferred to v3.1
+    subagent_filter: true             # fix #4 — drop subagents/agent-*.jsonl
+    off_distribution_filter: true     # fix #5 — drop gh issue create etc. on first turn
+    project_tagged_oversample: true   # fix #6 — 2x rows tagged with a project
+    in_args_repetition_cap: true      # fix #7 — cap arg-value length + repetition
+    vision_row_filter: true           # fix #8 — drop image rows
+
+# ---- output -------------------------------------------------------------
+output:
+  # LoRA adapter dir. Defaults to models/lora/<base-slug>-toolcalls-v3-lora/
+  lora_dir: models/lora/qwen3-4b-toolcalls-v3-lora/
+  # GGUF quantisations to produce. Skipped on platforms without llama.cpp.
+  quants:
+    - Q4_K_M
+    - Q6_K
+  # Publisher dir under ~/.lmstudio/models/<publisher>/ for LM Studio install.
+  lm_studio_publisher: mz
+
+# ---- training -----------------------------------------------------------
+# Mirrors V3_PLAN.md §8. Wizard passes these as env vars to run_train_lora.
+training:
+  epochs: 1.0
+  lr: 1.5e-4
+  max_length: 4096
+  grad_accum: 8
+  # Override the LoRA rank/alpha. null = use script defaults (r=32, alpha=64).
+  lora_r: null
+  lora_alpha: null
+
+# ---- run type -----------------------------------------------------------
+# tiny_smoke  — build dataset, run tiny train (~30min), tiny eval
+# full        — tiny_smoke + full train + full eval + GGUF + LM Studio install
+# dataset_only — build dataset + audit, no training
+# eval_only   — skip everything except validation against an existing GGUF
+run_type: tiny_smoke
