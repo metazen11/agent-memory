@@ -1,5 +1,115 @@
 # Handoff — agent-memory
 
+## Current Status (2026-07-07) — FIRST HF-JOBS FINE-TUNE TRAINING; GGUF+ANVIL TEST PENDING
+
+**Milestone:** the first WFCA-owned fine-tune is TRAINING on Hugging Face Jobs
+(cloud GPU, independent of the Mac) — this is the run that finally got past the
+Mac unified-memory thrash that killed every prior local attempt.
+
+### The live thing — training job
+- **Job ID:** `6a4d815cf861d2801c56939c` (HF Jobs, flavor `l4x1`, personal
+  `WFCAMZ` namespace/billing, ~$0.30–0.60).
+- **Base:** `Qwen/Qwen3-4B` → **output (PRIVATE):** `WFCA/qwen3-4b-toolcalls-v5-pilot`.
+- **Dataset (PRIVATE):** `WFCA/agentmem-toolcalls-v5-pilot` (5000 rows, v5-pilot).
+- **Last seen:** RUNNING, loss 2.58 → 1.62, masking healthy (4750 train / 250
+  valid, ~103 predicted tok/sample), 33M LoRA params (0.81%). Adapter NOT yet
+  pushed (repo still just README) — job in progress.
+- **Monitor commands (resume here):**
+  ```
+  hf jobs ps -a                                 # status
+  hf jobs logs 6a4d815cf861d2801c56939c         # training logs
+  ```
+  Adapter lands at WFCA/qwen3-4b-toolcalls-v5-pilot on SUCCESS.
+
+### WHAT'S LEFT (the pickup point) — AC5 + AC7 on issue #55
+Once the job hits SUCCESS + adapter is pushed:
+1. **AC5 — GGUF + test the model(s) in ANVIL** (user's stated goal, confirmed
+   "we want to test the models on Anvil when we get back"): pull adapter →
+   `scripts/fine_tune/merge_checkpoint.py` → GGUF Q4_K_M → `verify_gguf.py` →
+   **load in Anvil and confirm a real tool-call answers.** Test in **Anvil, NOT
+   LM Studio.** User said "model**s**" (plural) — compare the new v5-pilot
+   against prior local GGUFs for a real before/after read:
+     - `~/.lmstudio/hub/models/mz/qwen3.5-9b-toolcalls-q4km.gguf`
+     - `~/.cache/lm-studio/models/qwen25-toolcalls/qwen2.5-3b-toolcalls-q4km.gguf`
+   (both already on disk). Same tool-call prompts across all three in Anvil.
+2. **AC7 — reconcile** code+docs to `dev` via /reconcile after audit PASS.
+
+### Pipeline / process state (issue metazen11/agent-memory#55)
+This work is ON-PROCESS after a mid-session correction (had gone off-process,
+near-launched a paid job on self-certification; user stopped it → we built the
+full pipeline). Status of the 7 ACs:
+- AC1 private artifacts ✅ | AC2 code review ✅ (fixed H1 bare `--secrets
+  HF_TOKEN` + H2 write-scope probe) | AC6 enforcement hook ✅
+- **AC6 hook = `hf-launch-gate`** (`~/_CODING/hooks/hf-launch-gate/`): refuses
+  paid `hf jobs`/`--launch` without issue+audit. WIRED in ~/.claude/settings.json
+  — **activates on next Claude Code restart.** Override: `--force-anyway` or
+  `HF_LAUNCH_APPROVED=<issue#>`. This is why launches use `HF_LAUNCH_APPROVED=55`.
+- AC3/AC4 (job SUCCESS + adapter) 🟡 in progress | AC5/AC7 ⛔ pending.
+- `aa_auditor` gave PREP PASS (AC1/2/6). gh active acct must be `metazen11`
+  for this repo (`gh auth switch --user metazen11`; wfca-mz is not a collaborator).
+
+### Key facts learned this session
+- **HF Jobs needs PRE-PAID credits** (separate from any org plan). WFCAMZ had $0
+  → 402; user added $10 to personal WFCAMZ. WFCA org also $0 (`canPay:False`).
+  `--namespace WFCA` correctly routes org billing (param `JOB_NAMESPACE=WFCA` in
+  run_hf_job.sh) but org has no credits, so we bill personal for now.
+- HF labels reject `:` — use `run-<tag>` not `run:<tag>`.
+- The ≤6GB local training cap is DELETED (see memory [[project_hf_jobs_training]]).
+
+### Parallel work (plans — NOT built, awaiting review)
+- **Dataset factory plan** (generate+curate, APIGen-style): `docs/runbooks/methodology-dataset.md`
+  Part 3 + `docs/plans/dataset-factory.md`. Quality gate ran → verdict
+  **`needs_refinement`** (strong, safe-by-construction, but NOT approved).
+  Full gate output: `plans/dataset-factory-quality-gate.json`.
+
+  **MUST address before Phase 3 (first data write) — action list:**
+  1. **OQ-1 (confirmed real, blocking):** the lessons filter
+     `lesson_min_severity:"high"` matches **0 rows** — DB severities are
+     critical/warning/info. Fix the buggy `"high"` literal in the Part-1 config
+     AND add a fail-closed abort on a 0-row lesson set. **USER DECISION NEEDED:**
+     target **31 rows (critical only)** or **50 (critical+warning)**?
+  2. **Two overstated "reuse" claims** (both net-new work, not reuse):
+     - the git-hash fabrication check is *documented but never implemented*
+       (`GIT_HASH_RE` at `audit_dataset.py:57` is unused, no git call) → reclassify
+       as new work + add a test.
+     - **redaction is misattributed** to `v5_schema.py` (it has none; lives in
+       `build_v5_pilot_dataset.py` via `app/redact.py`). DANGEROUS: the GENERATE
+       inlet bypasses the DB source query and would **skip redaction** — the exact
+       secret-leak path this repo was burned by before. Add an explicit
+       `redact_json` route + a 0-secrets gate for Inlet B.
+  3. **OQ-2:** decide registry scope (Claude/Anvil/agent-memory unioned?) and set
+     a hard **Phase-2 registry-coverage floor** (how many of the 97 distinct tools
+     must have registered JSON schemas).
+  4. **Blend cap must be an EXACT checkable number** — the `~35%` combined cap
+     needs a mechanical AUDIT.md assertion (a cap you can't check isn't a gate).
+     Also pin the baseline model artifact (path + sha256) in `scoreboard.md`.
+
+  Tooling gap the gate found: `scripts/validate_quality_gate.py` +
+  `schemas/quality-gate-output.schema.json` are referenced in CLAUDE.md but
+  ABSENT — create both as a CI check (DoD item).
+- **Dataset shortlist** (sources to strengthen the model): `docs/datasets/tool-call-datasets-shortlist.md`
+  (xLAM/APIGen, Hermes, BFCL-for-eval). Design principle: in-house 5k CORE +
+  curated slice; too much generic data reintroduces v4 cross-project dilution.
+- **Memory-consolidation plan** (Wiki-Memory-inspired, adapter layer over the 3
+  memory stores): `docs/plans/memory-consolidation.md` (gitignored — local only).
+  4 open questions; most important: is the .md wiki source-of-truth or a DB mirror?
+
+### Uncommitted / committed
+- Committed to branch: `07c467c` (finetune trigger path: train_hf_job.py,
+  run_hf_job.sh, launch_pilot_4b.sh, runbooks, cards).
+- Uncommitted on branch: the `JOB_NAMESPACE` + label-fix edits to run_hf_job.sh,
+  docs/datasets/, docs/runbooks/methodology-dataset.md Part 3, docs/plans/dataset-factory.md.
+- `docs/plans/` is gitignored (plans live locally).
+
+### Also available but not used
+- **ZeroGPU (0/40 min)** + **Inference credits ($0.10)** — for hosting a demo
+  Space of the finished model later (NOT training). Good for "so the org knows
+  what to do with it."
+
+---
+
+## Prior Status (2026-05-18/19 infra sprint — separate track)
+
 > **2026-05-18/19 infra sprint (separate track):** lesson-scope leak fixed,
 > session-start preamble shrunk 97%, new `recall()` + `abilities_memory()`
 > MCP tools, anvil reached lessons-inject parity with claude, integration
