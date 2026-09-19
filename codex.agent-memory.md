@@ -60,7 +60,21 @@ node scripts/hints-config.js set pretool off
 node scripts/hints-config.js tui
 ```
 
-## Trigger Checks (Lesson Warnings)
+## Native Hooks
+
+`install-agent-memory-codex` now wires the same lifecycle surface Codex exposes in
+`~/.codex/hooks.json`:
+
+- `SessionStart` starts or resumes an agent-memory session.
+- `PreToolUse` checks active lessons for risky tool calls.
+- `PostToolUse` records tool calls to `/api/queue`.
+- `SessionEnd` marks the session completed.
+
+The installed hook shims live in `~/.codex/hooks/` and symlink back to the
+operational checkout. On this machine, that checkout should be
+`/Users/mz/_CODING/agentMemory`; do not point Codex at the Dropbox copy.
+
+## Manual Trigger Checks (Fallback)
 
 Before risky `Bash`, `Edit`, or `Write` operations, run:
 
@@ -72,9 +86,9 @@ If the API is unavailable, this falls back to `.agent-memory-codex/lessons.snaps
 If lessons are returned, follow them before proceeding.
 If hints are disabled (`AGENT_MEMORY_HINTS_ENABLED=0`), this command exits with a disabled notice.
 
-## Post-Tool Capture Hook (Manual)
+## Manual Post-Tool Capture (Fallback)
 
-Codex CLI does not currently expose native lifecycle hooks like Claude Code. To record key tool actions, call:
+If native hooks are unavailable, record key tool actions manually:
 
 ```bash
 node integrations/codex/post-tool-hook.js --tool Bash --input '{"command":"npm test"}' --output "tests passed"

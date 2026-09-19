@@ -86,7 +86,7 @@ down agent-memory never blocks Claude.
 
 | Hook | Event | Description |
 |---|---|---|
-| `user-prompt-submit.js` | UserPromptSubmit | POSTs prompt text + session + cwd to `/api/prompts`. Live capture of the prompt that drives the next tool calls (added by issue #30, before that mem_user_prompts was empty between 2026-03-29 and 2026-05-13) |
+| `user-prompt-submit.js` | UserPromptSubmit | POSTs prompt text + session + cwd to `/api/prompts` and injects active CRITICAL lessons. Live capture of the prompt that drives the next tool calls (added by issue #30, before that mem_user_prompts was empty between 2026-03-29 and 2026-05-13) |
 | `pre-tool-use.js` | PreToolUse | Checks active lessons for Edit/Write/Bash/NotebookEdit. Injects warnings as a systemMessage |
 | `post-tool-use.js` | PostToolUse | Fire-and-forget POST to `/api/queue`. If the server is down, spawns `ensure-services.js` |
 | `session-start.js` | SessionStart | Blocks until services are healthy. Calls `ensure-services.js` if down. Installs daily backup schedule (idempotent) |
@@ -96,8 +96,10 @@ Hook auth shares `hooks/auth-header.js` which reads `AGENT_MEMORY_TOKEN`
 from the environment. Hooks also send `X-Agent-Name: claude` so the
 trusted-agents bypass applies on localhost.
 
-To wire them into Claude Code, symlink each `hooks/*.js` file into
-`~/.claude/hooks/` and register the hook list in `~/.claude/settings.json`.
+To wire them into Claude Code, run `node install.js` from the operational
+checkout. On this machine that checkout is `/Users/mz/_CODING/agentMemory`,
+not the Dropbox copy. The installer symlinks each `hooks/*.js` file into
+`~/.claude/hooks/` and registers the hook list in `~/.claude/settings.json`.
 The exact commands are in HANDOFF.md under "Setup on New Machine".
 
 ## Fine-tune pipeline status

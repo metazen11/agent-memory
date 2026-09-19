@@ -1,15 +1,28 @@
 #!/usr/bin/env node
 const { readSessionState, postQueuePayload, saveSpooledQueuePayload } = require('./common');
+const fs = require('fs');
+
+function readStdinEvent() {
+  if (process.stdin.isTTY) return null;
+  try {
+    const raw = fs.readFileSync(0, 'utf8').trim();
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseArgs(argv) {
+  const event = readStdinEvent();
   const args = {
-    tool: '',
-    input: '',
-    output: '',
+    tool: event?.tool_name || '',
+    input: event?.tool_input == null ? '' : JSON.stringify(event.tool_input),
+    output: event?.tool_response == null ? '' : JSON.stringify(event.tool_response),
     success: '',
-    error: '',
-    cwd: process.cwd(),
-    session: process.env.AGENT_MEMORY_SESSION_ID || '',
+    error: event?.tool_error || '',
+    cwd: event?.cwd || process.cwd(),
+    session: event?.session_id || process.env.AGENT_MEMORY_SESSION_ID || '',
+    hookMode: !!event,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -46,8 +59,12 @@ function asErrorText(value) {
 async function main() {
   const args = parseArgs(process.argv);
   const state = readSessionState();
-  const sessionId = args.session || state?.session_id;
+  const sessionId = args.session || state?.session_id || (args.hookMode ? `codex-hook-${Date.now()}` : '');
   if (!sessionId) {
+    if (args.hookMode) {
+      console.log(JSON.stringify({}));
+      return;
+    }
     console.error('No session id found. Run session-start first or pass --session.');
     process.exit(2);
   }
@@ -85,14 +102,18 @@ async function main() {
 
   try {
     await postQueuePayload(payload, 1200);
-    console.log(JSON.stringify({ ok: true, queued: true, session_id: sessionId, mode: 'online' }));
+    console.log(JSON.stringify(args.hookMode ? {} : { ok: true, queued: true, session_id: sessionId, mode: 'online' }));
   } catch {
     const file = saveSpooledQueuePayload(payload);
-    console.log(JSON.stringify({ ok: true, queued: true, session_id: sessionId, mode: 'spooled', file }));
+    console.log(JSON.stringify(args.hookMode ? {} : { ok: true, queued: true, session_id: sessionId, mode: 'spooled', file }));
   }
 }
 
 main().catch((e) => {
+  if (!process.stdin.isTTY) {
+    console.log(JSON.stringify({}));
+    process.exit(0);
+  }
   console.error(JSON.stringify({ ok: false, error: e.message || String(e) }));
   process.exit(1);
 });

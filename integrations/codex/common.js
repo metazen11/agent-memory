@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
-const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://localhost:3377';
+const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
 const STATE_DIR = path.join(process.cwd(), '.agent-memory-codex');
 const SESSION_FILE = path.join(STATE_DIR, 'current-session.json');
 const CONTEXT_FILE = path.join(STATE_DIR, 'session-context.md');
@@ -62,10 +62,13 @@ function requestJson(method, route, body, timeoutMs = 3000) {
       port: url.port,
       path: `${url.pathname}${url.search}`,
       method,
-      headers: payload ? {
+      headers: {
+        'X-Agent-Name': 'codex',
+        ...(payload ? {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
-      } : {},
+        } : {}),
+      },
       timeout: timeoutMs,
     }, (res) => {
       let data = '';

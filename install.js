@@ -17,6 +17,11 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { execSync, spawn, spawnSync } = require('child_process');
+const {
+  createHostWiring,
+  installHookSymlinks,
+  removeSymlink: removeHookSymlink,
+} = require('./scripts/lib/agent-memory-host-wiring');
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -41,70 +46,13 @@ const COMPOSE_FILE = path.join(INSTALL_DIR, 'docker', 'docker-compose.yml');
 
 const TOTAL_STEPS = 11;
 
-const HOOK_FILES = [
-  'pre-tool-use.js',
-  'post-tool-use.js',
-  'session-start.js',
-  'session-end.js',
-];
-
 const SKILL_FILES = [
   { src: 'skills/mem-search/SKILL.md', dest: 'mem-search/SKILL.md' },
 ];
 
 // Agent targets — extensible for future agents
 const AGENTS = {
-  claude: {
-    detect: () => fs.existsSync(path.join(HOME, '.claude')),
-    hooksDir: path.join(HOME, '.claude', 'hooks'),
-    settingsFile: path.join(HOME, '.claude', 'settings.json'),
-    mcpFile: path.join(HOME, '.claude.json'),
-    skillsDir: path.join(HOME, '.claude', 'skills'),
-    hookEntries: [
-      {
-        event: 'PreToolUse',
-        entry: {
-          matcher: 'Edit|Write|Bash|NotebookEdit',
-          hooks: [{
-            type: 'command',
-            command: `node ~/.claude/hooks/agent-memory-pre-tool-use.js`,
-            timeout: 2,
-          }],
-        },
-      },
-      {
-        event: 'PostToolUse',
-        entry: {
-          matcher: 'Read|Edit|Write|Bash|Grep|Glob|NotebookEdit|WebFetch|WebSearch',
-          hooks: [{
-            type: 'command',
-            command: `node ~/.claude/hooks/agent-memory-post-tool-use.js`,
-            timeout: 5,
-          }],
-        },
-      },
-      {
-        event: 'SessionStart',
-        entry: {
-          hooks: [{
-            type: 'command',
-            command: `node ~/.claude/hooks/agent-memory-session-start.js`,
-            timeout: 60,
-          }],
-        },
-      },
-      {
-        event: 'Stop',
-        entry: {
-          hooks: [{
-            type: 'command',
-            command: `node ~/.claude/hooks/agent-memory-session-end.js`,
-            timeout: 10,
-          }],
-        },
-      },
-    ],
-  },
+  claude: createHostWiring({ root: INSTALL_DIR, home: HOME }).claude,
 };
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -832,11 +780,9 @@ function installHooks() {
     ensureDir(agent.hooksDir);
 
     // Symlink hook files
-    for (const file of HOOK_FILES) {
-      const src  = path.join(INSTALL_DIR, 'hooks', file);
-      const dest = path.join(agent.hooksDir, `agent-memory-${file}`);
-      symlink(src, dest);
-      ok(`Linked ${path.basename(dest)}`);
+    installHookSymlinks(agent, INSTALL_DIR);
+    for (const [, destName] of agent.hookFiles) {
+      ok(`Linked ${destName}`);
     }
 
     // Register in settings
@@ -897,9 +843,9 @@ function uninstall() {
 
     head(`${name} hooks`);
 
-    for (const file of HOOK_FILES) {
-      const dest = path.join(agent.hooksDir, `agent-memory-${file}`);
-      if (removeSymlink(dest)) ok(`Removed ${path.basename(dest)}`);
+    for (const [, destName] of agent.hookFiles) {
+      const dest = path.join(agent.hooksDir, destName);
+      if (removeHookSymlink(dest)) ok(`Removed ${path.basename(dest)}`);
       else skip(`${path.basename(dest)} not found`);
     }
 
@@ -1007,8 +953,8 @@ function status() {
     }
 
     // Check hooks
-    const allHooksOk = HOOK_FILES.every(f => {
-      const dest = path.join(agent.hooksDir, `agent-memory-${f}`);
+    const allHooksOk = agent.hookFiles.every(([, destName]) => {
+      const dest = path.join(agent.hooksDir, destName);
       try { return fs.lstatSync(dest).isSymbolicLink(); } catch { return false; }
     });
 

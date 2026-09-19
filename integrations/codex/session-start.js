@@ -15,9 +15,22 @@ const {
   formatLessons,
   sessionHintsEnabled,
 } = require('./common');
+const fs = require('fs');
+
+function readStdinEvent() {
+  if (process.stdin.isTTY) return null;
+  try {
+    const raw = fs.readFileSync(0, 'utf8').trim();
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 async function main() {
-  const cwd = process.cwd();
+  const event = readStdinEvent();
+  const hookMode = !!event;
+  const cwd = event?.cwd || process.cwd();
   const project = projectNameFromCwd(cwd);
   const sessionId = process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
   const hintsOn = sessionHintsEnabled();
@@ -96,15 +109,28 @@ async function main() {
   writeSessionState({ session_id: sessionId, project, project_path: cwd, agent_type: 'codex-cli' });
   writeContext(context);
 
-  console.log(JSON.stringify({
-    ok: true,
-    online,
-    session_id: sessionId,
-    context_file: CONTEXT_FILE,
-  }));
+  if (hookMode) {
+    console.log(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: context,
+      },
+    }));
+  } else {
+    console.log(JSON.stringify({
+      ok: true,
+      online,
+      session_id: sessionId,
+      context_file: CONTEXT_FILE,
+    }));
+  }
 }
 
 main().catch((e) => {
+  if (!process.stdin.isTTY) {
+    console.log(JSON.stringify({}));
+    process.exit(0);
+  }
   console.error(JSON.stringify({
     ok: false,
     error: e.message || String(e),

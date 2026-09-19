@@ -40,6 +40,7 @@ const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 const RECOVERY_LOCKFILE = path.join(require('os').tmpdir(), 'agent-memory-recovery.lock');
 const RECOVERY_COOLDOWN_MS = 60000; // 1 minute between recovery attempts
 const SPOOL_DIR = path.join(require('os').tmpdir(), 'agent-memory-spool');
+const QUARANTINE_DIR = path.join(require('os').tmpdir(), 'agent-memory-spool-quarantine');
 
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:post-tool-use] ${msg}`);
@@ -186,6 +187,27 @@ function spoolPayload(payloadStr) {
   }
 }
 
+function quarantinePayload(payloadStr, reason) {
+  try {
+    if (!fs.existsSync(QUARANTINE_DIR)) {
+      fs.mkdirSync(QUARANTINE_DIR, { recursive: true });
+    }
+    const file = path.join(QUARANTINE_DIR, `${Date.now()}-${process.pid}.json`);
+    fs.writeFileSync(file, JSON.stringify({
+      reason,
+      quarantined_at: new Date().toISOString(),
+      payload: JSON.parse(payloadStr),
+    }, null, 2));
+    debug(`Quarantined payload to ${file}`);
+  } catch (e) {
+    debug(`Failed to quarantine payload: ${e.message}`);
+  }
+}
+
+function isTerminalQueueStatus(statusCode) {
+  return statusCode === 400 || statusCode === 422;
+}
+
 /**
  * Drain spooled payloads by re-posting them. Fire-and-forget, best-effort.
  * Runs after a successful POST to flush anything saved during downtime.
@@ -216,8 +238,11 @@ function drainSpool() {
         },
         timeout: 3000,
       }, (res) => {
-        if (res.statusCode < 500) {
+        if (res.statusCode < 400) {
           debug(`Drained ${file} → ${res.statusCode}`);
+          try { fs.unlinkSync(filePath); } catch {}
+        } else if (isTerminalQueueStatus(res.statusCode)) {
+          quarantinePayload(data, `drain_http_${res.statusCode}`);
           try { fs.unlinkSync(filePath); } catch {}
         }
         res.resume();
@@ -355,9 +380,15 @@ function fireQueuePost() {
   }, (res) => {
     requestCompleted = true;
     debug(`POST /api/queue → ${res.statusCode}`);
+    if (isTerminalQueueStatus(res.statusCode)) {
+      debug('Queue write rejected permanently — quarantining payload');
+      quarantinePayload(payload, `http_${res.statusCode}`);
+    } else if (res.statusCode >= 400) {
+      debug('Queue write rejected — spooling payload');
+      spoolPayload(payload);
+    }
     if (res.statusCode >= 500) {
       debug('Server error — spooling payload and triggering recovery');
-      spoolPayload(payload);
       triggerRecovery();
     } else {
       drainSpool();

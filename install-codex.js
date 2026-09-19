@@ -11,12 +11,21 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
+const {
+  createHostWiring,
+  installHookSymlinks,
+  registerHookEntries,
+  repairCodexMcpPath,
+  unregisterHookEntries,
+} = require('./scripts/lib/agent-memory-host-wiring');
 
 const ROOT = path.resolve(__dirname);
+const HOME = os.homedir();
 const PLATFORM = os.platform();
 const PYTHON = path.join(ROOT, '.venv', PLATFORM === 'win32' ? 'Scripts' : 'bin', 'python');
 const MCP_SERVER = path.join(ROOT, 'mcp_server.py');
 const MIGRATE_SCRIPT = path.join(ROOT, 'scripts', 'run_migrations.py');
+const CODEX = createHostWiring({ root: ROOT, home: HOME }).codex;
 const REQUIRED = [
   'integrations/codex/session-start.js',
   'integrations/codex/session-end.js',
@@ -79,6 +88,13 @@ function ensureExecutableBits() {
   }
 }
 
+function installCodexHooks() {
+  installHookSymlinks(CODEX, ROOT);
+  registerHookEntries(CODEX.settingsFile, CODEX.hookEntries);
+  const sessionEnd = CODEX.hookEntries.find((item) => item.event === 'SessionEnd');
+  if (sessionEnd) unregisterHookEntries(CODEX.settingsFile, [{ ...sessionEnd, event: 'Stop' }]);
+}
+
 function registerMcp() {
   const env = codexEnv();
   try {
@@ -97,6 +113,14 @@ function registerMcp() {
 
   const cmd = `codex mcp add agent-memory -- "${PYTHON}" "${MCP_SERVER}"`;
   run(cmd, { stdio: 'inherit', env });
+}
+
+function registerMcpTomlFallback() {
+  repairCodexMcpPath({
+    configFile: CODEX.configFile,
+    python: PYTHON,
+    server: MCP_SERVER,
+  });
 }
 
 function runMigrations() {
@@ -135,6 +159,8 @@ function main() {
   const skipMigrations = args.has('--skip-migrations');
   checkFiles();
   ensureExecutableBits();
+  installCodexHooks();
+  registerMcpTomlFallback();
   if (!skipMigrations) runMigrations();
   if (!skipMcp) registerMcp();
   printSummary();

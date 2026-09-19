@@ -8,7 +8,7 @@
 
 const http = require('http');
 
-const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://localhost:3377';
+const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
 
 function parseArgs(argv) {
   const args = {
@@ -68,6 +68,7 @@ function postQueue(payload) {
       path: url.pathname,
       method: 'POST',
       headers: {
+        'X-Agent-Name': 'anvil',
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
       },
