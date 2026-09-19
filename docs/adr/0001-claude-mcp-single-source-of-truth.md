@@ -26,6 +26,43 @@ duplicate-registration bug below initially look like a repo problem:
    exited with `command not found`. Claude reported `agent-memory ✗ Failed
    to connect` plus a diagnostic warning, every session, every reboot.
 
+> ## ⚠️ AMENDED 2026-09-19 — the mechanism above is WRONG
+>
+> Points 1 and 2 misdescribe the cause. Corrected, with evidence:
+>
+> **`${CLAUDE_PLUGIN_ROOT}` is never expanded, in ANY scope.** Claude Code
+> passes the `command` field directly to `posix_spawn` — there is no shell
+> involved, so no variable expansion happens anywhere. Setting the env var is
+> irrelevant to whether `${...}` inside the *command string* expands. It does
+> not.
+>
+> So two specific claims above are false:
+> - *"resolves correctly"* under plugin scope — it does not. A session with
+>   `agent-memory@metazen11-tools` enabled in global settings still failed:
+>   `ENOENT: posix_spawn '${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp.sh'`.
+> - *"passed to the shell as a literal"* — there is no shell. This is the
+>   deeper error: believing a shell is involved makes "ensure the env var is
+>   set" look like a valid fix. It never was.
+>
+> This matters because the failure was never scope-specific. It broke
+> agent-memory in **every project**, since the `metazen11-tools` marketplace
+> is a *directory* source whose `installLocation` is this repo itself.
+>
+> **The actual fix** (commit 621b7bd) is an absolute path in the `command`
+> field, guarded by `tests/test_mcp_manifest.py` — which asserts the command
+> contains no `$` or leading `~`, exists, and is executable. Verified RED
+> against the original string first.
+>
+> **Verification trap worth recording:** testing the command via
+> `bash -c "$cmd"`, or with `CLAUDE_PLUGIN_ROOT` set, EXPANDS the variable and
+> passes — while the real client fails. Verify by spawning the binary directly
+> with no shell and the env var unset.
+>
+> The **decision** below (single source of truth via the plugin entry) still
+> stands; only the diagnosis was wrong. Dropping `enabledMcpjsonServers`
+> remains correct — with the command now working, both scopes would launch
+> successfully and run two live server processes.
+
 Both registrations referred to the same logical server. The duplicate was
 a **user-side config bug**, not a repo bug: the project's
 `.claude/settings.local.json` had `enabledMcpjsonServers: ["agent-memory"]`
