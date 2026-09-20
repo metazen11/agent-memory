@@ -66,6 +66,19 @@ def test_codex_session_start_hook_mode_injects_context(tmp_path: Path) -> None:
     assert "Agent Memory (Codex)" in specific["additionalContext"]
 
 
+def test_codex_session_end_hook_mode_outputs_contract_safe_json(tmp_path: Path) -> None:
+    out = _run_node(
+        "integrations/codex/session-end.js",
+        stdin={
+            "session_id": "hook-contract-end",
+            "hook_event_name": "Stop",
+            "cwd": str(tmp_path),
+        },
+        cwd=tmp_path,
+    )
+    assert out == {}
+
+
 def test_codex_wiring_registers_session_end_not_stop() -> None:
     script = """
 const os = require('os');
