@@ -2,7 +2,7 @@
   "mcpServers": {
     "agent-memory": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp.sh"
+      "command": "/Users/mz/_CODING/agentMemory/scripts/run_mcp.sh"
     }
   }
 }

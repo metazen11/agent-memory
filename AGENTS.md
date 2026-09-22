@@ -25,6 +25,15 @@ The plugin contract:
   Tools include `search`, `recall` (one-call search + hydrate), `save_memory`,
   `create_lesson`, `abilities_memory` (lazy operator manual — keeps
   session-start preamble tiny). Pass `project="<cwd>"` on every call.
+
+  **Do not add `enabledMcpjsonServers: ["agent-memory"]` or
+  `enableAllProjectMcpServers: true` to this repo's `.claude/settings.local.json`.**
+  `.mcp.json` is the plugin manifest (read by the plugin loader, which sets
+  `CLAUDE_PLUGIN_ROOT`). When project-scope MCP auto-loading is also enabled
+  Claude tries to launch the same file as a project MCP, but project scope
+  does not set `CLAUDE_PLUGIN_ROOT`, so the launch fails and a duplicate
+  `agent-memory ✗ Failed to connect` entry appears alongside the working
+  plugin entry. See `docs/adr/0001-claude-mcp-single-source-of-truth.md`.
 - **Hooks** (`./hooks/hooks.json`) — `SessionStart` (ensures services up,
   injects compact preamble), `UserPromptSubmit` (injects active CRITICAL
   lessons), `PreToolUse` (matches lessons against tool input; one-time
