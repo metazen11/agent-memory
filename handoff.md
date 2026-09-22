@@ -1,5 +1,48 @@
 # Handoff — agent-memory
 
+## Resume after reboot — 2026-09-20: remaining Codex hook errors
+
+**User paused troubleshooting to reboot. No hook repair has been applied in this session.**
+
+### Confirmed diagnosis
+
+- Workspace: `/Users/mz/_CODING/agentMemory` (shell renders `_coding` on this Mac).
+- Git was clean at the start; HEAD was `fa8e73a` (`fix(hooks): keep codex session end output contract-safe`), following `fdeac01` (`fix(hooks): repair agent-memory host wiring`). These earlier fixes are already present.
+- `~/.codex/hooks.json` still registers **missing files**:
+  - `~/.codex/hooks/git-session.js`: SessionStart, PreToolUse, SessionEnd.
+  - `~/.codex/hooks/env-guard.js`: PreToolUse.
+- Both source files still exist:
+  - `/Users/mz/_CODING/hooks/git-session/git-session.js`
+  - `/Users/mz/_CODING/hooks/env-guard/env-guard.js`
+- The four agent-memory hook symlinks in `~/.codex/hooks/` already point at this checkout and their targets exist. `no-attribution.js` also exists.
+- Missing registered scripts are a concrete failure source; the precise UI error has not yet been captured. Today's Codex desktop log search did not return matching hook errors. Do not claim every reported error is explained or fixed yet.
+
+### Next actions
+
+1. Recheck `~/.codex/hooks.json`, target existence, and Git status after reboot.
+2. Finish reviewing the source hooks for Codex compatibility, then restore the two missing symlinks. Writing under `~/.codex/hooks/` requires sandbox escalation. Use `ln -s` without force so an unexpected existing file is preserved:
+   ```bash
+   ln -s /Users/mz/_CODING/hooks/git-session/git-session.js /Users/mz/.codex/hooks/git-session.js
+   ln -s /Users/mz/_CODING/hooks/env-guard/env-guard.js /Users/mz/.codex/hooks/env-guard.js
+   ```
+3. Verify each registered hook script exists. Test hooks using isolated temporary fixtures: **git-session can initialize repos, create branches, commit, and push**, so do not smoke-test lifecycle handlers against this live workspace. Its PreToolUse output uses `permissionDecision: allow`; env-guard uses allow/deny. Confirm these match the installed host contract.
+4. Run CODE_REVIEW before TEST, then relevant hook integration checks (`tests/test_codex_hook_contract.py`) if code is changed. Existing tests invoke the local memory service; inspect isolation before running them. No tests or repairs were run before the reboot pause.
+5. Confirm a fresh Codex session no longer reports the errors; capture exact remaining errors if any. Update this handoff, task state, and README if implementation changes are made.
+
+### Useful context
+
+- Existing `scripts/repair-agent-memory-hooks.js` repairs agent-memory wiring only; it does not restore these unrelated git-session/env-guard files.
+- Source hook repository README was read. No source files there were edited. Read its applicable instructions before any edits.
+- Official hook reference: https://learn.chatgpt.com/docs/hooks (opened via https://developers.openai.com/codex/hooks). OpenAI Docs skill was consulted.
+- GitHub open issues were read; the ten latest concern fine-tuning and the web UI, with no matching hook task in that limited listing. No issue was created.
+- `todo.json` was read and retains older project tasks. This interruption is tracked in this handoff; no implementation task was completed.
+- Memory lookup returned historical hook-wiring context, not a resolution for these missing files.
+- User's initial “where did everything go?” remains ambiguous. The project directories (`app`, `models`, `data`, `fine-tune`, `docs`, etc.) are present; no deletion was established.
+
+---
+
+## Earlier handoff (historical; dates and pending actions below are stale)
+
 > **2026-05-18/19 infra sprint (separate track):** lesson-scope leak fixed,
 > session-start preamble shrunk 97%, new `recall()` + `abilities_memory()`
 > MCP tools, anvil reached lessons-inject parity with claude, integration
