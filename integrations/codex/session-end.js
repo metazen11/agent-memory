@@ -1,6 +1,27 @@
 #!/usr/bin/env node
 const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 const { readSessionState, requestJson } = require('./common');
+
+/**
+ * Fire-and-forget background tasks: drain any spooled queue payloads and
+ * ingest Codex user prompts from ~/.codex/history.jsonl (Codex has no
+ * UserPromptSubmit hook, so history.jsonl is the only prompt source).
+ *
+ * Detached + unref'd so this can never block session teardown or write to
+ * this hook's stdout — the hook's stdout is a strict JSON contract.
+ */
+function spawnBackgroundTask(scriptName) {
+  try {
+    const child = spawn(process.execPath, [path.join(__dirname, scriptName)], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: process.cwd(),
+    });
+    child.unref();
+  } catch { /* best-effort; never fail session teardown */ }
+}
 
 function readHookEvent() {
   if (process.stdin.isTTY) return null;
@@ -14,6 +35,12 @@ function readHookEvent() {
 
 async function main() {
   const hookMode = !!readHookEvent();
+
+  // Kick these off regardless of session state: the spool and the prompt
+  // history both outlive any single session.
+  spawnBackgroundTask('drain-spool.js');
+  spawnBackgroundTask('ingest-history.js');
+
   const state = readSessionState();
   if (!state?.session_id) {
     console.log(JSON.stringify(hookMode ? {} : { ok: true, skipped: 'no_session_state' }));

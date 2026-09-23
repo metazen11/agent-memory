@@ -13,14 +13,27 @@ async function main() {
     return;
   }
 
+  // Draining is gated on the API being REACHABLE, not on service *recovery*
+  // having run. Previously both were coupled, so a perfectly healthy service
+  // drained nothing unless AGENT_MEMORY_CODEX_HOST_RECOVERY=1 was set (which
+  // only the wrapper sets) — leaving spool files stranded indefinitely.
+  // Recovery is now a fallback: try the drain first, and only attempt to
+  // start services if the first attempt got us nowhere.
   const allowHostRecovery = process.env.AGENT_MEMORY_CODEX_HOST_RECOVERY === '1';
-  const recovery = allowHostRecovery
-    ? runEnsureServices()
-    : { ok: false, status: null, stdout: '', stderr: '' };
   let drained = 0;
   let snapshots = false;
-  if (recovery.ok) {
-    drained = await drainSpooledQueue();
+  let recovery = { ok: false, status: null, stdout: '', stderr: '' };
+
+  drained = await drainSpooledQueue().catch(() => 0);
+
+  if (drained === 0 && allowHostRecovery) {
+    recovery = runEnsureServices();
+    if (recovery.ok) {
+      drained = await drainSpooledQueue().catch(() => 0);
+    }
+  }
+
+  if (drained > 0 || recovery.ok) {
     await refreshSnapshots({
       projectPath: state.project_path,
       projectName: state.project,
