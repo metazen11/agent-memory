@@ -2,7 +2,11 @@
   "mcpServers": {
     "agent-memory": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp.sh"
+      "command": "bash",
+      "args": [
+        "-c",
+        "for d in \"${CLAUDE_PLUGIN_ROOT:-}\" \"$HOME/_CODING/agentMemory\" \"$HOME/Dropbox/_CODING/agentMemory\"; do [ -n \"$d\" ] && [ -x \"$d/scripts/run_mcp.sh\" ] && exec \"$d/scripts/run_mcp.sh\"; done; echo 'agent-memory: run_mcp.sh not found' >&2; exit 1"
+      ]
     }
   }
 }
