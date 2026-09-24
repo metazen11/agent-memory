@@ -32,15 +32,41 @@ jobs:
         run: |
           # Exercise the hook the way git does — feed it a ref update on stdin
           # — rather than trusting that the file merely exists.
-          prod=main; git show-ref --verify --quiet refs/remotes/origin/main || prod=master
-          out=$(echo "refs/heads/$prod $(git rev-parse HEAD) refs/heads/$prod 0000000000000000000000000000000000000000" \
-                | .githooks/pre-push origin "$(git remote get-url origin 2>/dev/null || echo origin)" 2>&1) && rc=0 || rc=$?
+          #
+          # NOTE: do NOT derive the trunk name from refs/remotes/origin/*.
+          # actions/checkout fetches only the PR ref, so origin/main does not
+          # exist on the runner; an earlier version of this step fell through
+          # to "master", pushed to a branch that is not a trunk here, saw the
+          # hook correctly allow it, and reported "the contract is a no-op".
+          # The hook reads the same refs, so give it a local ref to find.
+          git show-ref --verify --quiet refs/remotes/origin/main \
+            || git update-ref refs/remotes/origin/main HEAD
+          git show-ref --verify --quiet refs/remotes/origin/dev \
+            || git update-ref refs/remotes/origin/dev HEAD
+
+          zero=0000000000000000000000000000000000000000
+          sha=$(git rev-parse HEAD)
+
+          # 1. a push to the production trunk MUST be refused
+          out=$(echo "refs/heads/main $sha refs/heads/main $zero" \
+                | .githooks/pre-push origin origin 2>&1) && rc=0 || rc=$?
           if [ "${rc:-0}" -eq 0 ]; then
-            echo "::error::pre-push did NOT refuse a push to '$prod'. The contract is a no-op."
+            echo "::error::pre-push did NOT refuse a push to 'main'. The contract is a no-op."
             echo "$out"
             exit 1
           fi
-          echo "OK: hook refused a push to '$prod' (exit $rc)."
+          echo "OK: hook refused a push to 'main' (exit $rc)."
+
+          # 2. a push to the integration trunk MUST be allowed — a hook that
+          #    refuses everything is just as broken as one that refuses nothing.
+          out=$(echo "refs/heads/dev $sha refs/heads/dev $zero" \
+                | .githooks/pre-push origin origin 2>&1) && rc=0 || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            echo "::error::pre-push refused a push to 'dev'; it must only block the production trunk."
+            echo "$out"
+            exit 1
+          fi
+          echo "OK: hook allowed a push to 'dev'."
 
       - name: CONTRIBUTING documents the activation step
         run: |
