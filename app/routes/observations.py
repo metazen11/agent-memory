@@ -411,12 +411,19 @@ async def search_observations(req: SearchRequest):
                 logger.warning(f"Vector search failed: {e}")
 
         if req.mode in ("fts", "hybrid"):
-            # Full-text search
-            ts_query = " & ".join(req.query.split()[:10])
+            # Full-text search.
+            #
+            # websearch_to_tsquery, not to_tsquery: the latter takes raw
+            # tsquery SYNTAX, so any user string containing ( ) & | : ! —
+            # i.e. `foo()`, `file.py:42`, `a & b` — raised a syntax error
+            # that surfaced as a 500. websearch_to_tsquery parses
+            # human-typed input and never throws on punctuation. It also
+            # gives quoted-phrase support for free.
+            ts_query = " ".join(req.query.split()[:10])
 
             # $1 = ts_query, $2 = limit
             params = [ts_query, req.limit * 2]
-            filters = ["o.tsv @@ to_tsquery('english', $1)"]
+            filters = ["o.tsv @@ websearch_to_tsquery('english', $1)"]
             pidx = 3
 
             if req.project and not req.cross_project:
@@ -440,7 +447,7 @@ async def search_observations(req: SearchRequest):
                        o.source_system, o.source_mode, o.source_agent,
                        o.embedding IS NOT NULL as has_embedding,
                        o.created_at,
-                       ts_rank_cd(o.tsv, to_tsquery('english', $1)) as fts_rank
+                       ts_rank_cd(o.tsv, websearch_to_tsquery('english', $1)) as fts_rank
                 FROM mem_observations o
                 JOIN mem_projects p ON p.id = o.project_id
                 WHERE {where}
@@ -450,6 +457,49 @@ async def search_observations(req: SearchRequest):
 
             for rank, row in enumerate(fts_rows):
                 results.append((row["id"], 1.0 / (rank + 60), row))
+
+        # Literal mode: the WHOLE query as one case-insensitive substring.
+        #
+        # Distinct from the keyword pass below, which splits on whitespace
+        # and ORs the terms. For a symbol, a file:line ref, a config key or
+        # an error string, the phrase must match intact — stemming and term
+        # splitting both destroy it. This is the syntactic counterpart to
+        # semantic search.
+        if req.mode == "literal":
+            needle = req.query.strip()
+            if needle:
+                lit_params: list = [f"%{needle}%", req.limit * 2]
+                lit_filters = ["o.raw_text ILIKE $1"]
+                pidx = 3
+
+                if req.project and not req.cross_project:
+                    clause, pidx = project_path_filter(pidx)
+                    lit_filters.append(clause)
+                    lit_params.extend([req.project, req.project, req.project])
+
+                if req.type:
+                    placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
+                    lit_filters.append(f"o.type IN ({placeholders})")
+                    lit_params.extend(req.type)
+                    pidx += len(req.type)
+
+                lit_rows = await conn.fetch(f"""
+                    SELECT o.id, o.session_id, o.project_id, p.name as project_name,
+                           o.title, o.subtitle, o.type, o.narrative,
+                           o.facts, o.concepts, o.files_read, o.files_modified,
+                           o.tool_name, o.prompt_number,
+                           o.source_system, o.source_mode, o.source_agent,
+                           o.embedding IS NOT NULL as has_embedding,
+                           o.created_at
+                    FROM mem_observations o
+                    JOIN mem_projects p ON p.id = o.project_id
+                    WHERE {" AND ".join(lit_filters)}
+                    ORDER BY o.created_at DESC
+                    LIMIT $2
+                """, *lit_params)
+
+                for rank, row in enumerate(lit_rows):
+                    results.append((row["id"], 1.0 / (rank + 60), row))
 
         # Keyword (ILIKE) search — catches exact substrings FTS misses
         if req.mode in ("fts", "hybrid"):

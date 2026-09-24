@@ -78,6 +78,28 @@ Full schema lives in `scripts/migrations/*.sql`. The current head is
 details and `docs/fine_tune/V2_DATA_PIPELINE_PLAN.md` for the
 prompt↔tool_call linkage design introduced by migration 012.
 
+## Search modes
+
+`POST /api/observations/search` takes a `mode`:
+
+| Mode | What it does | Use for |
+|---|---|---|
+| `vector` | pgvector cosine similarity over 768-dim embeddings | "what was this about" — paraphrase, concepts |
+| `fts` | Postgres full-text (`websearch_to_tsquery`) + ILIKE keyword pass | general word search with stemming |
+| `hybrid` *(default)* | vector + fts fused with RRF (k=60) | most queries |
+| `literal` | the whole query as a case-insensitive substring | symbols, `file.py:42`, config keys, error strings |
+
+Semantic search cannot answer "where does this exact string appear". For
+the phrase `old_string matches`, literal mode returns 3/3 rows that
+contain it; vector mode returns 0/3. The MCP `search` tool fuses an
+exact-phrase pass at a higher weight (k=30) for the same reason.
+
+Note on `websearch_to_tsquery`: the FTS path previously used
+`to_tsquery`, which takes raw tsquery *syntax*. Any query containing
+`( ) & | : !` — a function name, a `file:line` ref — raised a syntax
+error that surfaced as a **500**. `websearch_to_tsquery` parses
+human-typed input and never throws on punctuation.
+
 ## Lessons — automatic distillation
 
 Lessons are proactive rules injected before a risky tool call. They used

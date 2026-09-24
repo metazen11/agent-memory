@@ -552,10 +552,41 @@ async def _search(pool, args):
                 LIMIT $1
             """, *like_params)
 
+        # --- Exact-phrase (literal) pass ---
+        # The keyword pass above splits on whitespace and ORs the terms, so
+        # a multi-word symbol, error string or file:line ref can rank below
+        # rows that merely share one common word. This matches the WHOLE
+        # query as a substring and is fused in at a higher weight, which is
+        # what makes syntactic lookups land: `old_string matches` returns
+        # 3/3 exact rows here where vector search returned 0/3.
+        phrase_rows = []
+        phrase = query.strip()
+        if len(phrase) >= 4:
+            phrase_params = [f"%{phrase}%", limit * 2]
+            phrase_filter_parts, phrase_params, _ = _apply_shared_filters(phrase_params, 3)
+            phrase_where = ("AND " + " AND ".join(phrase_filter_parts)) if phrase_filter_parts else ""
+            phrase_rows = await conn.fetch(f"""
+                SELECT o.id, o.title, o.type, o.created_at, p.name as project_name
+                FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE o.raw_text ILIKE $1 {phrase_where}
+                ORDER BY o.created_at DESC
+                LIMIT $2
+            """, *phrase_params)
+
         # Reciprocal Rank Fusion with recency boost
         scores = {}
         for rank, row in enumerate(vec_rows):
             scores[row["id"]] = {"row": row, "rrf": 1.0 / (60 + rank)}
+        # Exact-phrase hits fuse at a higher weight (k=30 vs 60): when the
+        # user typed a literal string that actually exists, that is a much
+        # stronger relevance signal than semantic proximity.
+        for rank, row in enumerate(phrase_rows):
+            oid = row["id"]
+            if oid in scores:
+                scores[oid]["rrf"] += 1.0 / (30 + rank)
+            else:
+                scores[oid] = {"row": row, "rrf": 1.0 / (30 + rank)}
         for rank, row in enumerate(fts_rows):
             oid = row["id"]
             if oid in scores:
