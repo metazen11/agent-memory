@@ -178,6 +178,44 @@ async def filter_already_covered(conn, candidates: list[dict], *, threshold: flo
     return kept
 
 
+
+async def find_duplicate_lesson(conn, title: str, rule: str, *, threshold: float = 0.90) -> dict | None:
+    """Return an existing lesson that already says this, if any.
+
+    This runs AFTER synthesis and compares like with like: stored lessons
+    embed `title\nrule`, so probing with the same shape is far more
+    accurate than probing with raw error text.
+
+    The pre-synthesis probe in filter_already_covered() compares an ERROR
+    against a RULE — different vocabularies — and scored an exact
+    duplicate at only 0.710, under any threshold that would not also
+    swallow unrelated lessons (an unrelated one scored 0.644). That probe
+    is kept as a cheap first pass that avoids wasted LLM calls; this is
+    the accurate gate.
+    """
+    from app.embeddings import embed_text
+
+    try:
+        vec = await embed_text(f"{title}\n{rule}")
+        vec_str = "[" + ",".join(str(v) for v in vec) + "]"
+        row = await conn.fetchrow(
+            """
+            SELECT id, title, 1 - (embedding <=> $1::vector) AS similarity
+            FROM mem_lessons
+            WHERE active = true AND embedding IS NOT NULL
+            ORDER BY embedding <=> $1::vector
+            LIMIT 1
+            """,
+            vec_str,
+        )
+    except Exception as e:
+        logger.warning("distill: duplicate check failed: %s", e)
+        return None
+
+    if row and row["similarity"] is not None and row["similarity"] >= threshold:
+        return {"id": row["id"], "title": row["title"], "similarity": row["similarity"]}
+    return None
+
 # ── Synthesis ─────────────────────────────────────────────────
 
 SYNTH_SYSTEM_PROMPT = """You write preventive rules for a coding agent's memory system.
@@ -545,6 +583,17 @@ async def distill_once(
             "project": cand.get("project_path") or cand.get("project_name"),
             **trigger,
         }
+
+        duplicate = await find_duplicate_lesson(conn, payload["title"], payload["rule"])
+        if duplicate:
+            rejected.append({
+                "error": cand["normalized_error"][:80],
+                "reason": (
+                    f"duplicate of lesson #{duplicate['id']} "
+                    f"({duplicate['similarity']:.2f} similar)"
+                ),
+            })
+            continue
 
         ok, reason = validate_lesson_payload(payload)
         if not ok:

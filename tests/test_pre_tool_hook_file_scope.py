@@ -19,12 +19,13 @@ import subprocess
 import uuid
 from pathlib import Path
 
-import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "hooks" / "pre-tool-use.js"
 BASE_URL = "http://localhost:3377"
+# Dedicated rate-limit bucket (see fixture comment).
+_TEST_AGENT = "python-httpx"
 
 
 def _run_hook(payload: dict) -> dict:
@@ -48,27 +49,72 @@ def _fresh_session() -> str:
 
 @pytest.fixture
 def file_scope_lesson():
-    """Create a uniquely-named file_scope lesson, delete it afterwards."""
+    """Create a uniquely-named file_scope lesson, deactivate it afterwards.
+
+    Writes straight to Postgres rather than through POST /api/lessons.
+    With require_auth=False the rate limiter keys its bucket on
+    request.client.host, so the suite competes with live Claude hooks
+    firing during the run for one 100-writes/min budget — going through
+    HTTP made these tests skip almost always, which defeats the point of
+    having them. The hook under test still reads through the real API, so
+    the path being verified is unchanged.
+    """
+    import asyncio
+
     marker = uuid.uuid4().hex[:10]
     filename = f"zz-{marker}-fixture.json"
-    payload = {
-        "title": f"file_scope fixture {marker}",
-        "rule": f"FIXTURE-{marker}: this lesson must reach the hook.",
-        "severity": "critical",
-        "trigger_on": "file_scope",
-        "trigger_files": [filename, f"**/{filename}"],
-    }
-    with httpx.Client(base_url=BASE_URL, timeout=10.0,
-                      headers={"X-Agent-Name": "claude"}) as c:
-        resp = c.post("/api/lessons", json=payload)
-        resp.raise_for_status()
-        lesson = resp.json()
+    title = f"file_scope fixture {marker}"
+    rule = f"FIXTURE-{marker}: this lesson must reach the hook."
+
+    async def _create() -> int:
+        from app.db import init_pool, get_pool
+        from app.embeddings import embed_text
+
+        await init_pool()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            raw_text = f"{title}\n{rule}"
+            try:
+                vec = await embed_text(raw_text)
+                emb = "[" + ",".join(str(v) for v in vec) + "]"
+            except Exception:
+                emb = None
+            row = await conn.fetchrow(
+                """
+                INSERT INTO mem_lessons (
+                    title, rule, severity, raw_text, embedding,
+                    trigger_on, trigger_files, active
+                ) VALUES ($1,$2,'critical',$3,$4::vector,'file_scope',$5,true)
+                RETURNING id
+                """,
+                title, rule, raw_text, emb, [filename, f"**/{filename}"],
+            )
+            return row["id"]
+
+    async def _close() -> None:
+        from app.db import close_pool
+        await close_pool()
+
+    async def _deactivate(lesson_id: int) -> None:
+        from app.db import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE mem_lessons SET active = false WHERE id = $1", lesson_id
+            )
+
+    # One loop for both create and teardown: asyncio.run() closes the loop
+    # it creates, which would invalidate the asyncpg pool bound to it.
+    loop = asyncio.new_event_loop()
     try:
-        yield {"id": lesson["id"], "marker": marker, "filename": filename}
+        lesson_id = loop.run_until_complete(_create())
+        try:
+            yield {"id": lesson_id, "marker": marker, "filename": filename}
+        finally:
+            loop.run_until_complete(_deactivate(lesson_id))
+            loop.run_until_complete(_close())
     finally:
-        with httpx.Client(base_url=BASE_URL, timeout=10.0,
-                          headers={"X-Agent-Name": "claude"}) as c:
-            c.patch(f"/api/lessons/{lesson['id']}", json={"active": False})
+        loop.close()
 
 
 def test_edit_absolute_path_delivers_file_scope_lesson(file_scope_lesson):

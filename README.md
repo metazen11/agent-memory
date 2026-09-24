@@ -78,6 +78,49 @@ Full schema lives in `scripts/migrations/*.sql`. The current head is
 details and `docs/fine_tune/V2_DATA_PIPELINE_PLAN.md` for the
 prompt↔tool_call linkage design introduced by migration 012.
 
+## Lessons — automatic distillation
+
+Lessons are proactive rules injected before a risky tool call. They used
+to be created only by hand, which produced one lesson in 772 sessions.
+`app/lesson_distill.py` mines them automatically from recurring failures
+in `mem_tool_calls`.
+
+```bash
+# See what it would create (default: dry run)
+.venv/bin/python scripts/distill_lessons.py
+
+# Actually create them
+.venv/bin/python scripts/distill_lessons.py --apply
+
+# Schedule it (launchd, Sunday 04:07 local)
+./scripts/install_distill_schedule.sh
+./scripts/install_distill_schedule.sh --check
+```
+
+Also exposed as `POST /api/lessons/distill?dry_run=true`.
+
+How it decides what earns a lesson:
+
+| Step | Rule | Why |
+|---|---|---|
+| Cluster | Normalize digits/hashes/timestamps, group by error | `matches 138 times` and `matches 192 times` are one lesson; merging them turned 578+296 into a single 892-count cluster |
+| Threshold | Repetition count, **not** distinct sessions | 5,511 of 5,640 recent failures came from one long session; a "≥3 sessions" rule would mine almost nothing |
+| Scope | The project where it recurs | `public_html/.git` is an artofmetazen fact, not a global one |
+| Trigger | Derived in code, never from the LLM | Asked for a trigger, a model returns `trigger_on=input` with no tool and no pattern — the broad-match shape migration 016 refuses |
+| Dedup | Cosine similarity on `title\nrule` ≥ 0.90 | Probing with raw error text scores an exact duplicate at only 0.710 — comparing like with like scores it 1.00 |
+| Validate | Reject thin, vague, non-actionable rules | The local 7B emits "Set replace_all=True in edit_file calls", which is too short *and* wrong advice |
+
+Writing is opt-in at every layer: the endpoint and CLI both default to
+dry run, because a created lesson enters every matching future session.
+
+Review and retire what it creates:
+
+```bash
+curl -s localhost:3377/api/lessons?limit=20 | jq '.[] | {id, title}'
+curl -X PATCH localhost:3377/api/lessons/<id> \
+     -H 'content-type: application/json' -d '{"active":false}'
+```
+
 ## Hooks — how data gets in
 
 Five Node.js hooks live in `hooks/`. They are designed fire-and-forget
@@ -87,7 +130,7 @@ down agent-memory never blocks Claude.
 | Hook | Event | Description |
 |---|---|---|
 | `user-prompt-submit.js` | UserPromptSubmit | POSTs prompt text + session + cwd to `/api/prompts` and injects active CRITICAL lessons. Live capture of the prompt that drives the next tool calls (added by issue #30, before that mem_user_prompts was empty between 2026-03-29 and 2026-05-13) |
-| `pre-tool-use.js` | PreToolUse | Checks active lessons for Edit/Write/Bash/NotebookEdit. Injects warnings as a systemMessage |
+| `pre-tool-use.js` | PreToolUse | Checks active lessons for Edit/Write/Bash/NotebookEdit. Queries **both** `trigger_on=input` and `trigger_on=file_scope` (sending `modified_files`), merges by id, critical first, capped at 5. Injects warnings as a systemMessage |
 | `post-tool-use.js` | PostToolUse | Fire-and-forget POST to `/api/queue`. If the server is down, spawns `ensure-services.js` |
 | `session-start.js` | SessionStart | Blocks until services are healthy. Calls `ensure-services.js` if down. Installs daily backup schedule (idempotent) |
 | `session-end.js` | Stop | PATCHes `/api/sessions/{id}` to mark the session completed |
