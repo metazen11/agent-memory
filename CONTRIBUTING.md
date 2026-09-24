@@ -38,19 +38,41 @@ than living in one developer's `~/.claude/`.
 Only the top two travel automatically. The hook needs one command per clone
 (below); this file needs someone to read it.
 
-## Setup — once per clone, on every machine
+## Setup — once per MACHINE
+
+```
+~/_CODING/hooks/repo-contract/bootstrap.sh
+```
+
+That does two things, and is safe to re-run:
+
+1. Installs a **git template** so every *future* clone on this machine
+   activates its own `.githooks/` automatically — no per-repo step ever again.
+2. **Retrofits existing clones** under `~/_CODING` (a template only applies at
+   clone time, so repos you already have need this once).
+
+Neither step overrides a `core.hooksPath` you set yourself.
+
+Prefer to do it by hand, or working in one repo only?
 
 ```
 git config core.hooksPath .githooks
 ```
 
-Without this, `.githooks/pre-push` is inert. Git deliberately does not let a
-clone activate its own hooks (that would let any repo run code on clone), so
-this step cannot be automated away. Check it with:
+Check either way:
 
 ```
-git config --get core.hooksPath     # expect: .githooks
+~/_CODING/hooks/repo-contract/bootstrap.sh --check
+git config --get core.hooksPath          # expect: .githooks
 ```
+
+### Why this step exists at all
+
+Git deliberately refuses to let a cloned repo activate its own hooks — that
+would execute a stranger's code the moment you clone. The template inverts
+that safely: *you* install it once, locally, and it then applies your choice
+to your own clones. There is no way to remove the step entirely, which is
+exactly why the two server-side layers above carry the real weight.
 
 ## Emergencies
 
