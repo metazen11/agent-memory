@@ -1,0 +1,77 @@
+name: contract-integrity
+
+# Guards the contract's own files. Catches a contract that has been
+# half-installed, made non-executable, or silently edited into a no-op.
+#
+# LIMIT, stated plainly: this verifies what is IN THE REPO. It cannot see
+# whether any particular machine ran `git config core.hooksPath .githooks`
+# — the server has no visibility into your local git config. Per-machine
+# activation is covered by the git template + activate-all.sh instead.
+
+on:
+  push:
+    branches: [dev, develop, main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pre-push hook is present and executable
+        run: |
+          h=.githooks/pre-push
+          [ -f "$h" ] || { echo "::error::$h is missing — the contract is not installed."; exit 1; }
+          [ -x "$h" ] || { echo "::error::$h is not executable; git will silently skip it. Fix: chmod +x $h && git update-index --chmod=+x $h"; exit 1; }
+          bash -n "$h" || { echo "::error::$h has a syntax error and would fail open."; exit 1; }
+          echo "OK: $h present, executable, parses."
+
+      - name: hook actually refuses a push to the production trunk
+        run: |
+          # Exercise the hook the way git does — feed it a ref update on stdin
+          # — rather than trusting that the file merely exists.
+          #
+          # NOTE: do NOT derive the trunk name from refs/remotes/origin/*.
+          # actions/checkout fetches only the PR ref, so origin/main does not
+          # exist on the runner; an earlier version of this step fell through
+          # to "master", pushed to a branch that is not a trunk here, saw the
+          # hook correctly allow it, and reported "the contract is a no-op".
+          # The hook reads the same refs, so give it a local ref to find.
+          git show-ref --verify --quiet refs/remotes/origin/main \
+            || git update-ref refs/remotes/origin/main HEAD
+          git show-ref --verify --quiet refs/remotes/origin/dev \
+            || git update-ref refs/remotes/origin/dev HEAD
+
+          zero=0000000000000000000000000000000000000000
+          sha=$(git rev-parse HEAD)
+
+          # 1. a push to the production trunk MUST be refused
+          out=$(echo "refs/heads/main $sha refs/heads/main $zero" \
+                | .githooks/pre-push origin origin 2>&1) && rc=0 || rc=$?
+          if [ "${rc:-0}" -eq 0 ]; then
+            echo "::error::pre-push did NOT refuse a push to 'main'. The contract is a no-op."
+            echo "$out"
+            exit 1
+          fi
+          echo "OK: hook refused a push to 'main' (exit $rc)."
+
+          # 2. a push to the integration trunk MUST be allowed — a hook that
+          #    refuses everything is just as broken as one that refuses nothing.
+          out=$(echo "refs/heads/dev $sha refs/heads/dev $zero" \
+                | .githooks/pre-push origin origin 2>&1) && rc=0 || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            echo "::error::pre-push refused a push to 'dev'; it must only block the production trunk."
+            echo "$out"
+            exit 1
+          fi
+          echo "OK: hook allowed a push to 'dev'."
+
+      - name: CONTRIBUTING documents the activation step
+        run: |
+          f=CONTRIBUTING.md
+          [ -f "$f" ] || { echo "::error::$f missing — a blocked push would have no explanation."; exit 1; }
+          grep -q 'core.hooksPath .githooks' "$f" || {
+            echo "::error::$f does not document 'git config core.hooksPath .githooks'."; exit 1; }
+          echo "OK: $f documents activation."
