@@ -1,6 +1,67 @@
 # Handoff — agent-memory
 
-## Resume after reboot — 2026-09-20: remaining Codex hook errors
+## 2026-09-23 — hints delivery, automatic distillation, syntactic search
+
+All three landed and are verified. Full suite: **290 passed, 1 skipped**
+(run with `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`; see the caveat below).
+
+### 1. Hints were structurally undeliverable (commit 35a4e76)
+
+`hooks/pre-tool-use.js` queried `/api/lessons/match` without `trigger_on`
+or `modified_files`. The endpoint defaults `trigger_on='input'` and
+filters `WHERE l.trigger_on = $1`, so **every** `file_scope` lesson — all
+five created on 2026-09-23 — was unreachable from the hook. Editing
+`.mcp.json` reported "no active lessons match" while the same call
+against the API returned the CRITICAL lesson.
+
+It survived because verification hit the API and never the hook. Same
+write-path/read-path seam as the Anvil `default_stack()` bug. Tests now
+assert **through the hook process**; 3 of 4 fail against the old hook.
+
+### 2. Lessons are now created automatically (645ba9c, 1a16ff4)
+
+`app/lesson_distill.py` mines recurring failures from `mem_tool_calls`.
+Design is grounded in what the data actually shows — see the README table
+for the full rationale. The two non-obvious calls:
+
+- **Threshold on repetition, not distinct sessions.** 5,511 of 5,640
+  recent failures came from ONE long-running session; a "seen in >= 3
+  sessions" rule would have mined almost nothing.
+- **Triggers are derived in code, never from the LLM.** Asked for a
+  trigger, a model returns the broad-match shape migration 016 refuses.
+
+Schedule installed: launchd, Sunday 04:07 (`scripts/install_distill_schedule.sh --check`).
+5 lessons were created on the first real run and verified firing through
+the hook, correctly scoped to their project.
+
+### 3. Syntactic search (de3e1da)
+
+FTS used `to_tsquery`, which parses raw tsquery syntax — `foo()`,
+`file.py:42`, `a & b` all returned **500**. Now `websearch_to_tsquery`.
+Added `mode="literal"` plus an exact-phrase pass in the MCP search tool
+(fused at k=30, above the k=60 semantic pass).
+
+### Known issues / next steps
+
+- **`ANTHROPIC_API_KEY` has no credit.** Distillation falls back to the
+  local 7B, which produces thinner rules (the validator rejects most of
+  them, so quality holds but yield drops). This also silently degrades
+  the observation-capture fallback path. Topping up the key is the single
+  highest-leverage fix for lesson quality.
+- **Rate limiting breaks the test suite.** With `require_auth=False` the
+  limiter keys its bucket on `request.client.host`, so the suite, manual
+  CLI runs and live Claude hooks all share one 100-writes/min budget —
+  producing ~40 spurious 429 failures. Run tests with
+  `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`. Worth fixing properly by
+  exempting localhost tests or keying the bucket on the agent name.
+- **Session summaries + budgeted SessionStart injection** remain the real
+  claude-mem parity gap. Unstarted. `session-start.js` retreated from
+  injection after a 15KB block blew the ~2KB cap; the fix is a budget
+  fitter, not omission.
+
+---
+
+## Earlier — Resume after reboot — 2026-09-20: remaining Codex hook errors
 
 **User paused troubleshooting to reboot. No hook repair has been applied in this session.**
 
