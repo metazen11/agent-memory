@@ -1,0 +1,57 @@
+name: trunk-drift
+
+# Fails when the production trunk has commits the integration trunk lacks.
+#
+# That inversion is silent and expensive: the next dev -> main PR renders
+# those commits as DELETIONS, so merging it reverts work that was already
+# shipped. It happened here on 2026-09-21 (575 lines of Codex integration
+# work sat on main, absent from dev).
+#
+# Server-side, so it holds no matter which machine pushed — unlike a local
+# hook, which every machine must opt into.
+
+on:
+  push:
+    branches: [dev, develop, main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history to compare trunks
+
+      - name: Integration trunk must not be behind production
+        run: |
+          prod=""
+          for b in main master; do
+            git show-ref --verify --quiet "refs/remotes/origin/$b" && { prod="$b"; break; }
+          done
+          integ=""
+          for b in dev develop; do
+            git show-ref --verify --quiet "refs/remotes/origin/$b" && { integ="$b"; break; }
+          done
+
+          if [ -z "$prod" ] || [ -z "$integ" ]; then
+            echo "Only one trunk present (prod='${prod:-none}' integ='${integ:-none}') — nothing to compare."
+            exit 0
+          fi
+
+          behind=$(git rev-list --count "origin/$integ..origin/$prod")
+          echo "origin/$integ is $behind commit(s) behind origin/$prod"
+
+          if [ "$behind" -gt 0 ]; then
+            echo
+            echo "::error::'$integ' is $behind commit(s) behind '$prod'. The next $integ -> $prod PR would render these as DELETIONS and revert shipped work."
+            echo "Commits on $prod that $integ lacks:"
+            git log --oneline "origin/$integ..origin/$prod" | sed 's/^/  /'
+            echo
+            echo "Fix:  git checkout $integ && git fetch origin && git merge origin/$prod && git push origin $integ"
+            exit 1
+          fi
+
+          echo "OK: '$integ' contains everything on '$prod'."
