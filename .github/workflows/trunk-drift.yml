@@ -44,14 +44,36 @@ jobs:
           behind=$(git rev-list --count "origin/$integ..origin/$prod")
           echo "origin/$integ is $behind commit(s) behind origin/$prod"
 
-          if [ "$behind" -gt 0 ]; then
-            echo
-            echo "::error::'$integ' is $behind commit(s) behind '$prod'. The next $integ -> $prod PR would render these as DELETIONS and revert shipped work."
-            echo "Commits on $prod that $integ lacks:"
-            git log --oneline "origin/$integ..origin/$prod" | sed 's/^/  /'
-            echo
-            echo "Fix:  git checkout $integ && git fetch origin && git merge origin/$prod && git push origin $integ"
-            exit 1
+          if [ "$behind" -eq 0 ]; then
+            echo "OK: '$integ' contains everything on '$prod'."
+            exit 0
           fi
 
+          # Topology says behind — but does $prod carry CONTENT $integ lacks?
+          #
+          # A dev->main PR merge puts a merge commit on main that dev does not
+          # have until its next push. That commit introduces NO content, yet an
+          # earlier version of this check failed on it — so every single merge
+          # produced a red build on main, naming the PR merge as the offender.
+          # A guard that is guaranteed to fail on the happy path is a guard
+          # people learn to ignore.
+          #
+          # Compare TREES, which is what the real hazard is about: work that
+          # reached production without passing through the integration trunk.
+          if git diff --quiet "origin/$integ" "origin/$prod"; then
+            echo "OK: $behind merge-commit(s) ahead of '$integ', but the trees are"
+            echo "    IDENTICAL — no content drift. '$integ' catches up on its next push."
+            exit 0
+          fi
+
+          echo
+          echo "::error::'$prod' has content '$integ' does not. The next $integ -> $prod PR would render it as DELETIONS and revert shipped work."
+          echo "Commits on $prod that $integ lacks:"
+          git log --oneline "origin/$integ..origin/$prod" | sed 's/^/  /'
+          echo
+          echo "Files differing:"
+          git diff --stat "origin/$integ" "origin/$prod" | sed 's/^/  /'
+          echo
+          echo "Fix:  git checkout $integ && git fetch origin && git merge origin/$prod && git push origin $integ"
+          exit 1
           echo "OK: '$integ' contains everything on '$prod'."
