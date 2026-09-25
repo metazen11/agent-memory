@@ -41,6 +41,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from call_count_metrics import call_count_metrics, call_count_passed  # noqa: E402
+
 log = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -460,6 +463,10 @@ def run(args) -> int:
     n_schema_valid = sum(1 for t in trials if t.parse.parsed and t.parse.schema_valid)
     n_native = sum(1 for t in trials if t.structured_tool_calls)
     parse_rate = n_parsed / n if n else 0.0
+    # How MANY calls per trial — parse_rate cannot see over-emission (#58).
+    per_trial_calls = [len(t.parse.tool_calls) for t in trials if t.parse.parsed]
+    cc_metrics = call_count_metrics(per_trial_calls)
+    cc_ok = call_count_passed(cc_metrics, getattr(args, "min_exactly_one_rate", 0.0))
     valid_rate = n_schema_valid / n if n else 0.0
 
     anti_loop_report: dict[str, Any] | None = None
@@ -499,6 +506,9 @@ def run(args) -> int:
         "parse_rate": parse_rate,
         "valid_rate": valid_rate,
         "by_suite": by_suite,
+        "call_counts": cc_metrics,
+        "call_count_passed": cc_ok,
+        "min_required_exactly_one_rate": getattr(args, "min_exactly_one_rate", 0.0),
         "min_required_parse_rate": args.min_parse_rate,
         "passed": parse_rate >= args.min_parse_rate,
         "anti_loop": anti_loop_report,
@@ -550,6 +560,15 @@ def main() -> int:
     p.add_argument("--model", default="qwen25-toolcalls", help="Model name for openai backend")
     p.add_argument("--temperatures", default="0.0,0.2,0.7")
     p.add_argument("--max-tokens", type=int, default=256)
+    p.add_argument(
+        "--min-exactly-one-rate",
+        type=float,
+        default=0.0,
+        help="Minimum share of trials emitting EXACTLY ONE tool call. "
+             "parse_rate cannot see over-emission (#58); the v5 pilot scored "
+             "60/60 parse while never emitting a single clean call. "
+             "Default 0.0 = report only, do not gate.",
+    )
     p.add_argument("--min-parse-rate", type=float, default=0.03, help="Minimum parse rate to pass")
     p.add_argument("--report-dir", default=None)
     p.add_argument(
