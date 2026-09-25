@@ -9,6 +9,9 @@ from app.embeddings import check_embeddings
 router = APIRouter()
 
 
+# `/health` alias so callers using the platform convention (e.g. anvil's
+# vbot probe) find this without needing to know our `/api/` prefix.
+@router.get("/health", include_in_schema=False)
 @router.get("/api/health")
 async def health():
     """Health check: DB connectivity, embedding model, queue depth."""
