@@ -62,8 +62,24 @@ def test_secret_in_list_element_is_redacted():
 
 
 def test_non_secret_strings_in_dict_pass_through():
-    inp = {"command": "ls -la", "cwd": "/Users/me/repo"}
+    """Ordinary values are not mangled.
+
+    NOTE: an absolute home path is NO LONGER an "ordinary value". Since #57,
+    /Users/<name> is scrubbed because the v5 model memorized such paths from
+    the training corpus and emitted them as tool-call arguments — including
+    dotenv files. This case therefore uses a relative cwd, which is what the
+    training data should contain anyway. Home-path scrubbing is pinned in
+    tests/test_redact_paths.py.
+    """
+    inp = {"command": "ls -la", "cwd": "repo/src"}
     assert redact_json(inp) == inp
+
+
+def test_absolute_home_path_in_dict_is_scrubbed():
+    """The behaviour that replaced the old pass-through expectation (#57)."""
+    out = redact_json({"command": "ls -la", "cwd": "/Users/me/repo"})
+    assert "/Users/me" not in out["cwd"]
+    assert out["command"] == "ls -la", "non-path values must be untouched"
 
 
 # ── The load-bearing case: nested Authorization header ────────────────
