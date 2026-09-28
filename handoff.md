@@ -50,7 +50,7 @@ Added `mode="literal"` plus an exact-phrase pass in the MCP search tool
 
 - **`ANTHROPIC_API_KEY` has no credit.** Still true and still yours to
   fix — topping it up remains the single highest-leverage change for
-  lesson quality. But it is **no longer silent (#64, 4f8a2c1):**
+  lesson quality. But it is **no longer silent (#64, a7be30a):**
   `/api/health` now reports `billing_error` with the breaker open, a run
   stops retrying after the first billing failure instead of re-paying the
   13s throttle per candidate, and lessons record `synthesized_by` so
