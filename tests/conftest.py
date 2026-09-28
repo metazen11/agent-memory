@@ -32,13 +32,20 @@ TEST_PREFIX = f"test-{uuid.uuid4().hex[:8]}"
 async def client():
     """httpx async client pointed at the live server. Per-test scope.
 
-    Sends ``X-Agent-Name: claude`` so the trusted-agent bypass treats the
-    test as a known localhost caller (the same path Claude hooks use).
+    Sends ``X-Agent-Name: pytest`` — a trusted agent, so the trusted-agent
+    bypass still treats the suite as a known localhost caller, but a *distinct*
+    one from ``claude``.
+
+    That distinction is load bearing (issue #63). The rate limiter keys its
+    token bucket on this identity, and live Claude Code hooks send
+    ``X-Agent-Name: claude``. When the suite also claimed "claude", a hook
+    firing during a test run drew from the same 100-writes/min budget, and the
+    suite failed with ~40 spurious 429s.
     """
     async with httpx.AsyncClient(
         base_url=BASE_URL,
         timeout=10.0,
-        headers={"X-Agent-Name": "claude"},
+        headers={"X-Agent-Name": "pytest"},
     ) as c:
         yield c
 
