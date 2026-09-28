@@ -274,20 +274,33 @@ def build_synth_prompt(candidate: dict) -> str:
     return "\n".join(parts)
 
 
+#: Identifiers recorded in mem_lessons.synthesized_by. Stable strings, not
+#: model version ids: the point is to find locally-synthesized lessons later
+#: and re-run them against a better model, which only needs the tier.
+PROVIDER_ANTHROPIC = "anthropic:claude-haiku-4-5"
+PROVIDER_LOCAL = "local:gguf"
+
+
 async def synthesize_lesson(candidate: dict) -> dict | None:
     """Ask the LLM for a lesson. Returns None to skip.
 
     Reuses app.observation_llm's provider selection and Anthropic rate
     limiter rather than opening a second, unthrottled path to the API.
+
+    The returned dict carries a ``_provider`` key naming which model
+    actually wrote the rule. Locally-synthesized lessons are markedly
+    weaker (the local 7B produced "Set replace_all=True in edit_file
+    calls" — too thin AND wrong), so the provider is persisted on the
+    lesson row to make them findable for re-synthesis later.
     """
     from app.config import settings
     from app.observation_llm import (
-        build_chat_prompt,
         parse_llm_response,
         _generate_local_sync,
         _get_anthropic_client,
         _ANTHROPIC_MIN_INTERVAL,
     )
+    from app import llm_provider_status as provider_status
 
     user_prompt = build_synth_prompt(candidate)
 
@@ -298,7 +311,13 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
     # the local 7B emitted "Set replace_all=True in edit_file calls", which
     # is actively harmful advice (blind replace_all makes wrong edits; the
     # real fix is more surrounding context).
-    if settings.anthropic_api_key:
+    # anthropic_available() is checked BEFORE the throttle sleep below.
+    # synthesize_lesson() runs once per candidate, and the original code
+    # paid the full 13s _ANTHROPIC_MIN_INTERVAL wait on every one of them
+    # even after the account had already returned "credit balance is too
+    # low" — ~130 seconds of sleeping per 10-candidate run for calls that
+    # could not succeed. The breaker collapses that to a single attempt.
+    if provider_status.anthropic_available(settings.anthropic_api_key):
         import time
         import asyncio as _asyncio
         import app.observation_llm as _ol
@@ -316,11 +335,20 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
                 system=SYNTH_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
             )
+        except Exception as e:
+            # Trips the breaker on billing/auth so the remaining candidates
+            # in this run go straight to local. Transient errors (timeout,
+            # 429, 5xx) leave it closed and retry normally next candidate.
+            status = provider_status.record_failure(e)
+            logger.warning(
+                "distill: anthropic synthesis failed (%s), trying local: %s", status, e
+            )
+        else:
+            provider_status.record_success()
             parsed = parse_llm_response(msg.content[0].text)
             if parsed and (parsed.get("rule") or parsed.get("skip")):
+                parsed["_provider"] = PROVIDER_ANTHROPIC
                 return parsed
-        except Exception as e:
-            logger.warning("distill: anthropic synthesis failed, trying local: %s", e)
 
     # Fallback: local GGUF.
     if settings.observation_llm_model:
@@ -335,6 +363,7 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
             text = await loop.run_in_executor(None, _generate_local_sync, prompt)
             parsed = parse_llm_response(text) if text else None
             if parsed and parsed.get("rule"):
+                parsed["_provider"] = PROVIDER_LOCAL
                 return parsed
         except Exception as e:
             logger.warning("distill: local synthesis failed: %s", e)
@@ -556,6 +585,10 @@ async def distill_once(
 
     proposed: list[dict] = []
     rejected: list[dict] = []
+    # Which model actually wrote each rule, counted per provider. Surfaced
+    # in the report so a run that silently degraded to the local 7B is
+    # visible in the output instead of only in a log line.
+    providers_used: dict[str, int] = {}
 
     for cand in candidates:
         synth = await synthesize_lesson(cand)
@@ -574,6 +607,10 @@ async def distill_once(
             })
             continue
 
+        provider = synth.get("_provider")
+        if provider:
+            providers_used[provider] = providers_used.get(provider, 0) + 1
+
         payload = {
             "title": (synth.get("title") or "").strip()[:120],
             "rule": (synth.get("rule") or "").strip(),
@@ -581,6 +618,10 @@ async def distill_once(
             # Project-scoped by default. Promotion to global is a separate,
             # higher-bar decision — see GLOBAL_PROMOTION_MIN_PROJECTS.
             "project": cand.get("project_path") or cand.get("project_name"),
+            # Which model wrote this rule. Persisted so locally-synthesized
+            # (lower-quality) lessons can be found and re-synthesized once a
+            # better provider is available again.
+            "synthesized_by": provider,
             **trigger,
         }
 
@@ -626,12 +667,21 @@ async def distill_once(
                 logger.error("distill: insert failed for %r: %s", payload["title"], e)
                 rejected.append({"error": payload["title"], "reason": f"insert failed: {e}"})
 
+    from app import llm_provider_status as provider_status
+    from app.config import settings as _settings
+
     return {
         "candidates_examined": len(candidates),
         "proposed": proposed,
         "created": created,
         "rejected": rejected,
         "dry_run": dry_run,
+        # Provider accounting. `providers_used` says who actually wrote the
+        # rules; `llm` reports last-known provider health so a run that fell
+        # back because the account is out of credit says so, rather than
+        # looking identical to a run with no key configured.
+        "providers_used": providers_used,
+        "llm": provider_status.snapshot(_settings.anthropic_api_key),
     }
 
 
@@ -658,8 +708,9 @@ async def _insert_lesson(conn, payload: dict) -> int:
             project_id, title, rule, severity,
             trigger_tool, trigger_pattern,
             embedding, raw_text,
-            trigger_on, trigger_output_pattern, trigger_phase, trigger_files
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,$9,$10,$11,$12)
+            trigger_on, trigger_output_pattern, trigger_phase, trigger_files,
+            synthesized_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,$9,$10,$11,$12,$13)
         RETURNING id
         """,
         project_id,
@@ -674,5 +725,6 @@ async def _insert_lesson(conn, payload: dict) -> int:
         payload.get("trigger_output_pattern"),
         payload.get("trigger_phase"),
         payload.get("trigger_files"),
+        payload.get("synthesized_by"),
     )
     return row["id"]

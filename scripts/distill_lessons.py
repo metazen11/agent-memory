@@ -37,6 +37,27 @@ def _print_report(report: dict) -> None:
     print(f"created             : {len(report['created'])}")
     print(f"rejected            : {len(report['rejected'])}")
 
+    # Which model actually wrote the rules. Printed unconditionally so a
+    # run that quietly degraded to the local 7B (because the Anthropic key
+    # is out of credit) says so on stdout instead of only in a log line.
+    providers = report.get("providers_used") or {}
+    if providers:
+        summary = ", ".join(f"{name}={count}" for name, count in sorted(providers.items()))
+        print(f"synthesized by      : {summary}")
+
+    llm = report.get("llm") or {}
+    if llm.get("circuit_open"):
+        print(
+            f"\n!! LLM PROVIDER DEGRADED: {llm.get('provider')} "
+            f"[{llm.get('status')}] — {llm.get('detail')}\n"
+            "   Lessons in this run were written by the local model and are "
+            "lower quality.\n"
+            "   Fix billing/credentials, then re-run to re-synthesize "
+            "(see mem_lessons.synthesized_by)."
+        )
+    elif llm.get("status") == "not_configured":
+        print("llm provider        : none configured (local model only)")
+
     for lesson in report["proposed"]:
         evidence = lesson.get("_evidence") or {}
         print(f"\n--- {lesson['title']}  [{lesson['severity']}] ---")

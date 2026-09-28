@@ -2,8 +2,13 @@
 
 ## 2026-09-23 — hints delivery, automatic distillation, syntactic search
 
-All three landed and are verified. Full suite: **290 passed, 1 skipped**
-(run with `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`; see the caveat below).
+All three landed and are verified. Full suite: **342 passed, 1 skipped**,
+with rate limiting ENABLED (issues #63 and #64 also fixed, see below).
+
+NOTE: earlier runs in this session were described as "rate limiting
+disabled" using `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`. That variable
+does nothing — `Settings` has no `env_prefix`, so the real name is
+`RATE_LIMIT_ENABLED`. Those runs actually had limiting ON.
 
 ### 1. Hints were structurally undeliverable (commit 35a4e76)
 
@@ -43,17 +48,20 @@ Added `mode="literal"` plus an exact-phrase pass in the MCP search tool
 
 ### Known issues / next steps
 
-- **`ANTHROPIC_API_KEY` has no credit.** Distillation falls back to the
-  local 7B, which produces thinner rules (the validator rejects most of
-  them, so quality holds but yield drops). This also silently degrades
-  the observation-capture fallback path. Topping up the key is the single
-  highest-leverage fix for lesson quality.
-- **Rate limiting breaks the test suite.** With `require_auth=False` the
-  limiter keys its bucket on `request.client.host`, so the suite, manual
-  CLI runs and live Claude hooks all share one 100-writes/min budget —
-  producing ~40 spurious 429 failures. Run tests with
-  `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`. Worth fixing properly by
-  exempting localhost tests or keying the bucket on the agent name.
+- **`ANTHROPIC_API_KEY` has no credit.** Still true and still yours to
+  fix — topping it up remains the single highest-leverage change for
+  lesson quality. But it is **no longer silent (#64, 4f8a2c1):**
+  `/api/health` now reports `billing_error` with the breaker open, a run
+  stops retrying after the first billing failure instead of re-paying the
+  13s throttle per candidate, and lessons record `synthesized_by` so
+  locally-written ones can be found and re-synthesized later.
+- ~~Rate limiting breaks the test suite~~ **FIXED (#63, c26cf46).** The
+  limiter now keys on agent identity with a per-scope segment. Two traps
+  found on the way: the suite was itself sending `X-Agent-Name: claude`
+  (identical to live hooks), so keying on agent name alone would have
+  fixed nothing — tests now identify as `pytest`; and the key was
+  `{client}:{method}` while limits vary by PATH, so `/api/admin` (cap 10)
+  and ordinary reads (cap 500) shared a bucket.
 - **Session summaries + budgeted SessionStart injection** remain the real
   claude-mem parity gap. Unstarted. `session-start.js` retreated from
   injection after a 15KB block blew the ~2KB cap; the fix is a budget

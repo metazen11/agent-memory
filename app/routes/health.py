@@ -3,6 +3,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from app import llm_provider_status
+from app.config import settings
 from app.db import get_pool
 from app.embeddings import check_embeddings
 
@@ -11,8 +13,8 @@ router = APIRouter()
 
 @router.get("/api/health")
 async def health():
-    """Health check: DB connectivity, embedding model, queue depth."""
-    result = {"db": {}, "embeddings": {}, "queue": {}}
+    """Health check: DB connectivity, embedding model, queue depth, LLM provider."""
+    result = {"db": {}, "embeddings": {}, "queue": {}, "llm": {}}
 
     # DB check
     try:
@@ -41,10 +43,35 @@ async def health():
     # Embedding model check
     result["embeddings"] = await check_embeddings()
 
+    # LLM provider status — LAST KNOWN state only, never a live call.
+    #
+    # This section exists because credit exhaustion used to be invisible.
+    # When the Anthropic key returned "Your credit balance is too low",
+    # lesson synthesis and observation capture silently fell back to the
+    # local 7B (lower quality) with nothing but a per-call log warning; an
+    # operator could not tell that from "no key configured".
+    #
+    # Deliberately NOT a live probe: a health check that calls the API
+    # would bill the account on every poll and would wait out the 13s
+    # rate limiter. snapshot() reads only in-process state recorded by the
+    # real calls, so it is free and cannot itself fail.
+    result["llm"] = {
+        "local_model_configured": bool(settings.observation_llm_model),
+        "providers": [llm_provider_status.snapshot(settings.anthropic_api_key)],
+    }
+
     # Overall status
     db_ok = result["db"].get("status") == "ok"
     emb_ok = result["embeddings"].get("status") == "ok"
-    result["status"] = "ok" if db_ok and emb_ok else "degraded"
+    # A tripped provider breaker degrades the service: capture and
+    # distillation still work via the local model, but at reduced quality,
+    # which is exactly the condition an operator needs to see. A provider
+    # that is simply not configured is a deployment choice, not a fault,
+    # so it does NOT degrade the overall status.
+    llm_degraded = any(
+        p.get("circuit_open") for p in result["llm"]["providers"]
+    )
+    result["status"] = "ok" if db_ok and emb_ok and not llm_degraded else "degraded"
 
     return result
 
