@@ -66,3 +66,64 @@ def test_project(test_prefix):
 def test_session_id(test_prefix):
     """A unique session ID for test data."""
     return f"{test_prefix}-session"
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _deactivate_leaked_test_lessons(test_project):
+    """Deactivate lessons this run created, however the run ends.
+
+    Why a fixture and not a test: cleanup used to live in
+    ``test_api_lessons.py::test_deactivate_lesson``. A test only runs if
+    collection reaches it, so an earlier failure, a ``-k`` filter, a
+    ``-x`` abort, or a KeyboardInterrupt left rows behind — 171 inactive
+    plus 2 *active* fixture lessons had accumulated by 2026-10-02, and the
+    active ones were being served into live sessions by the
+    UserPromptSubmit hook. Teardown here runs in all of those cases.
+
+    Deactivate rather than DELETE: the rows are audit history, and
+    ``active=false`` is what actually removes them from
+    ``/api/lessons?active=true`` — the only path that reaches a session.
+
+    Both scopes must be swept. ``GET /api/lessons`` with no ``project``
+    returns ONLY ``project_id IS NULL`` rows (deliberate, see
+    app/routes/lessons.py), so a project-scoped fixture is invisible there.
+    The first version of this fixture checked only the global scope and
+    duly leaked ``#261 'Test lesson'`` under project 67850.
+    """
+    yield
+
+    titles = {"Test lesson", "Global test lesson", "Bad regex", "Broad-match attempt"}
+
+    def is_fixture(title: str) -> bool:
+        return (
+            title in titles
+            or TEST_PREFIX in title
+            or "fixture" in title.lower()
+        )
+
+    async with httpx.AsyncClient(
+        base_url=BASE_URL, timeout=10.0, headers={"X-Agent-Name": "pytest"}
+    ) as c:
+        seen: set[int] = set()
+        # None  -> global rows; test_project -> this run's project-scoped rows.
+        for scope in (None, test_project):
+            params = {"active": "true", "limit": 100}
+            if scope is not None:
+                params["project"] = scope
+            try:
+                resp = await c.get("/api/lessons", params=params)
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json()
+                rows = payload if isinstance(payload, list) else payload.get("lessons", [])
+                for lesson in rows:
+                    if not isinstance(lesson, dict):
+                        continue
+                    lid = lesson.get("id")
+                    if lid in seen or not is_fixture(lesson.get("title") or ""):
+                        continue
+                    seen.add(lid)
+                    await c.patch(f"/api/lessons/{lid}", json={"active": False})
+            except (httpx.HTTPError, ValueError, KeyError):
+                # Never fail a green suite on best-effort cleanup.
+                continue
