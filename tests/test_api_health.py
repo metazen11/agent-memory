@@ -41,6 +41,60 @@ async def test_health_has_queue_section(client):
 
 
 @pytest.mark.asyncio
+async def test_health_has_llm_section(client):
+    """/api/health reports LLM provider state.
+
+    Added for issue #64: credit exhaustion on the Anthropic key silently
+    degraded lesson quality to the local model with nothing surfaced to
+    the operator.
+    """
+    resp = await client.get("/api/health")
+    data = resp.json()
+    assert "llm" in data
+    assert "local_model_configured" in data["llm"]
+
+    providers = data["llm"]["providers"]
+    assert isinstance(providers, list) and providers
+
+    anthropic_status = next(p for p in providers if p["provider"] == "anthropic")
+    assert "configured" in anthropic_status
+    assert "circuit_open" in anthropic_status
+    # "not configured" must be its own state, distinct from a billing or
+    # auth failure — conflating them is the bug this section fixes.
+    assert anthropic_status["status"] in (
+        "ok", "not_configured", "auth_error", "billing_error",
+        "transient_error", "unknown_error",
+    )
+    if not anthropic_status["configured"]:
+        assert anthropic_status["status"] == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_health_llm_check_is_not_a_live_call(client):
+    """The LLM section must report stored state, never probe the provider.
+
+    A live probe would bill the account on every health poll and would
+    block on the 13s rate limiter. Two back-to-back calls returning
+    promptly with identical provider state is the observable signature of
+    a cached read.
+    """
+    import time
+
+    started = time.monotonic()
+    first = await client.get("/api/health")
+    second = await client.get("/api/health")
+    elapsed = time.monotonic() - started
+
+    # A single live Anthropic call would cost at least the 13s throttle.
+    assert elapsed < 10.0, f"health check appears to make a live LLM call ({elapsed:.1f}s)"
+
+    a = next(p for p in first.json()["llm"]["providers"] if p["provider"] == "anthropic")
+    b = next(p for p in second.json()["llm"]["providers"] if p["provider"] == "anthropic")
+    assert a["status"] == b["status"]
+    assert a["circuit_open"] == b["circuit_open"]
+
+
+@pytest.mark.asyncio
 async def test_integration_guide_returns_markdown(client):
     """GET /api/integration_guide returns the markdown doc verbatim."""
     resp = await client.get("/api/integration_guide")

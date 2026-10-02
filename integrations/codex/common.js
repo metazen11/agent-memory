@@ -6,7 +6,25 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
-const STATE_DIR = path.join(process.cwd(), '.agent-memory-codex');
+// Anchor state to the PROJECT root (git root of cwd), not raw cwd. Codex hooks
+// run with the session cwd, which is frequently a subdirectory — using cwd
+// directly scattered one `.agent-memory-codex/spool` per directory, and a drain
+// launched from anywhere else silently skipped them ("no_session_state").
+// AGENT_MEMORY_CODEX_STATE_DIR overrides for tests/edge cases.
+function resolveStateRoot() {
+  const override = process.env.AGENT_MEMORY_CODEX_STATE_DIR;
+  if (override) return override;
+  let dir = process.cwd();
+  for (let i = 0; i < 12; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+
+const STATE_DIR = path.join(resolveStateRoot(), '.agent-memory-codex');
 const SESSION_FILE = path.join(STATE_DIR, 'current-session.json');
 const CONTEXT_FILE = path.join(STATE_DIR, 'session-context.md');
 const SPOOL_DIR = path.join(STATE_DIR, 'spool');

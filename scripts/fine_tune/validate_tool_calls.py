@@ -385,8 +385,28 @@ def gen_hf(hf_model_dir: str, prompt: str, schemas: list[dict], temperature: flo
     return _HF_TOK.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False)
 
 
-def gen_openai(base_url: str, model: str, prompt: str, schemas: list[dict], temperature: float, max_tokens: int) -> dict:
-    """Drive an OpenAI-compatible /v1/chat/completions endpoint (LM Studio, Ollama, vLLM)."""
+# Generation must terminate after ONE tool call. Without this the model runs
+# past the closing tag and keeps inventing follow-ups — measured 7.33 calls per
+# trial (max 15) against 1.00 with it, on the same weights. Every one of the
+# 5000 v5 training rows contains exactly one tool call, so this was never a
+# data problem: a retrain would have reproduced it exactly. See #58.
+TOOL_CALL_STOP = ["</tool_call>"]
+
+
+def gen_openai(
+    base_url: str,
+    model: str,
+    prompt: str,
+    schemas: list[dict],
+    temperature: float,
+    max_tokens: int,
+    stop: list[str] | None = None,
+) -> dict:
+    """Drive an OpenAI-compatible /v1/chat/completions endpoint (LM Studio, Ollama, vLLM).
+
+    ``stop`` defaults to TOOL_CALL_STOP. Pass ``[]`` to disable it — that
+    reproduces the over-emission bug, which is the only reason to do so.
+    """
     import urllib.request  # noqa: PLC0415
 
     payload = {
@@ -396,6 +416,9 @@ def gen_openai(base_url: str, model: str, prompt: str, schemas: list[dict], temp
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    effective_stop = TOOL_CALL_STOP if stop is None else stop
+    if effective_stop:
+        payload["stop"] = effective_stop
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode(),
@@ -436,7 +459,10 @@ def run(args) -> int:
                 elif args.backend == "hf":
                     raw = gen_hf(args.hf_model_dir, prompt, schemas, temp, args.max_tokens)
                 elif args.backend == "openai":
-                    resp = gen_openai(args.base_url, args.model, prompt, schemas, temp, args.max_tokens)
+                    resp = gen_openai(
+                        args.base_url, args.model, prompt, schemas, temp, args.max_tokens,
+                        stop=[] if getattr(args, "no_stop", False) else None,
+                    )
                     msg = resp["choices"][0]["message"]
                     raw = msg.get("content") or ""
                     structured = msg.get("tool_calls")
@@ -560,6 +586,12 @@ def main() -> int:
     p.add_argument("--model", default="qwen25-toolcalls", help="Model name for openai backend")
     p.add_argument("--temperatures", default="0.0,0.2,0.7")
     p.add_argument("--max-tokens", type=int, default=256)
+    p.add_argument(
+        "--no-stop",
+        action="store_true",
+        help="Send NO stop sequence. Reproduces the #58 over-emission bug "
+             "(7.33 calls/trial vs 1.00) — for diagnosis only.",
+    )
     p.add_argument(
         "--min-exactly-one-rate",
         type=float,

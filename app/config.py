@@ -30,7 +30,12 @@ class Settings(BaseSettings):
     allow_trust_auth: bool = False
     cors_origins: str = "http://localhost:3377,http://127.0.0.1:3377"
     require_auth: bool = False
-    trusted_agents: str = "anvil,claude,codex,gemini,python-httpx"  # comma-separated, "*" = trust all localhost
+    # Comma-separated, "*" = trust all localhost. "pytest" is listed separately
+    # from "claude" on purpose: the rate limiter keys its bucket on this
+    # identity (issue #63), so the test suite needs a name distinct from the
+    # live Claude Code hooks, which also send X-Agent-Name: claude and would
+    # otherwise share — and exhaust — the suite's 100-writes/min budget.
+    trusted_agents: str = "anvil,claude,codex,gemini,python-httpx,pytest"
 
     # Redaction
     redact_secrets: bool = True

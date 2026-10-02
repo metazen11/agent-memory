@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from app.auth import validate_token
+from app.auth import resolve_agent_identity, validate_token
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,66 @@ class _TokenBucket:
         return False
 
 
+def rate_limit_client_id(request: Request) -> str:
+    """Derive the rate-limit bucket identity for a request.
+
+    Why this exists (issue #63): the original code did
+
+        token = getattr(request.state, "token", None)
+        client_id = token["agent_name"] if token else request.client.host
+
+    but ``request.state.token`` is only ever set by ``AuthMiddleware``, which
+    ``app/main.py`` registers *only* when ``settings.require_auth`` is true.
+    The default is false, so in practice every localhost caller collapsed into
+    one shared "127.0.0.1" bucket: the pytest suite, manual CLI runs, and live
+    Claude Code hooks firing during that same run all drew from a single
+    100-writes/min budget. The symptom was ~40 pytest failures that were all
+    429s and looked like real breakage.
+
+    Resolution order:
+      1. An authenticated token's ``agent_name`` (unchanged — do not regress
+         the auth path).
+      2. The agent identity from ``X-Agent-Name`` / ``User-Agent``, resolved
+         through ``app.auth.resolve_agent_identity`` so auth and rate limiting
+         agree on who a caller is. That value is already sanitized and length
+         bounded, which matters because ``_buckets`` is never evicted — an
+         unbounded key space would be a memory-growth vector.
+      3. The peer IP. This is the *last* resort, not a bypass: a caller that
+         declines to identify itself is still limited, just at IP granularity.
+    """
+    token = getattr(request.state, "token", None)
+    if token:
+        return f"token:{token['agent_name']}"
+
+    identity = resolve_agent_identity(request)
+    if identity:
+        return f"agent:{identity}"
+
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
+
+
+def rate_limit_scope(method: str, path: str) -> tuple[str, float, int]:
+    """Pick the limit class for a request: ``(scope, rate_per_sec, capacity)``.
+
+    ``scope`` names the limit class and becomes part of the bucket key. That
+    part matters: the key used to be ``f"{client_id}:{method}"`` while the
+    limits here vary by *path* as well, so every GET from one caller shared a
+    single bucket whose capacity was whichever class happened to create it
+    first. An ``/api/admin`` GET (cap 10) therefore throttled ordinary reads
+    (cap 500) for that caller — which is how the issue #63 test run still
+    produced 429s on plain list/export endpoints even after the client identity
+    was fixed. Keying by scope keeps each documented limit independent.
+    """
+    if path.startswith("/api/admin"):
+        return "admin", 10.0 / 60, 10
+    if method in ("POST", "PATCH", "DELETE"):
+        if "/queue" in path:
+            return "queue", 300.0 / 60, 300
+        return "write", settings.rate_limit_writes_per_min / 60, settings.rate_limit_writes_per_min
+    return "read", settings.rate_limit_reads_per_min / 60, settings.rate_limit_reads_per_min
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """In-memory token-bucket rate limiter."""
 
@@ -74,22 +134,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.rate_limit_enabled or request.url.path in EXEMPT_PATHS:
             return await call_next(request)
 
-        # Identify client
-        token = getattr(request.state, "token", None)
-        client_id = token["agent_name"] if token else (request.client.host if request.client else "unknown")
+        # Identify client (see rate_limit_client_id for why this is not just
+        # request.client.host)
+        client_id = rate_limit_client_id(request)
 
-        # Choose limits based on method and path
-        if request.url.path.startswith("/api/admin"):
-            rate, cap = 10.0 / 60, 10
-        elif request.method in ("POST", "PATCH", "DELETE"):
-            if "/queue" in request.url.path:
-                rate, cap = 300.0 / 60, 300
-            else:
-                rate, cap = settings.rate_limit_writes_per_min / 60, settings.rate_limit_writes_per_min
-        else:
-            rate, cap = settings.rate_limit_reads_per_min / 60, settings.rate_limit_reads_per_min
-
-        bucket = self._get_bucket(f"{client_id}:{request.method}", rate, cap)
+        scope, rate, cap = rate_limit_scope(request.method, request.url.path)
+        bucket = self._get_bucket(f"{client_id}:{scope}:{request.method}", rate, cap)
         if not bucket.consume():
             return JSONResponse(
                 status_code=429,
