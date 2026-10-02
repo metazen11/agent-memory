@@ -350,6 +350,34 @@ def _any_glob_matches(globs: list[str], files: list[str]) -> bool:
     return False
 
 
+# ── Distillation (automatic lesson creation) ─────────
+
+@router.post("/api/lessons/distill")
+async def distill_lessons(
+    dry_run: bool = Query(default=True),
+    lookback_days: int = Query(default=180, ge=1, le=3650),
+    min_occurrences: int = Query(default=10, ge=2, le=10000),
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """Mine recurring failures into lessons.
+
+    dry_run defaults to TRUE. A created lesson is injected into every
+    matching future session, so writing is an explicit opt-in rather than
+    something a stray call can do by accident.
+    """
+    from app.lesson_distill import distill_once
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await distill_once(
+            conn,
+            lookback_days=lookback_days,
+            min_occurrences=min_occurrences,
+            limit=limit,
+            dry_run=dry_run,
+        )
+
+
 # ── Update lesson ────────────────────────────────────
 
 @router.patch("/api/lessons/{lesson_id}", response_model=LessonOut)

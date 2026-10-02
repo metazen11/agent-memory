@@ -1,5 +1,129 @@
 # Handoff
 
+## 2026-09-23 — hints delivery, automatic distillation, syntactic search
+
+All three landed and are verified. Full suite: **342 passed, 1 skipped**,
+with rate limiting ENABLED (issues #63 and #64 also fixed, see below).
+
+NOTE: earlier runs in this session were described as "rate limiting
+disabled" using `AGENT_MEMORY_RATE_LIMIT_ENABLED=false`. That variable
+does nothing — `Settings` has no `env_prefix`, so the real name is
+`RATE_LIMIT_ENABLED`. Those runs actually had limiting ON.
+
+### 1. Hints were structurally undeliverable (commit 35a4e76)
+
+`hooks/pre-tool-use.js` queried `/api/lessons/match` without `trigger_on`
+or `modified_files`. The endpoint defaults `trigger_on='input'` and
+filters `WHERE l.trigger_on = $1`, so **every** `file_scope` lesson — all
+five created on 2026-09-23 — was unreachable from the hook. Editing
+`.mcp.json` reported "no active lessons match" while the same call
+against the API returned the CRITICAL lesson.
+
+It survived because verification hit the API and never the hook. Same
+write-path/read-path seam as the Anvil `default_stack()` bug. Tests now
+assert **through the hook process**; 3 of 4 fail against the old hook.
+
+### 2. Lessons are now created automatically (645ba9c, 1a16ff4)
+
+`app/lesson_distill.py` mines recurring failures from `mem_tool_calls`.
+Design is grounded in what the data actually shows — see the README table
+for the full rationale. The two non-obvious calls:
+
+- **Threshold on repetition, not distinct sessions.** 5,511 of 5,640
+  recent failures came from ONE long-running session; a "seen in >= 3
+  sessions" rule would have mined almost nothing.
+- **Triggers are derived in code, never from the LLM.** Asked for a
+  trigger, a model returns the broad-match shape migration 016 refuses.
+
+Schedule installed: launchd, Sunday 04:07 (`scripts/install_distill_schedule.sh --check`).
+5 lessons were created on the first real run and verified firing through
+the hook, correctly scoped to their project.
+
+### 3. Syntactic search (de3e1da)
+
+FTS used `to_tsquery`, which parses raw tsquery syntax — `foo()`,
+`file.py:42`, `a & b` all returned **500**. Now `websearch_to_tsquery`.
+Added `mode="literal"` plus an exact-phrase pass in the MCP search tool
+(fused at k=30, above the k=60 semantic pass).
+
+### Known issues / next steps
+
+- **`ANTHROPIC_API_KEY` has no credit.** Still true and still yours to
+  fix — topping it up remains the single highest-leverage change for
+  lesson quality. But it is **no longer silent (#64, a7be30a):**
+  `/api/health` now reports `billing_error` with the breaker open, a run
+  stops retrying after the first billing failure instead of re-paying the
+  13s throttle per candidate, and lessons record `synthesized_by` so
+  locally-written ones can be found and re-synthesized later.
+- ~~Rate limiting breaks the test suite~~ **FIXED (#63, c26cf46).** The
+  limiter now keys on agent identity with a per-scope segment. Two traps
+  found on the way: the suite was itself sending `X-Agent-Name: claude`
+  (identical to live hooks), so keying on agent name alone would have
+  fixed nothing — tests now identify as `pytest`; and the key was
+  `{client}:{method}` while limits vary by PATH, so `/api/admin` (cap 10)
+  and ordinary reads (cap 500) shared a bucket.
+- **Session summaries + budgeted SessionStart injection** remain the real
+  claude-mem parity gap. Unstarted. `session-start.js` retreated from
+  injection after a 15KB block blew the ~2KB cap; the fix is a budget
+  fitter, not omission.
+
+---
+
+## Earlier — Resume after reboot — 2026-09-20: remaining Codex hook errors
+
+**User paused troubleshooting to reboot. No hook repair has been applied in this session.**
+
+### Confirmed diagnosis
+
+- Workspace: `/Users/mz/_CODING/agentMemory` (shell renders `_coding` on this Mac).
+- Git was clean at the start; HEAD was `fa8e73a` (`fix(hooks): keep codex session end output contract-safe`), following `fdeac01` (`fix(hooks): repair agent-memory host wiring`). These earlier fixes are already present.
+- `~/.codex/hooks.json` still registers **missing files**:
+  - `~/.codex/hooks/git-session.js`: SessionStart, PreToolUse, SessionEnd.
+  - `~/.codex/hooks/env-guard.js`: PreToolUse.
+- Both source files still exist:
+  - `/Users/mz/_CODING/hooks/git-session/git-session.js`
+  - `/Users/mz/_CODING/hooks/env-guard/env-guard.js`
+- The four agent-memory hook symlinks in `~/.codex/hooks/` already point at this checkout and their targets exist. `no-attribution.js` also exists.
+- Missing registered scripts are a concrete failure source; the precise UI error has not yet been captured. Today's Codex desktop log search did not return matching hook errors. Do not claim every reported error is explained or fixed yet.
+
+### Next actions
+
+1. Recheck `~/.codex/hooks.json`, target existence, and Git status after reboot.
+2. Finish reviewing the source hooks for Codex compatibility, then restore the two missing symlinks. Writing under `~/.codex/hooks/` requires sandbox escalation. Use `ln -s` without force so an unexpected existing file is preserved:
+   ```bash
+   ln -s /Users/mz/_CODING/hooks/git-session/git-session.js /Users/mz/.codex/hooks/git-session.js
+   ln -s /Users/mz/_CODING/hooks/env-guard/env-guard.js /Users/mz/.codex/hooks/env-guard.js
+   ```
+3. Verify each registered hook script exists. Test hooks using isolated temporary fixtures: **git-session can initialize repos, create branches, commit, and push**, so do not smoke-test lifecycle handlers against this live workspace. Its PreToolUse output uses `permissionDecision: allow`; env-guard uses allow/deny. Confirm these match the installed host contract.
+4. Run CODE_REVIEW before TEST, then relevant hook integration checks (`tests/test_codex_hook_contract.py`) if code is changed. Existing tests invoke the local memory service; inspect isolation before running them. No tests or repairs were run before the reboot pause.
+5. Confirm a fresh Codex session no longer reports the errors; capture exact remaining errors if any. Update this handoff, task state, and README if implementation changes are made.
+
+### Useful context
+
+- Existing `scripts/repair-agent-memory-hooks.js` repairs agent-memory wiring only; it does not restore these unrelated git-session/env-guard files.
+- Source hook repository README was read. No source files there were edited. Read its applicable instructions before any edits.
+- Official hook reference: https://learn.chatgpt.com/docs/hooks (opened via https://developers.openai.com/codex/hooks). OpenAI Docs skill was consulted.
+- GitHub open issues were read; the ten latest concern fine-tuning and the web UI, with no matching hook task in that limited listing. No issue was created.
+- `todo.json` was read and retains older project tasks. This interruption is tracked in this handoff; no implementation task was completed.
+- Memory lookup returned historical hook-wiring context, not a resolution for these missing files.
+- User's initial “where did everything go?” remains ambiguous. The project directories (`app`, `models`, `data`, `fine-tune`, `docs`, etc.) are present; no deletion was established.
+
+---
+
+## Earlier handoff (historical; dates and pending actions below are stale)
+
+> **2026-05-18/19 infra sprint (separate track):** lesson-scope leak fixed,
+> session-start preamble shrunk 97%, new `recall()` + `abilities_memory()`
+> MCP tools, anvil reached lessons-inject parity with claude, integration
+> guide at `docs/INTEGRATION.md`, migration 015 quarantines super-projects
+> on fresh DBs, `tool_calls` router mount bug fixed (`/api/tool-calls` was
+> 404 since forever), codex per-turn-lessons gap specced at
+> `docs/sessions/codex-parity-todo.md`. Full write-up:
+> `docs/sessions/2026-05-19-memory-infra.md`. **8 commits on `dev`;
+> integration PR #51 (`dev → main`) is open and MERGEABLE
+> (fast-forward).** Stream 2 commits in the same PR are the v4/v4.5
+> fine-tune sprint — confirm intentional before merging.
+
 ## State (2026-09-25)
 
 **All three repos: `dev` and `main` in sync, clean, CI green.** No work in flight.

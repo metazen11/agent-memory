@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 
@@ -23,13 +24,80 @@ def generate_token() -> str:
     return f"mem_{secrets.token_urlsafe(32)}"
 
 
+# Header-derived agent names are attacker-controlled, so they are never used
+# raw. They are lowercased, stripped to a conservative charset, and truncated
+# before being used as a dict key anywhere (notably the rate limiter's
+# never-evicted `_buckets` map — see app/middleware.py). Without the cap, a
+# caller could mint unbounded distinct keys and grow that dict without limit.
+MAX_AGENT_NAME_LEN = 64
+_AGENT_NAME_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def sanitize_agent_name(raw: str | None) -> str:
+    """Normalize a caller-supplied agent name into a safe, bounded identifier.
+
+    Returns "" when nothing usable remains. Callers must treat "" as
+    "no agent name supplied" and fall back to another identity source —
+    never as "allowed".
+    """
+    if not raw:
+        return ""
+    cleaned = _AGENT_NAME_SAFE_RE.sub("-", raw.strip().lower()).strip("-")
+    return cleaned[:MAX_AGENT_NAME_LEN]
+
+
+def trusted_agent_list() -> list[str]:
+    """The configured trusted-agent names, lowercased and de-blanked."""
+    if not settings.trusted_agents:
+        return []
+    return [a.strip().lower() for a in settings.trusted_agents.split(",") if a.strip()]
+
+
+def resolve_agent_identity(request: Request) -> str:
+    """Resolve a caller's agent identity from request headers.
+
+    ``X-Agent-Name`` is resolved *completely* before ``User-Agent`` is looked
+    at. That ordering is load bearing: ``python-httpx`` is in the default
+    trusted list, so a single "scan both headers against the trusted list"
+    pass would collapse every httpx-based caller — the pytest suite included —
+    into one shared "python-httpx" identity, recreating the exact shared-bucket
+    failure issue #63 exists to fix. The explicit header always wins.
+
+    Within each header, a match against ``settings.trusted_agents`` returns the
+    *configured* trusted name rather than the raw value, keeping the identity
+    space closed over a known-small set so a hostile header cannot mint
+    arbitrary identities. A non-matching but non-empty header still yields a
+    sanitized identity, so unknown-but-self-identifying callers get their own
+    bucket instead of silently sharing one. Returns "" when no usable name is
+    present.
+
+    Shared by the auth trusted-caller check and the rate limiter, which must
+    agree on who the caller is.
+    """
+    trusted = [t for t in trusted_agent_list() if t != "*"]
+
+    for raw in (request.headers.get("X-Agent-Name", ""), request.headers.get("User-Agent", "")):
+        if not raw:
+            continue
+        lowered = raw.lower()
+        for t in trusted:
+            if t in lowered:
+                return t
+        identity = sanitize_agent_name(raw)
+        if identity:
+            return identity
+
+    return ""
+
+
 def _is_trusted_caller(request: Request) -> bool:
     """Check if the request comes from a trusted agent (localhost + User-Agent match).
 
     Trusted agents bypass token auth so existing integrations (Anvil middleware,
     MCP server, hooks) keep working without tokens during migration.
     """
-    if not settings.trusted_agents:
+    trusted = trusted_agent_list()
+    if not trusted:
         return False
 
     # Only trust localhost callers
@@ -38,14 +106,10 @@ def _is_trusted_caller(request: Request) -> bool:
         return False
 
     # Match User-Agent or X-Agent-Name header against trusted list
-    ua = request.headers.get("User-Agent", "")
-    agent_name = request.headers.get("X-Agent-Name", "")
-    trusted = [a.strip().lower() for a in settings.trusted_agents.split(",") if a.strip()]
-
-    for t in trusted:
-        if t in ua.lower() or t in agent_name.lower():
-            logger.debug("Trusted agent bypass: %s (matched %s)", agent_name or ua, t)
-            return True
+    identity = resolve_agent_identity(request)
+    if identity and identity in trusted:
+        logger.debug("Trusted agent bypass: %s", identity)
+        return True
 
     # Also trust any localhost caller if "*" is in the trusted list
     if "*" in trusted:

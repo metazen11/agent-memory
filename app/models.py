@@ -129,7 +129,10 @@ class SearchRequest(BaseModel):
     cross_project: bool = False
     type: list[str] | None = None
     limit: int = 10
-    mode: str = "hybrid"  # "vector" | "fts" | "hybrid"
+    # "vector" | "fts" | "hybrid" | "literal"
+    # literal = exact substring match (case-insensitive), for symbols,
+    # file:line refs, config keys and error strings that stemming mangles.
+    mode: str = "hybrid"
 
 
 class SearchResult(BaseModel):

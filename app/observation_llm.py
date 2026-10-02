@@ -4,6 +4,7 @@ import logging
 import re
 
 from app.config import settings
+from app import llm_provider_status as provider_status
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,12 @@ async def generate_observation_anthropic(
     import time
     global _last_anthropic_call
 
+    # Bail out BEFORE the throttle sleep. Once the breaker is open the call
+    # cannot succeed, and the 13s wait below would be pure waste — see
+    # app/llm_provider_status.py for the failure that motivated this.
+    if not provider_status.anthropic_available(settings.anthropic_api_key):
+        return None
+
     user_prompt = build_user_prompt(
         tool_name, tool_input, tool_response_preview, cwd, last_user_message
     )
@@ -223,10 +230,16 @@ async def generate_observation_anthropic(
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         )
-        return parse_llm_response(message.content[0].text)
     except Exception as e:
-        logger.error(f"Anthropic API error: {e}")
+        # Classify and record. A billing/auth failure trips the breaker so
+        # the remaining calls in this process skip Anthropic entirely
+        # instead of each re-paying the throttle for the same error.
+        status = provider_status.record_failure(e)
+        logger.error("Anthropic API error (%s): %s", status, e)
         return None
+
+    provider_status.record_success()
+    return parse_llm_response(message.content[0].text)
 
 
 async def generate_observation(
@@ -253,8 +266,10 @@ async def generate_observation(
             return result
         logger.debug("Local LLM skipped, trying Anthropic fallback")
 
-    # Fallback: Anthropic Haiku (rate-limited to 5 RPM on free tier)
-    if settings.anthropic_api_key:
+    # Fallback: Anthropic Haiku (rate-limited to 5 RPM on free tier).
+    # anthropic_available() folds together "no key configured" and "breaker
+    # open on a billing/auth failure" — both mean do not attempt the call.
+    if provider_status.anthropic_available(settings.anthropic_api_key):
         return await generate_observation_anthropic(
             tool_name, tool_input, tool_response_preview, cwd, last_user_message
         )

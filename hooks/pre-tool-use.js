@@ -86,15 +86,62 @@ function extractToolInputPreview(toolName, toolInput) {
 }
 
 /**
+ * Extract file paths a tool call will touch, for file_scope lesson matching.
+ * The API also falls back to basename matching, so both `.mcp.json` and
+ * `/abs/path/.mcp.json` match a `.mcp.json` glob.
+ */
+function extractModifiedFiles(toolName, toolInput) {
+  if (!toolInput) return [];
+  const files = [];
+  const push = (v) => { if (typeof v === 'string' && v) files.push(v); };
+
+  push(toolInput.file_path);
+  push(toolInput.notebook_path);
+  push(toolInput.path);
+
+  if (Array.isArray(toolInput.edits)) {
+    for (const e of toolInput.edits) push(e && e.file_path);
+  }
+
+  // Bash: pull path-looking tokens out of the command so editing a file via
+  // sed -i / heredoc / redirect still matches file_scope lessons. Deliberately
+  // loose — a false positive surfaces one extra lesson, a false negative
+  // silently loses a CRITICAL warning.
+  if (toolName === 'Bash') {
+    const cmd = toolInput.command || toolInput.cmd || '';
+    // Split on shell whitespace and redirects first, so a token like
+    // `.mcp.json` keeps its leading dot instead of being eaten by a
+    // greedy path alternative (an earlier regex turned it into `mcp.json`,
+    // which silently failed basename matching).
+    const words = cmd.split(/[\s;|&<>()'"`]+/);
+    for (const w of words) {
+      const t = w.replace(/^[=]+/, '');
+      if (!t || t.length > 300) continue;
+      // Keep anything that looks like a path or a dotted filename.
+      if (/\//.test(t) || /^[\w.~-]+\.[A-Za-z0-9]{1,8}$/.test(t)) push(t);
+    }
+  }
+
+  return [...new Set(files)].slice(0, 40);
+}
+
+/**
  * GET /api/lessons/match — fast lookup of matching lessons
  */
-function fetchLessonMatches(toolName, toolInputPreview, project) {
+function fetchLessonMatches(toolName, toolInputPreview, project, opts = {}) {
   return new Promise((resolve) => {
     const params = new URLSearchParams({
       tool_name: toolName,
       tool_input_preview: toolInputPreview.slice(0, 1000),
     });
     if (project) params.set('project', project);
+    // trigger_on defaults to 'input' server-side. file_scope lessons are
+    // invisible unless we ask for them explicitly AND send modified_files —
+    // that mismatch made every file_scope lesson unreachable from this hook.
+    if (opts.triggerOn) params.set('trigger_on', opts.triggerOn);
+    if (opts.modifiedFiles && opts.modifiedFiles.length) {
+      params.set('modified_files', opts.modifiedFiles.join(','));
+    }
 
     const url = new URL(`${SERVER_BASE}/api/lessons/match?${params}`);
     const req = http.get({
@@ -180,7 +227,37 @@ function shouldEmitEmptyReminder(sessionId) {
 const sessionId = input.session_id || '';
 
 (async () => {
-  const matches = await fetchLessonMatches(toolName, toolInputPreview, project);
+  // Query BOTH trigger types. The server filters on trigger_on, so a single
+  // default ('input') request can never surface a file_scope lesson.
+  const modifiedFiles = extractModifiedFiles(toolName, toolInput);
+  debug(`files=${modifiedFiles.slice(0, 5).join(',')}`);
+
+  const requests = [
+    fetchLessonMatches(toolName, toolInputPreview, project, { triggerOn: 'input' }),
+  ];
+  if (modifiedFiles.length) {
+    requests.push(
+      fetchLessonMatches(toolName, toolInputPreview, project, {
+        triggerOn: 'file_scope',
+        modifiedFiles,
+      })
+    );
+  }
+
+  const results = await Promise.all(requests);
+
+  // Merge, de-duplicate by id, critical first, cap at 5 to protect the
+  // systemMessage budget (same cap the server applies per-query).
+  const severityRank = { critical: 0, warning: 1, info: 2 };
+  const seen = new Set();
+  const matches = [];
+  for (const lesson of results.flat()) {
+    if (!lesson || typeof lesson.id === 'undefined' || seen.has(lesson.id)) continue;
+    seen.add(lesson.id);
+    matches.push(lesson);
+  }
+  matches.sort((a, b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
+  matches.splice(5);
 
   if (!Array.isArray(matches) || matches.length === 0) {
     debug('No lesson matches');
