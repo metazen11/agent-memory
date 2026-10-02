@@ -1,5 +1,111 @@
 # Handoff
 
+## 2026-10-02 — trunk reconciled, three live pipeline defects fixed
+
+Opened as "agent memory isn't updated or running with hooks." It was running:
+capture had never broken (tool calls and prompts landing seconds apart, 74k /
+2.4k rows). The actual fault was that **this clone was 18 commits behind
+`main`**, so the hooks — all five correctly symlinked into this repo — were
+executing last month's code.
+
+**PR #67 (`dev` -> `main`) is OPEN, MERGEABLE/CLEAN, 4/4 checks green.**
+Left unmerged deliberately: CONTRIBUTING makes that PR the human review gate.
+
+### What landed
+
+1. **Trunk reconciled** (18 commits). Brought in the branching contract,
+   `trunk-drift` + `contract-integrity` CI, `.githooks/pre-push`, ADR 0001,
+   and the MCP portability fix (#56).
+
+2. **Two active fixture lessons were being injected into live sessions.**
+   173 of 199 lessons were pytest fixtures; 171 were already `active=false`
+   and harmless, but `#93 "bucket probe"` (rule: *"probe rule that is long
+   enough to pass validation checks ok"*) was appearing verbatim in the
+   `Active Lessons` block, and `#91` was scoped to project 47215, which does
+   not exist. Both deactivated -> 25 active lessons, all real.
+
+3. **Root cause of #66 fixed** (commit on `dev`). Cleanup lived in
+   `test_api_lessons.py::test_deactivate_lesson`; a test only runs if
+   collection reaches it, so `-k`, `-x`, an earlier failure or Ctrl-C skipped
+   it. Now a session-scoped `autouse` teardown.
+
+4. **42 queue rows wedged in `processing`**, oldest since 2026-03-28 —
+   4,498 hours. Requeued; queue has fully drained to zero `processing`.
+
+### `.mcp.json` — read before touching
+
+`main` had moved to `args: ["-c", "exec \"$CLAUDE_PLUGIN_ROOT/..."]`. Correct
+for PLUGIN scope and the convention #56 documented — but this repo's
+`.mcp.json` is ALSO read as PROJECT scope, where the var is unset. Measured
+rather than argued:
+
+```
+$ env -u CLAUDE_PLUGIN_ROOT sh -c 'exec "$CLAUDE_PLUGIN_ROOT/scripts/run_mcp.sh"'
+sh: /scripts/run_mcp.sh: No such file or directory      # the ENOENT from #48
+```
+
+Both historical claims were true about different scopes. Resolution keeps
+both: `command: "sh"` (bare interpreter, satisfies every portability guard)
+plus a fallback loop trying `${CLAUDE_PLUGIN_ROOT:-}` FIRST, then known
+roots. `test_mcp_manifest.py` 6/6. Lesson #48 was rewritten to say this —
+as written it would have told the next session to reject main's correct fix.
+
+### Anthropic provider — still unpaid for THIS key
+
+Reported as paid; it is not, for this key. Verified live, not from the cached
+snapshot (fresh `req_011CfdTkVdRd5kVadeen2aAt`):
+
+- `models.list` -> **SUCCESS** (returns sonnet-5-5, opus-5-5, fable-5-1), so
+  the key authenticates and is not revoked
+- `messages.create` -> **400, credit balance too low**
+
+Auth fine + payment refused means the credit went to a different
+account/workspace than this key's org. Key itself is clean: `sk-ant-api03-`,
+108 chars, no whitespace or stray quotes, fingerprint `4570ac24446`
+(sha256 prefix). Check console.anthropic.com -> Plans & Billing, then confirm
+that key sits in the funded workspace. A Claude.ai Pro/Max subscription does
+NOT fund API usage.
+
+Not blocking: local daemon on `:3399` is healthy, so distillation runs on the
+local model — degraded quality, not an outage.
+
+**Filed #68**: `BILLING` is in `NON_TRANSIENT`, so the breaker latches for the
+process lifetime, and `reset()` — which documents itself as "for an explicit
+operator retry" — has no route. No way to clear it without restarting uvicorn,
+and `/api/health` reports stored state, so an operator cannot distinguish
+"still broken" from "fixed but not yet told."
+
+### Verified end state
+
+| Check | Result |
+|---|---|
+| Full suite on merged `dev` | **385 passed, 2 skipped** |
+| `test_mcp_manifest.py` | 6/6 |
+| Active fixture lessons, any scope | **0** (was 2) |
+| Active real lessons | 25, untouched |
+| Queue stuck >24h | **0** (was 42) |
+| `dev` behind `main` | **0** — contract rule 2 satisfied |
+| Everything committed + pushed | yes, `dev` and `work/session-20260923` both ahead 0 |
+
+### Next
+
+- Merge PR #67 (your call — it is the review gate)
+- Sort Anthropic billing on the right workspace, then restart uvicorn to clear
+  the latched breaker (or implement #68)
+- `origin/dev` had one commit I was missing (`3a73785`, #58); now merged in
+- `core.hooksPath` set in THIS clone; any other clone needs
+  `~/_CODING/hooks/repo-contract/bootstrap.sh` once per machine
+
+### Caveat on my own work
+
+The first version of the #66 teardown swept only the default scope, **passed
+its own verification**, and still leaked `#261 'Test lesson'` under project
+67850 on the next full run — `GET /api/lessons` without `project` returns only
+`project_id IS NULL` rows (deliberate). Caught by re-querying Postgres instead
+of trusting a green suite. Now sweeps global + `test_project`, deduped by id,
+verified under both a full run and a `-k` partial run (3 passed, 10
+deselected — the exact shape that produced the original 173 rows).
+
 ## 2026-09-23 — hints delivery, automatic distillation, syntactic search
 
 All three landed and are verified. Full suite: **342 passed, 1 skipped**,
