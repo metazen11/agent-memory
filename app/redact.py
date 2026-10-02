@@ -54,6 +54,30 @@ SECRET_PATTERNS = [
     ),
 ]
 
+# Filesystem paths that identify a machine or point at secret files (#57).
+#
+# The v5 pilot model memorized absolute paths from its training corpus and
+# emitted them as tool-call arguments — including dotenv files under
+# /Users/<name>/.claude/projects/... in response to unrelated prompts. A model
+# that reflexively reaches for secret files is a live risk once wired into an
+# agent that EXECUTES tool calls. Measured: 545/5000 rows (10.9%) of the v5
+# training set carried at least one of these.
+#
+# Deliberately NOT redacted: relative paths (config/settings.py) and system
+# paths (/usr, /opt, /tmp). They carry no identity and are the useful signal —
+# scrubbing them would gut the training data to no benefit.
+PATH_PATTERNS = [
+    # Home directories — the username is the identifying part. Keep the tail
+    # so "…/proj/config.py" still teaches path structure.
+    (re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+"), "[REDACTED:home]"),
+    # Unexpanded shell substitutions memorized verbatim from captured sessions.
+    (re.compile(r"\$\((?:HOSTNAME|hostname|date|pwd|whoami|USER|id)[^)]*\)"), "[REDACTED:shell_subst]"),
+    # References to dotenv-style secret files. Word-boundary anchored so
+    # "environment" and "docs/environment.md" are NOT false positives.
+    (re.compile(r"(?<![\w.])\.env(?:\.[A-Za-z0-9_-]+)?(?![\w])"), "[REDACTED:secret_file]"),
+]
+
+
 PII_PATTERNS = [
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"), "[REDACTED:email]"),
     (re.compile(r"\b\d{3}[-.]?\d{2}[-.]?\d{4}\b"), "[REDACTED:ssn]"),
@@ -69,6 +93,9 @@ def redact_text(text: str | None) -> str | None:
             text = pattern.sub(replacement, text)
     if settings.redact_pii:
         for pattern, replacement in PII_PATTERNS:
+            text = pattern.sub(replacement, text)
+    if getattr(settings, "redact_paths", True):
+        for pattern, replacement in PATH_PATTERNS:
             text = pattern.sub(replacement, text)
     return text
 

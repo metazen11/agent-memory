@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# pre-push — enforce the branching contract locally, on any machine.
+#
+# Installed by `git config core.hooksPath .githooks` (see repo-contract/install.sh).
+# This is the LOCAL half of the contract; GitHub branch protection is the
+# server-side half and the one that actually cannot be bypassed. This hook
+# exists to fail FAST with a useful message, before a push round-trips.
+#
+# Refuses:
+#   1. any direct push to the production trunk (main/master)
+#   2. a push to the integration trunk while it is BEHIND production
+#      (the drift that makes the next dev->main PR read as deletions)
+#
+# Override (audited, for genuine emergencies):
+#   ALLOW_PROTECTED_PUSH=1 git push ...
+
+set -uo pipefail
+
+remote_ref_prod=""
+for b in main master; do
+    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then remote_ref_prod="$b"; break; fi
+done
+[ -z "$remote_ref_prod" ] && exit 0   # no production trunk; nothing to protect
+
+integration=""
+for b in dev develop; do
+    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then integration="$b"; break; fi
+done
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _lref _lsha rref _rsha; do
+    [ -z "${rref:-}" ] && continue
+    target="${rref#refs/heads/}"
+
+    if [ "$target" = "$remote_ref_prod" ]; then
+        if [ "${ALLOW_PROTECTED_PUSH:-}" = "1" ]; then
+            echo "pre-push: WARNING — pushing directly to '$target' via ALLOW_PROTECTED_PUSH=1." >&2
+            continue
+        fi
+        cat >&2 <<MSG
+
+  ✗ pre-push REFUSED: direct push to '$target'.
+
+    '$target' is the production trunk. It receives commits ONLY through a
+    reviewed pull request from the integration trunk ('${integration:-dev}').
+
+    Instead:
+      git push origin ${integration:-dev}
+      gh pr create --base $target --head ${integration:-dev}
+
+    GitHub branch protection will refuse this push too — this hook just
+    tells you sooner. Genuine emergency: ALLOW_PROTECTED_PUSH=1 git push ...
+
+MSG
+        exit 1
+    fi
+
+    # Pushing the integration trunk while it is behind production => drift.
+    if [ -n "$integration" ] && [ "$target" = "$integration" ]; then
+        behind=$(git rev-list --count "origin/$integration..origin/$remote_ref_prod" 2>/dev/null || echo 0)
+        if [ "${behind:-0}" -gt 0 ]; then
+            cat >&2 <<MSG
+
+  ⚠ pre-push WARNING: '$integration' is $behind commit(s) BEHIND '$remote_ref_prod'.
+
+    Work reached production without passing through the integration trunk.
+    Your next $integration -> $remote_ref_prod PR will show those commits as
+    DELETIONS, silently reverting them.
+
+    Fix before promoting:
+      git fetch origin && git merge origin/$remote_ref_prod
+
+    (Not blocking this push.)
+
+MSG
+        fi
+    fi
+done
+
+exit 0

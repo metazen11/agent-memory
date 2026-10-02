@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mz/agentMemory/schemas/quality-gate-output.schema.json",
+  "title": "Quality Gate Output",
+  "description": "Canonical structured output of the aa_quality_gate specialist. Every non-trivial plan/issue reviewed before implementation MUST emit one JSON document conforming to this schema. Source contract: autonomous_agents_mds/agents/quality-gate.md. Referenced by CLAUDE.md and enforced by scripts/validate_quality_gate.py.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "verdict",
+    "source_reference",
+    "summary",
+    "gaps_found",
+    "refined_plan",
+    "acceptance_criteria",
+    "testing_plan",
+    "security_review",
+    "compliance_review",
+    "edge_cases",
+    "failure_modes",
+    "observability",
+    "deployment",
+    "definition_of_done",
+    "documentation",
+    "improvements"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "needs_refinement", "blocked"],
+      "description": "Overall gate decision. 'approved' only when no open critical/major gaps. 'blocked' when the plan is dangerous (requires block_reason)."
+    },
+    "block_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required explanation when verdict is 'blocked'."
+    },
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["system", "id"],
+      "properties": {
+        "system": {"type": "string", "description": "Origin system, e.g. 'github'."},
+        "id": {"type": "string", "description": "Originating issue/plan id, e.g. 'GH-55'."},
+        "url": {"type": "string", "description": "Link to the source."}
+      }
+    },
+    "summary": {"type": "string", "minLength": 1, "description": "What this plan accomplishes and why."},
+    "gaps_found": {
+      "type": "array",
+      "description": "Every gap the gate found. An empty array is only consistent with verdict 'approved'.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["gap", "severity", "recommendation"],
+        "properties": {
+          "gap": {"type": "string", "minLength": 1},
+          "severity": {"type": "string", "enum": ["critical", "major", "minor"]},
+          "recommendation": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "refined_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["objective", "scope", "non_goals", "steps"],
+      "properties": {
+        "objective": {"type": "string"},
+        "scope": {"type": "string"},
+        "non_goals": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array"}
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["criterion", "testable", "verification_method"],
+        "properties": {
+          "criterion": {"type": "string", "minLength": 1},
+          "testable": {"type": "boolean"},
+          "verification_method": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "testing_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["unit", "integration", "e2e", "negative", "regression"],
+      "properties": {
+        "unit": {"type": "array"},
+        "integration": {"type": "array"},
+        "e2e": {"type": "array"},
+        "negative": {"type": "array"},
+        "regression": {"type": "array"}
+      }
+    },
+    "security_review": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["risks", "controls", "secrets_handling", "auth_requirements"],
+      "properties": {
+        "risks": {"type": "array"},
+        "controls": {"type": "array"},
+        "secrets_handling": {"type": "string"},
+        "auth_requirements": {"type": "string"}
+      }
+    },
+    "compliance_review": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["applicable_frameworks", "requirements"],
+      "properties": {
+        "applicable_frameworks": {"type": "array", "items": {"type": "string"}},
+        "requirements": {"type": "array"}
+      }
+    },
+    "edge_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["case", "expected_behavior"],
+        "properties": {
+          "case": {"type": "string"},
+          "expected_behavior": {"type": "string"}
+        }
+      }
+    },
+    "failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["failure", "degradation", "recovery"],
+        "properties": {
+          "failure": {"type": "string"},
+          "degradation": {"type": "string"},
+          "recovery": {"type": "string"}
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["logs", "metrics", "alerts", "error_messages"],
+      "properties": {
+        "logs": {"type": "array"},
+        "metrics": {"type": "array"},
+        "alerts": {"type": "array"},
+        "error_messages": {"type": "array"}
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["steps", "rollback"],
+      "properties": {
+        "steps": {"type": "array"},
+        "rollback": {"type": "array"}
+      }
+    },
+    "definition_of_done": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string"}
+    },
+    "documentation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["updates_needed"],
+      "properties": {
+        "updates_needed": {"type": "array"}
+      }
+    },
+    "improvements": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["docs_to_update", "proposed_ci_checks", "agents_md_additions"],
+      "properties": {
+        "docs_to_update": {"type": "array"},
+        "proposed_ci_checks": {"type": "array"},
+        "agents_md_additions": {"type": "array"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"verdict": {"const": "blocked"}}},
+      "then": {"required": ["block_reason"]}
+    }
+  ]
+}

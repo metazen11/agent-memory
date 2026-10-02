@@ -32,6 +32,7 @@ Usage:
 
   SKIP_AUDIT=1                   → skip entirely (tiny smoke tests only)
   AUDIT_VERIFY_PATHS=0           → skip path-exists checks (faster)
+  AUDIT_VERIFY_HASHES=0          → skip git commit-hash checks (faster)
 
 Exit code 0 = PASS, 1 = FAIL (with summary).
 """
@@ -52,9 +53,15 @@ FOREIGN_USER_RE = re.compile(r"/Users/(?!mz/|<user>/)[a-z_-]+/")
 
 # Category 8a deterministic: find absolute paths and verify they exist
 ABS_PATH_RE = re.compile(r"(?:^|[\s\"'(=,>])(/Users/mz/[\w./\-_]+|~/[\w./\-_]+)")
-# Hex git hash (7+ chars, must be hex-only). Bounded so we don't match
-# arbitrary alphanumeric runs.
-GIT_HASH_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+# Git commit references: only a hash introduced by a commit-context word
+# (commit/sha/rev/HEAD@ etc.). We deliberately do NOT match bare hex runs —
+# a 7+ hex string appears in plenty of non-commit content (checksums, ids)
+# and flagging those would be noise, not fabrication. The trailing hash is
+# hex-only, 7–40 chars, matching Git short/full object ids.
+GIT_COMMIT_REF_RE = re.compile(
+    r"\b(?:commit|sha|rev(?:ision)?|at commit|in commit)\s+([0-9a-f]{7,40})\b",
+    re.I,
+)
 
 # Category 8a heuristic (soft)
 LET_ME_RE = re.compile(r"\bLet me\b", re.I)
@@ -127,12 +134,52 @@ def _path_exists(p: str) -> bool:
     return result
 
 
-def audit(jsonl_path: Path, verify_paths: bool = True) -> tuple[bool, dict]:
+# Cache of "is this a real git object in this repo" lookups
+_GIT_HASH_CACHE: dict[str, bool] = {}
+
+
+def _git_hash_exists(h: str, repo_root: Path) -> bool:
+    """True if `h` resolves to a real object in the repo (git cat-file -e).
+
+    Deterministic fabrication check for C8a-D: a "commit <hash>" reference in
+    assistant content that does NOT exist in git is a fabricated citation —
+    the row is teaching the model to invent commit ids. Any git failure
+    (not a repo, git absent) is treated as "cannot verify" → not fabricated,
+    so the check never fails the build on environment gaps, only on a hash
+    git actively reports as unknown.
+    """
+    if h in _GIT_HASH_CACHE:
+        return _GIT_HASH_CACHE[h]
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "-e", f"{h}^{{commit}}"],
+            capture_output=True,
+            timeout=5,
+        )
+        exists = result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        exists = True  # cannot verify → do not flag as fabricated
+    _GIT_HASH_CACHE[h] = exists
+    return exists
+
+
+def audit(
+    jsonl_path: Path,
+    verify_paths: bool = True,
+    verify_hashes: bool = True,
+    repo_root: Path | None = None,
+) -> tuple[bool, dict]:
     """Return (passed, report_dict).
 
     verify_paths=False skips Path.exists() lookups (faster, but loses the
     deterministic fabricated-path check).
+    verify_hashes=False skips `git cat-file` lookups (faster, but loses the
+    deterministic fabricated-commit check). repo_root defaults to this repo.
     """
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[2]
     n = 0
     counters: Counter = Counter()
     pattern_examples: dict[str, str] = {}
@@ -164,6 +211,18 @@ def audit(jsonl_path: Path, verify_paths: bool = True) -> tuple[bool, dict]:
                 counters["c8a_fabricated_paths"] += 1
                 pattern_examples.setdefault("c8a_fabricated_paths", fab_paths[0])
 
+        # C8a-D: fabricated commit-hash references. Only hashes in an explicit
+        # commit context are checked; each is verified against git.
+        if last_text and verify_hashes:
+            fab_hashes = []
+            for m in GIT_COMMIT_REF_RE.finditer(last_text):
+                h = m.group(1)
+                if not _git_hash_exists(h, repo_root):
+                    fab_hashes.append(h)
+            if fab_hashes:
+                counters["c8a_fabricated_hashes"] += 1
+                pattern_examples.setdefault("c8a_fabricated_hashes", fab_hashes[0])
+
         # C8a-H: agentic-monologue heuristic (soft signal, higher threshold)
         if last_text:
             if len(LET_ME_RE.findall(last_text)) >= 3:
@@ -181,6 +240,7 @@ def audit(jsonl_path: Path, verify_paths: bool = True) -> tuple[bool, dict]:
         ("c1_dropbox_paths",       0.01),  # any Dropbox at all is a red flag
         ("c1_foreign_user",        0.01),
         ("c8a_fabricated_paths",   0.05),  # 5% fabricated-path rows max
+        ("c8a_fabricated_hashes",  0.05),  # 5% fabricated-commit rows max
     ]
     # Soft gates (heuristic) — exceeding these prints a warning but doesn't fail
     soft_gates = [
@@ -233,13 +293,14 @@ def main() -> int:
         return 2
 
     verify_paths = os.getenv("AUDIT_VERIFY_PATHS", "1") == "1"
+    verify_hashes = os.getenv("AUDIT_VERIFY_HASHES", "1") == "1"
     all_passed = True
     for split in ("train.chat.jsonl", "valid.chat.jsonl"):
         f = base / split
         if not f.exists():
             print(f"FAIL: {f} missing", file=sys.stderr)
             return 2
-        passed, report = audit(f, verify_paths=verify_paths)
+        passed, report = audit(f, verify_paths=verify_paths, verify_hashes=verify_hashes)
         all_passed = all_passed and passed
         print(f"\n=== AUDIT: {split} ===")
         print(f"  rows: {report['row_count']}  (verify_paths={verify_paths})")
