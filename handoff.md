@@ -405,3 +405,8 @@ and credential-pattern scans passed. No remaining blocking review findings.
 Publication uses one clean commit on `codex/codex-memory-repair`, then the
 required integration promotion through `dev -> main`. Hook activation still
 requires the user's trust review of new/changed host definitions.
+
+Published `e830fcd` to `codex/codex-memory-repair` and `dev`. Promotion PR:
+https://github.com/metazen11/agent-memory/pull/69 (`dev -> main`), open and
+mergeable. Local gate: 401 passed, 2 skipped; remote push checks passed.
+The PR is attached to the Codex chat. Merge remains the human review gate.

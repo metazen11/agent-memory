@@ -53,7 +53,7 @@
       ]
     },
     "codex-integration": {
-      "status": "in-progress",
+      "status": "completed",
       "tasks": [
         {
           "id": "codex-hooks-20261003",
@@ -72,9 +72,9 @@
         {
           "id": "codex-pr-20261003",
           "task": "Review and publish Codex memory repairs through dev to main pull request",
-          "status": "in-progress",
+          "status": "completed",
           "priority": "high",
-          "notes": "Review fixes applied; 401 passed, 2 skipped; Ruff, Python compilation, Node syntax and credential scan passed. Ready to push and open PR."
+          "notes": "Code review fixes applied; 401 passed, 2 skipped; lint/build/syntax/credential checks passed. Commit e830fcd pushed to feature branch and dev. PR #69 open: https://github.com/metazen11/agent-memory/pull/69 (dev -> main); merge remains the review gate."
         }
       ]
     }
