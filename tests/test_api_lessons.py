@@ -314,3 +314,27 @@ async def test_strict_scope_treats_sql_wildcards_as_literal_path_characters(clie
             assert lesson_id in {row["id"] for row in response.json()}
     finally:
         await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
+
+
+@pytest.mark.asyncio
+async def test_archive_alias_lookup_uses_local_scope_without_archive_access(client, test_prefix):
+    local = "/Users/mz/_CODING/" + test_prefix
+    archived = "/Users/mz/Dropbox/_CODING/" + test_prefix
+    response = await client.post("/api/lessons", json={
+        "title": test_prefix + "-archival-alias", "rule": "Use the local working directory.",
+        "project": local, "trigger_tool": "Bash", "trigger_pattern": test_prefix,
+    })
+    assert response.status_code == 200
+    lesson_id = response.json()["id"]
+    try:
+        for endpoint in ["/api/lessons", "/api/lessons/match"]:
+            for cwd in [local, archived, archived + "/"]:
+                response = await client.get(endpoint, params={
+                    "project": cwd, "strict_scope": "true", "tool_name": "Bash",
+                    "tool_input_preview": test_prefix, "limit": 100,
+                })
+                assert response.status_code == 200
+                own = next(row for row in response.json() if row["id"] == lesson_id)
+                assert own["project_name"] == local
+    finally:
+        await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})

@@ -75,6 +75,13 @@
           "status": "completed",
           "priority": "high",
           "notes": "Code review fixes applied; 401 passed, 2 skipped; lint/build/syntax/credential checks passed. Commit e830fcd pushed to feature branch and dev. PR #69 open: https://github.com/metazen11/agent-memory/pull/69 (dev -> main); merge remains the review gate."
+        },
+        {
+          "id": "codex-review-followup-20261003",
+          "task": "Resolve PR 69 occurrence identity and offline glob matching findings; verify current local project scope",
+          "status": "completed",
+          "priority": "high",
+          "notes": "Resolved all three PR #69 findings: exact session/project/hash/time occurrence identity, fnmatch-compatible offline globs, canonical path comparisons with no archive access. 422 passed, 2 skipped; 33,099 glob cases agreed. Read-only backfill preview reports 465 unmatched source identities; no data re-imported. Automatic hints still require user hook trust review."
         }
       ]
     }

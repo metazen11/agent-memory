@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { requestJson, compileLessonMatchesFromSnapshot, preToolHintsEnabled } = require('./common');
+const { normalizeProjectPath, requestJson, compileLessonMatchesFromSnapshot, preToolHintsEnabled } = require('./common');
 const http = require('http');
 const fs = require('fs');
 
@@ -25,7 +25,7 @@ function parseArgs(argv) {
     tool: event?.tool_name || '',
     input: stringifyPreview(event?.tool_input),
     toolInput: event?.tool_input || {},
-    project: event?.cwd || process.cwd(),
+    project: normalizeProjectPath(event?.cwd || process.cwd()),
     hookMode: !!event,
   };
   for (let i = 2; i < argv.length; i++) {
@@ -34,6 +34,7 @@ function parseArgs(argv) {
     else if (a === '--input') args.input = argv[++i] || '';
     else if (a === '--project') args.project = argv[++i] || args.project;
   }
+  args.project = normalizeProjectPath(args.project);
   return args;
 }
 

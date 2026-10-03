@@ -280,19 +280,87 @@ function formatLessons(lessons) {
   return lines.join('\n');
 }
 
+// Historical archive aliases are compared against the local working root.
+// This string rewrite never follows a symlink or accesses the archive.
+function normalizeProjectPath(value) {
+  if (!value) return value;
+  const local = value.replace(/^\/Users\/mz\/Dropbox\/_CODING(?=\/|$)/, '/Users/mz/_CODING');
+  return path.normalize(local).replace(/\/$/, '') || '/';
+}
+
 function lessonAppliesToProject(lesson, projectPath) {
   const scope = lesson.project_name;
   if (!scope || !projectPath || !path.isAbsolute(scope)) return false;
-  const project = path.normalize(projectPath);
-  const base = path.normalize(scope).replace(/\/$/, '');
+  const project = normalizeProjectPath(projectPath);
+  const base = normalizeProjectPath(scope);
   return project === base || project.startsWith(base + '/');
+}
+
+// Match Python fnmatch: wildcards cross slashes, ? matches one character,
+// [abc], [a-z], [!abc] are sets, and unmatched [ is literal. Backslashes
+// are ordinary characters, rather than escape prefixes.
+function fnmatchRegex(pattern) {
+  const chars = Array.from(pattern);
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let regex = '^';
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    if (c === '*') regex += '.*';
+    else if (c === '?') regex += '.';
+    else if (c !== '[') regex += escape(c);
+    else {
+      const start = i + 1;
+      let end = start;
+      if (chars[end] === '!') end++;
+      if (chars[end] === ']') end++;
+      while (end < chars.length && chars[end] !== ']') end++;
+      if (end === chars.length) {
+        regex += '\\[';
+        continue;
+      }
+      let stuff = chars.slice(start, end).join('');
+      if (stuff.includes('-')) {
+        const chunks = [];
+        let from = start;
+        let k = chars[start] === '!' ? start + 2 : start + 1;
+        while (k < end) {
+          while (k < end && chars[k] !== '-') k++;
+          if (k >= end) break;
+          chunks.push(chars.slice(from, k).join(''));
+          from = k + 1;
+          k += 3;
+        }
+        const last = chars.slice(from, end).join('');
+        if (last) chunks.push(last);
+        else chunks[chunks.length - 1] += '-';
+        // Python fnmatch removes descending ranges instead of rejecting the glob.
+        for (let n = chunks.length - 1; n > 0; n--) {
+          if (chunks[n - 1].slice(-1) > chunks[n][0]) {
+            chunks[n - 1] = chunks[n - 1].slice(0, -1) + chunks[n].slice(1);
+            chunks.splice(n, 1);
+          }
+        }
+        stuff = chunks.map(v => v.replace(/\\/g, '\\\\').replace(/-/g, '\\-')).join('-');
+      } else stuff = stuff.replace(/\\/g, '\\\\');
+      i = end;
+      if (!stuff) regex += '(?!)';
+      else if (stuff === '!') regex += '.';
+      else {
+        if (stuff[0] === '!') stuff = '^' + stuff.slice(1);
+        else if (stuff[0] === '^' || stuff[0] === '[') stuff = '\\' + stuff;
+        stuff = stuff.replace(/\]/g, '\\]');
+        regex += '[' + stuff + ']';
+      }
+    }
+  }
+  return new RegExp(regex + '(?![\\s\\S])', 'su');
 }
 
 function compileLessonMatchesFromSnapshot({ toolName, toolInputPreview, projectPath, modifiedFiles = [] }) {
   const snapshot = readJsonFile(LESSONS_FILE, { lessons: [] });
   const lessons = Array.isArray(snapshot?.lessons) ? snapshot.lessons : [];
   const matches = [];
-  if (snapshot.project_path && projectPath !== snapshot.project_path) return matches;
+  if (snapshot.project_path && normalizeProjectPath(projectPath) !== normalizeProjectPath(snapshot.project_path)) return matches;
   for (const l of lessons) {
     if (!l || l.active === false) continue;
     if (l.trigger_tool && l.trigger_tool !== toolName) continue;
@@ -306,7 +374,7 @@ function compileLessonMatchesFromSnapshot({ toolName, toolInputPreview, projectP
     if (trigger === 'file_scope') {
       const patterns = l.trigger_files || [];
       const matchesFile = patterns.some(glob => {
-        const re = new RegExp('^' + glob.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+        const re = fnmatchRegex(glob);
         return modifiedFiles.some(file => re.test(file) || re.test(path.basename(file)));
       });
       if (!matchesFile) continue;
@@ -334,6 +402,8 @@ function compileLessonMatchesFromSnapshot({ toolName, toolInputPreview, projectP
 }
 
 module.exports = {
+  normalizeProjectPath,
+  fnmatchRegex,
   SERVER_BASE,
   STATE_DIR,
   SESSION_FILE,

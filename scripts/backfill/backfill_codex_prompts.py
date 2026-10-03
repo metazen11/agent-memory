@@ -119,39 +119,66 @@ def literal(value) -> str:
     return "NULL" if value is None else "'" + str(value).replace("'", "''") + "'"
 
 
-def existing_counts() -> dict[str, Counter]:
-    raw = psql(
-        "SELECT COALESCE(json_agg(x),'[]'::json) FROM (SELECT s.session_id, p.prompt_text FROM mem_user_prompts p JOIN mem_sessions s ON s.id=p.session_id WHERE p.agent_name LIKE 'codex%') x;"
+def prompt_identity(row: dict) -> tuple[str, str, str, str]:
+    """An occurrence belongs to one session, project and source timestamp."""
+    timestamp = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+    return (
+        row["sid"],
+        row["cwd"],
+        row["hash"],
+        timestamp.astimezone(timezone.utc).isoformat(),
     )
-    counts = defaultdict(Counter)
+
+
+def existing_occurrences() -> set[tuple[str, str, str, str]]:
+    raw = psql(
+        "SELECT COALESCE(json_agg(x),'[]'::json) FROM ("
+        "SELECT s.session_id, p.prompt_text, p.created_at, pr.full_path "
+        "FROM mem_user_prompts p JOIN mem_sessions s ON s.id=p.session_id "
+        "JOIN mem_projects pr ON pr.id=p.project_id "
+        "WHERE p.agent_name LIKE 'codex%') x;"
+    )
+    occurrences = set()
     for row in json.loads(raw):
         text = normalize_text(redact_text(row["prompt_text"])) or ""
-        counts[row["session_id"]][hashlib.sha256(text.encode()).hexdigest()] += 1
-    return counts
+        occurrences.add(
+            prompt_identity(
+                {
+                    "sid": row["session_id"],
+                    "cwd": normalize_text(row["full_path"]),
+                    "hash": hashlib.sha256(text.encode()).hexdigest(),
+                    "timestamp": row["created_at"],
+                }
+            )
+        )
+    return occurrences
 
 
 def plan(
-    rows: list[dict], existing: dict[str, Counter]
+    rows: list[dict], existing: set[tuple[str, str, str, str]]
 ) -> tuple[dict[str, list[dict]], int]:
     sessions = defaultdict(list)
     skipped = 0
     seen = set()
-    occurrence = defaultdict(Counter)
+    ordinals = Counter()
+    projects = {}
     for row in sorted(rows, key=lambda r: (r["sid"], r["timestamp"])):
-        key = (row["sid"], row["timestamp"], row["hash"])
+        cwd = row["cwd"]
+        if cwd not in projects:
+            projects[cwd] = (
+                normalize_text(resolve_git_context(cwd).canonical_root_path) or cwd
+            )
+        row = row | {"cwd": projects[cwd]}
+        key = prompt_identity(row)
         if key in seen:
             skipped += 1
             continue
         seen.add(key)
-        occurrence[row["sid"]][row["hash"]] += 1
-        ordinal = sum(occurrence[row["sid"]].values())
-        if (
-            occurrence[row["sid"]][row["hash"]]
-            <= existing.get(row["sid"], Counter())[row["hash"]]
-        ):
+        ordinals[row["sid"]] += 1
+        if key in existing:
             skipped += 1
             continue
-        sessions[row["sid"]].append(row | {"ordinal": ordinal})
+        sessions[row["sid"]].append(row | {"ordinal": ordinals[row["sid"]]})
     return dict(sessions), skipped
 
 
@@ -185,7 +212,7 @@ def write_session(sid: str, rows: list[dict], run_id: str, projects: dict) -> in
     statements.append(f"""WITH candidates(text,hash,ts,ordinal,project_path) AS (VALUES {values}),
     session AS (SELECT id FROM mem_sessions WHERE session_id={literal(sid)}),
     base AS (SELECT COALESCE(MAX(prompt_number),0) n FROM mem_user_prompts WHERE session_id=(SELECT id FROM session)),
-    missing AS (SELECT c.* FROM candidates c WHERE NOT EXISTS (SELECT 1 FROM mem_user_prompts p WHERE p.session_id=(SELECT id FROM session) AND p.content_hash=c.hash AND p.created_at=c.ts)),
+    missing AS (SELECT c.* FROM candidates c WHERE NOT EXISTS (SELECT 1 FROM mem_user_prompts p WHERE p.session_id=(SELECT id FROM session) AND p.content_hash=c.hash AND p.created_at=c.ts AND p.project_id=(SELECT id FROM mem_projects WHERE full_path=c.project_path))),
     inserted AS (INSERT INTO mem_user_prompts(session_id,project_id,prompt_number,prompt_text,agent_name,turn_index,content_hash,retention_class,backfill_run_id,created_at)
     SELECT (SELECT id FROM session),p.id,(base.n+row_number() OVER(ORDER BY m.ts,m.ordinal))::integer,m.text,'codex-cli',m.ordinal,m.hash,'backfill_codex',{literal(run_id)},m.ts
     FROM missing m CROSS JOIN base JOIN mem_projects p ON p.full_path=m.project_path RETURNING id)
@@ -247,7 +274,7 @@ def main():
         parsed, stats = parse_transcript(file)
         rows.extend(parsed)
         counts.update(stats)
-    sessions, skipped = plan(rows, existing_counts())
+    sessions, skipped = plan(rows, existing_occurrences())
     summary = {
         "run_id": run_id,
         "commit": args.commit,

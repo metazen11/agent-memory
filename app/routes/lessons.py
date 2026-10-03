@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.path_normalize import normalize_text
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
@@ -17,6 +18,13 @@ VALID_TRIGGER_PHASES = ("pre_tool", "post_tool", "pre_response", "session_end")
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _normalize_hint_project(project: str | None) -> str | None:
+    # Translate historical archive aliases as strings; never access them.
+    if not project:
+        return project
+    return normalize_text(project.rstrip("/") + "/").rstrip("/") or "/"
 
 
 def _row_to_lesson(row) -> LessonOut:
@@ -153,6 +161,7 @@ async def list_lessons(
     active: bool | None = True,
     limit: int = Query(default=20, le=100),
 ):
+    project = _normalize_hint_project(project)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -237,6 +246,7 @@ async def match_lessons(
 
     Returns max 5 lessons, critical first. Must be fast (<50ms).
     """
+    project = _normalize_hint_project(project)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["l.active = true"]

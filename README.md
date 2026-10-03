@@ -407,3 +407,18 @@ session state. Live Codex queue ingestion links tools to the latest prompt in
 the same native session and canonical project. Strict hint scopes compare path
 prefixes literally, including `_` and `%`. Backfill reports default to a unique
 run filename so a later run preserves the previous audit manifest.
+
+
+PR #69 review follow-up: backfill reconciliation uses each occurrence's native
+session, canonical project, text hash and UTC source timestamp; a later repeated
+prompt cannot hide an earlier missing turn. The transactional duplicate guard
+also includes project identity. Records captured with a different server timestamp
+are reported as candidates rather than guessed into source turns; inspect a
+preview before importing them. Offline file-scope matching supports the API's
+Python `fnmatch` patterns (`*`, `?`, sets, ranges and negated sets).
+
+The working root is `/Users/mz/_CODING`. Dropbox is archival only. Legacy path
+strings from historical records are translated to the local root at comparison
+and ingestion boundaries without opening the archive. Hints display the local
+project path. Prompt hints require a scoped critical lesson; pre-tool warnings
+require a matching tool, input or file pattern. No match produces no hint.

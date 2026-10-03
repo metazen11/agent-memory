@@ -1,3 +1,28 @@
+## 2026-10-03 — PR #69 automated review follow-up
+
+Addressed three GitHub review comments: source occurrence identity replaces
+anonymous per-hash counts; offline file glob matching follows Python fnmatch;
+strict API and JavaScript scope comparisons canonicalize historical aliases to
+local paths. Dropbox remains archival; working files and services use
+`/Users/mz/_CODING`. No filesystem operations use the archive path.
+
+Reviewed identity/project guard, glob parity and scope isolation before TEST.
+Final verification: **422 passed, 2 skipped** (one existing embedding warning).
+Ruff, Python compilation, Node syntax and whitespace checks passed. A separate
+33,099-case comparison against Python fnmatch found zero mismatches.
+New preview reports 465 source occurrences without exact identities in the
+existing data; old live captures may have server timestamps. This is an audit
+candidate count, not proof that all are missing. No prompts or tool links were
+rewritten/imported during this follow-up. Earlier count-based zero-gap claims
+are superseded by occurrence-based reconciliation. Audit report:
+`logs/codex-backfill/review-occurrences-preview.json`.
+
+Hint visibility: only current lesson is warning #77, scoped to `.mcp.json`;
+there are no current-project critical prompt lessons. Native prompt/pre-tool
+hooks lack trust state; automatic delivery is not yet verified. Existing
+SessionStart context is visible to the model. Hook definitions still need the
+user's Codex trust review; no trusted hashes have been fabricated.
+
 ## 2026-10-03 — Pre-PR code review
 
 User requested review before push/PR. Review found and fixed: failed native

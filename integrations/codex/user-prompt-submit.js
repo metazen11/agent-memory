@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
-const { requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!event.session_id || typeof event.prompt !== 'string') return {};
-  const project = event.cwd || process.cwd();
+  const project = normalizeProjectPath(event.cwd || process.cwd());
   const payload = { session_id: event.session_id, prompt: event.prompt, cwd: project, agent_name: 'codex-cli' };
   // Await persistence so the following tool call can link to this prompt.
   try {
@@ -22,7 +22,7 @@ async function main() {
     lessons = Array.isArray(data) ? data : [];
   } catch {
     const snapshot = readJsonFile(LESSONS_FILE, {});
-    lessons = snapshot.project_path === project ? snapshot.lessons || [] : [];
+    lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
   }
   const critical = lessons.filter(l => l.active !== false && l.severity === 'critical' && lessonAppliesToProject(l, project)).slice(0, 5);
   const hint = `Agent Memory hints — ${project}\n${formatLessons(critical)}`.slice(0, 6000);

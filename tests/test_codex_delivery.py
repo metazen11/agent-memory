@@ -281,3 +281,76 @@ def test_patch_matches_both_edit_and_write_lesson_aliases(hook_host):
         if path.startswith("/api/lessons/match")
     }
     assert names == {"apply_patch", "Edit", "Write"}
+
+
+@pytest.mark.parametrize(
+    "pattern,file",
+    [
+        ("src/test_?.py", "src/test_a.py"),
+        ("src/test_?.py", "src/test_ab.py"),
+        ("src/[ab].py", "src/a.py"),
+        ("src/[ab].py", "src/c.py"),
+        ("[!a-c].py", "z.py"),
+        ("[!a-c].py", "b.py"),
+        ("[z-a].py", "z.py"),
+        ("[!z-a].py", "z.py"),
+        ("[]].py", "].py"),
+        ("[[]*.py", "[file.py"),
+        ("[abc.py", "[abc.py"),
+        ("*.py", "src/sub/file.py"),
+        ("?.py", "é.py"),
+        ("?.py", "😀.py"),
+        ("x.py", "x.py\n"),
+        ("*", "file\nname"),
+    ],
+)
+def test_offline_file_globs_match_api_fnmatch(hook_host, pattern, file):
+    from app.routes.lessons import _any_glob_matches
+
+    run, requests, tmp = hook_host
+    state = tmp / ".agent-memory-codex"
+    state.mkdir()
+    (state / "lessons.snapshot.json").write_text(
+        json.dumps(
+            {
+                "project_path": str(tmp),
+                "lessons": [
+                    {
+                        "id": 1,
+                        "rule": "GLOB_HINT",
+                        "severity": "warning",
+                        "active": True,
+                        "project_name": str(tmp),
+                        "trigger_on": "file_scope",
+                        "trigger_files": [pattern],
+                    }
+                ],
+            }
+        )
+    )
+    out = run(
+        "pre-tool-trigger.js",
+        {
+            "session_id": "native",
+            "cwd": str(tmp),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": file},
+        },
+        {"AGENT_MEMORY_SERVER": "http://127.0.0.1:1"},
+    )
+    assert bool(out) == _any_glob_matches([pattern], [file])
+
+
+def test_archival_scope_comparisons_canonicalize_to_local_working_root():
+    script = """
+const {lessonAppliesToProject, normalizeProjectPath}=require('./integrations/codex/common');
+console.log(JSON.stringify([
+ normalizeProjectPath('/Users/mz/Dropbox/_CODING/repo/'),
+ lessonAppliesToProject({project_name:'/Users/mz/_CODING/repo'},'/Users/mz/Dropbox/_CODING/repo/subdir'),
+ lessonAppliesToProject({project_name:'/Users/mz/_CODING/repo'},'/Users/mz/_CODING/repo-sibling'),
+]));
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=ROOT, text=True, capture_output=True, check=True
+    )
+    assert json.loads(result.stdout) == ["/Users/mz/_CODING/repo", True, False]
