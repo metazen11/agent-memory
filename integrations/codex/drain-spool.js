@@ -8,10 +8,6 @@ const {
 
 async function main() {
   const state = readSessionState();
-  if (!state?.project_path) {
-    console.log(JSON.stringify({ ok: true, skipped: 'no_session_state' }));
-    return;
-  }
 
   // Draining is gated on the API being REACHABLE, not on service *recovery*
   // having run. Previously both were coupled, so a perfectly healthy service
@@ -33,7 +29,7 @@ async function main() {
     }
   }
 
-  if (drained > 0 || recovery.ok) {
+  if (state?.project_path && (drained > 0 || recovery.ok)) {
     await refreshSnapshots({
       projectPath: state.project_path,
       projectName: state.project,

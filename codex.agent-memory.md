@@ -66,8 +66,9 @@ node scripts/hints-config.js tui
 `~/.codex/hooks.json`:
 
 - `SessionStart` starts or resumes an agent-memory session.
-- `PreToolUse` checks active lessons for risky tool calls.
-- `PostToolUse` records tool calls to `/api/queue`.
+- `UserPromptSubmit` captures each prompt and injects up to five critical lessons.
+- `PreToolUse` checks input and file-scope lessons, including `apply_patch`, and injects model-visible hints.
+- `PostToolUse` records all supported local tool calls (including MCP) to `/api/queue`.
 - `SessionEnd` marks the session completed.
 
 The installed hook shims live in `~/.codex/hooks/` and symlink back to the
@@ -103,3 +104,19 @@ If using the wrapper, session end is automatic. Otherwise run:
 ```bash
 node integrations/codex/session-end.js
 ```
+
+Native hooks must be reviewed and trusted in Codex hook settings (`/hooks` in
+the CLI). Changed definitions require a fresh trust review; installation does
+not grant trust. Reopen the chat after updating configuration. Native event
+session IDs keep prompts and tool calls together across concurrent chats.
+Ordinary ChatGPT Chat does not execute these hooks; Work requires local scripts
+and service access. The old history ingester is a CLI fallback, not Desktop's
+live prompt source.
+
+Codex hints use `strict_scope=true`: only the current cwd or ancestor project
+scopes qualify; unscoped, child, and sibling lessons are excluded. Prompt and
+pre-tool hints send the same capped text as a visible `systemMessage` and
+model-visible `additionalContext`, prefixed with the current project path.
+
+Legacy SessionEnd history ingestion is opt-in with
+`AGENT_MEMORY_CODEX_HISTORY_FALLBACK=1`; native capture is the default.

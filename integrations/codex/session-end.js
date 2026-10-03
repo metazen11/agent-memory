@@ -6,8 +6,8 @@ const { readSessionState, requestJson } = require('./common');
 
 /**
  * Fire-and-forget background tasks: drain any spooled queue payloads and
- * ingest Codex user prompts from ~/.codex/history.jsonl (Codex has no
- * UserPromptSubmit hook, so history.jsonl is the only prompt source).
+ * optionally ingest legacy CLI history. Native UserPromptSubmit captures
+ * current prompts; history fallback requires explicit opt-in.
  *
  * Detached + unref'd so this can never block session teardown or write to
  * this hook's stdout — the hook's stdout is a strict JSON contract.
@@ -34,14 +34,19 @@ function readHookEvent() {
 }
 
 async function main() {
-  const hookMode = !!readHookEvent();
+  const event = readHookEvent();
+  const hookMode = !!event;
 
   // Kick these off regardless of session state: the spool and the prompt
   // history both outlive any single session.
   spawnBackgroundTask('drain-spool.js');
-  spawnBackgroundTask('ingest-history.js');
+  // Desktop prompts arrive through UserPromptSubmit. Opt in to the legacy
+  // CLI history drain rather than assigning cwd-less historical rows here.
+  if (process.env.AGENT_MEMORY_CODEX_HISTORY_FALLBACK === '1') {
+    spawnBackgroundTask('ingest-history.js');
+  }
 
-  const state = readSessionState();
+  const state = event?.session_id ? { session_id: event.session_id } : readSessionState();
   if (!state?.session_id) {
     console.log(JSON.stringify(hookMode ? {} : { ok: true, skipped: 'no_session_state' }));
     return;

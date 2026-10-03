@@ -106,7 +106,7 @@ async def test_match_endpoint_skips_broad_match_input_lessons(client, test_prefi
             "tool_input_preview": "ls -la",
         })
         assert resp.status_code == 200
-        matched_ids = [l["id"] for l in resp.json()]
+        matched_ids = [lesson["id"] for lesson in resp.json()]
         assert legacy_id not in matched_ids, (
             f"Legacy broad-match lesson {legacy_id} leaked through the "
             f"match endpoint despite runtime filter. Matched: {matched_ids}"
@@ -147,7 +147,7 @@ async def test_match_lessons(client, test_project):
     data = resp.json()
     assert isinstance(data, list)
     # Our test lesson should match (trigger_tool=Bash, pattern="git push")
-    matched_ids = [l["id"] for l in data]
+    matched_ids = [lesson["id"] for lesson in data]
     assert _created_lesson_ids[0] in matched_ids
 
 
@@ -195,7 +195,7 @@ async def test_match_lessons_parent_cwd_does_not_match_child_project(client, tes
         "project": parent,
     })
     assert resp.status_code == 200
-    matched_ids = [l["id"] for l in resp.json()]
+    matched_ids = [lesson["id"] for lesson in resp.json()]
     assert child_lesson_id not in matched_ids, (
         f"Child-project lesson {child_lesson_id} leaked into parent cwd match. "
         f"Matched IDs: {matched_ids}"
@@ -208,7 +208,7 @@ async def test_match_lessons_parent_cwd_does_not_match_child_project(client, tes
         "project": child,
     })
     assert resp.status_code == 200
-    matched_ids = [l["id"] for l in resp.json()]
+    matched_ids = [lesson["id"] for lesson in resp.json()]
     assert child_lesson_id in matched_ids, (
         f"Child-project lesson {child_lesson_id} missing when matched from "
         f"its own cwd. Matched IDs: {matched_ids}"
@@ -222,7 +222,7 @@ async def test_match_lessons_parent_cwd_does_not_match_child_project(client, tes
         "project": grandchild,
     })
     assert resp.status_code == 200
-    matched_ids = [l["id"] for l in resp.json()]
+    matched_ids = [lesson["id"] for lesson in resp.json()]
     assert child_lesson_id in matched_ids, (
         f"Lesson {child_lesson_id} missing when matched from grandchild "
         f"cwd {grandchild}. Matched IDs: {matched_ids}"
@@ -264,3 +264,53 @@ async def test_deactivate_lesson(client):
         resp = await client.patch(f"/api/lessons/{lid}", json={"active": False})
         assert resp.status_code == 200
         assert resp.json()["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_strict_hint_scope_excludes_child_sibling_and_global(client, test_project, test_prefix):
+    """Both hint endpoints bind to cwd without leaking nearby projects."""
+    created = []
+    try:
+        for suffix, project in [("own", test_project), ("child", test_project + "/child"), ("sibling", test_project + "-sibling"), ("global", None)]:
+            resp = await client.post("/api/lessons", json={
+                "title": f"{test_prefix}-strict-{suffix}", "rule": "Check the current project contract before changing its code.",
+                "project": project, "severity": "critical", "trigger_tool": "Bash",
+                "trigger_pattern": test_prefix,
+            })
+            assert resp.status_code == 200, resp.text
+            created.append(resp.json()["id"])
+        for endpoint in ["/api/lessons", "/api/lessons/match"]:
+            params = {"project": test_project, "strict_scope": "true", "limit": 100, "tool_name": "Bash", "tool_input_preview": test_prefix}
+            resp = await client.get(endpoint, params=params)
+            assert resp.status_code == 200, resp.text
+            rows = resp.json()
+            ids = {r["id"] for r in rows}
+            assert created[0] in ids
+            assert not ids.intersection(created[1:])
+            own = next(r for r in rows if r["id"] == created[0])
+            assert own["project_name"] == test_project
+            params["project"] = test_project + "/subdir"
+            inherited = await client.get(endpoint, params=params)
+            assert created[0] in {r["id"] for r in inherited.json()}
+    finally:
+        for lesson_id in created:
+            await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
+
+
+@pytest.mark.asyncio
+async def test_strict_scope_treats_sql_wildcards_as_literal_path_characters(client, test_project, test_prefix):
+    scope = test_project + "/scope_100%"
+    response = await client.post("/api/lessons", json={"title": test_prefix + "-literal-path", "rule": "Check the project path literally before delivering this hint.", "project": scope, "trigger_tool": "Bash", "trigger_pattern": test_prefix})
+    assert response.status_code == 200
+    lesson_id = response.json()["id"]
+    try:
+        for endpoint in ["/api/lessons", "/api/lessons/match"]:
+            params = {"project": test_project + "/scopeX100Z/subdir", "strict_scope": "true", "tool_name": "Bash", "tool_input_preview": test_prefix, "limit": 100}
+            response = await client.get(endpoint, params=params)
+            assert response.status_code == 200
+            assert lesson_id not in {row["id"] for row in response.json()}
+            params["project"] = scope + "/subdir"
+            response = await client.get(endpoint, params=params)
+            assert lesson_id in {row["id"] for row in response.json()}
+    finally:
+        await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})

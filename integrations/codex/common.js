@@ -174,6 +174,10 @@ function runEnsureServices() {
   };
 }
 
+function saveSpooledPromptPayload(payload) {
+  return saveSpooledQueuePayload({ route: '/api/prompts', payload });
+}
+
 function saveSpooledQueuePayload(payload) {
   ensureSpoolDir();
   const file = path.join(SPOOL_DIR, `${Date.now()}-${process.pid}.json`);
@@ -206,9 +210,15 @@ async function drainSpooledQueue() {
       continue;
     }
     try {
-      await postQueuePayload(payload, 2500);
+      if (payload.route === '/api/prompts' && payload.payload) {
+        await requestJson('POST', '/api/prompts', payload.payload, 2500);
+      } else {
+        await postQueuePayload(payload, 2500);
+      }
       drained += 1;
       try { fs.unlinkSync(file); } catch {}
+      // Share the normal write budget with live capture during recovery.
+      await new Promise(resolve => setTimeout(resolve, 650));
     } catch {
       break;
     }
@@ -224,7 +234,7 @@ async function refreshSnapshots({ projectPath, projectName, includeLessons = tru
     mode: 'hybrid',
   }, 5000).catch(() => ({ data: { observations: [] } }));
   const lessonsReq = includeLessons
-    ? requestJson('GET', `/api/lessons?project=${encodeURIComponent(projectPath)}&active=true&limit=25`, null, 3000)
+    ? requestJson('GET', `/api/lessons?project=${encodeURIComponent(projectPath)}&active=true&limit=25&strict_scope=true`, null, 3000)
       .catch(() => ({ data: [] }))
     : Promise.resolve({ data: [] });
   const [recentResp, lessonsResp] = await Promise.all([recentReq, lessonsReq]);
@@ -270,19 +280,38 @@ function formatLessons(lessons) {
   return lines.join('\n');
 }
 
-function compileLessonMatchesFromSnapshot({ toolName, toolInputPreview, projectPath }) {
+function lessonAppliesToProject(lesson, projectPath) {
+  const scope = lesson.project_name;
+  if (!scope || !projectPath || !path.isAbsolute(scope)) return false;
+  const project = path.normalize(projectPath);
+  const base = path.normalize(scope).replace(/\/$/, '');
+  return project === base || project.startsWith(base + '/');
+}
+
+function compileLessonMatchesFromSnapshot({ toolName, toolInputPreview, projectPath, modifiedFiles = [] }) {
   const snapshot = readJsonFile(LESSONS_FILE, { lessons: [] });
   const lessons = Array.isArray(snapshot?.lessons) ? snapshot.lessons : [];
   const matches = [];
+  if (snapshot.project_path && projectPath !== snapshot.project_path) return matches;
   for (const l of lessons) {
     if (!l || l.active === false) continue;
     if (l.trigger_tool && l.trigger_tool !== toolName) continue;
     const scopedProject = l.project_name || null;
-    if (projectPath && l.project_name && !projectPath.startsWith(l.project_name)) {
+    if (!lessonAppliesToProject(l, projectPath)) {
       // best-effort scope check based on stored project_name/path
       continue;
     }
-    if (l.trigger_pattern) {
+    const trigger = l.trigger_on || 'input';
+    if (!['input', 'file_scope'].includes(trigger)) continue;
+    if (trigger === 'file_scope') {
+      const patterns = l.trigger_files || [];
+      const matchesFile = patterns.some(glob => {
+        const re = new RegExp('^' + glob.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+        return modifiedFiles.some(file => re.test(file) || re.test(path.basename(file)));
+      });
+      if (!matchesFile) continue;
+    }
+    if (trigger === 'input' && l.trigger_pattern) {
       try {
         const re = new RegExp(l.trigger_pattern, 'i');
         if (!re.test(toolInputPreview || '')) continue;
@@ -326,10 +355,12 @@ module.exports = {
   readJsonFile,
   runEnsureServices,
   saveSpooledQueuePayload,
+  saveSpooledPromptPayload,
   listSpooledPayloadFiles,
   drainSpooledQueue,
   refreshSnapshots,
   compileLessonMatchesFromSnapshot,
+  lessonAppliesToProject,
   formatRecentObservations,
   formatLessons,
   hintsEnabled,

@@ -1,3 +1,91 @@
+## 2026-10-03 — Pre-PR code review
+
+User requested review before push/PR. Review found and fixed: failed native
+prompt writes now spool and recover without session state; live Codex queue
+writes now resolve prior prompt IDs within the same native session/project;
+strict project scope uses literal `starts_with` rather than wildcard SQL LIKE.
+Patch lesson checks cover apply_patch/Edit/Write aliases. Trigger tracking
+sockets are unref'd so the 2-second pre-tool hook budget is preserved. Backfill
+parser rejects scalar/malformed records; default audit files have unique run
+IDs and are not overwritten by later runs. New tests cover offline recovery,
+patch aliases, wildcard paths, and live prompt-to-tool isolation.
+
+Full suite before these review fixes: 397 passed, 2 skipped. Final reviewed gate: **401 passed, 2 skipped**, with one pre-existing
+embedding-library deprecation warning. Ruff checks now pass for all
+changed Python files; new script/tests were formatted for readability.
+
+## 2026-10-03 — Codex transcript prompt backfill
+
+User authorized restoring missed history after the hook repair. Built
+`scripts/backfill/backfill_codex_prompts.py`: reads active + archived rollout
+JSONL, excludes injected context/delegated-agent messages, preserves native
+session IDs and source UTC timestamps, redacts secrets, normalizes Dropbox
+paths, and resolves canonical git projects. Original cwd can change per turn.
+
+Uses `scripts/psql_wrapper.sh` exclusively; no credentials printed. Default is
+preview, `--commit` performs paced (650 ms), atomic per-session imports.
+`backfill_run_id` plus reports under `logs/codex-backfill/` provide resumability
+and audit evidence. Repeated human turns remain distinct. Existing prompt
+hash counts are consumed during planning; exact session/hash/time guards prevent
+repeated writes. Existing records are not renumbered or moved to other projects.
+Optional `--link-tools` fills missing links only within the same session and
+project and to the nearest preceding prompt. It never replaces an existing link.
+
+CODE_REVIEW completed before TEST: SQL literal escaping, transaction isolation,
+resumption, source filtering, path normalization and secret redaction reviewed.
+Parser + hook regression suite: **17 passed**. Live pilot imported one prompt;
+second planning pass skipped it. Completed: **1,699 prompts restored across 91 sessions**, spanning Dec 7,
+2025 through Oct 3, 2026. Pilot: 1 prompt; full run: 1,698 prompts in 90
+sessions. **7,222 existing tool calls linked** to the nearest preceding prompt
+in the same native session and project. Database verification found **0 invalid
+links**. Repeat preview: **0 missing prompts**; repeat linkage: **0 changes**.
+528 context/empty messages and 650 delegated messages excluded. Existing prompts
+are preserved; no historical synthetic session IDs were heuristically merged.
+
+Audit report: `logs/codex-backfill/completed.json` (includes tool/prompt IDs),
+preview/recheck: `preview.json`, `verification.json`; UTC progress: `import.log`.
+Rollback for links: clear prev_user_prompt_id only for the report's tool IDs
+still pointing at the recorded prompt IDs. Then delete imported prompt rows
+for the report run_id and pilot_run_id. Existing tool rows remain intact.
+No schema migration, rate limiter change, remote push, or PR.
+
+## 2026-10-03 — Codex capture and hints repair
+
+Investigation confirmed working MCP recall, SessionStart context, and 825 Codex
+Bash records in the previous day. Gaps: no live Desktop prompt recorder
+(history.jsonl stale since Sep 20), synthetic SessionStart IDs split session
+records, MCP/local tools excluded by PostToolUse matcher, and PreToolUse never
+queried file_scope lessons or emitted model-visible additionalContext.
+
+Repair adds native UserPromptSubmit capture plus capped critical hints, native
+session IDs for start/end, file_scope/patch-path hint delivery, and all-local-tool
+PostToolUse capture. Registration updates matcher in place and appends new
+handlers, preserving existing hook indices. Changed/new host definitions need
+user trust review through Codex hook settings; no trust hashes are forged.
+Ordinary ChatGPT Chat has no local hook runtime; Work requires script/service
+availability. API health still reports Anthropic billing_error, with database
+and embeddings healthy and a local LLM fallback configured.
+
+CODE_REVIEW checked scoping, output contracts, session identity, DRY helper,
+timeout budgets, and registration order before TEST. Focused verification:
+`tests/test_codex_delivery.py`, `tests/test_codex_hook_contract.py`, and
+`tests/test_api_lessons.py`: **27 passed, 1 skipped** (database correctly rejects
+a legacy broad-match fixture). `.venv-finetune` lacks pytest; `.venv/bin/python`
+is working for this suite. Live API restarted gracefully via ensure-services,
+strict-scope endpoints verified with current-project lessons, latest user prompt
+saved under native session ID, and warning #77 delivered through the Node hook
+for an `.mcp.json` patch. No patch was executed by that diagnostic.
+
+Registered only Codex hooks: existing entries stayed in place; prompt handler
+appended; PostToolUse matcher updated. Activation of new/changed definitions
+requires user trust review in Codex hook settings, then chat reopen. PreToolUse
+also had no saved trust entry. No config trust records were modified. Legacy
+history drain now opt-in (`AGENT_MEMORY_CODEX_HISTORY_FALLBACK=1`).
+
+An existing session checkpoint hook committed the first seven changed files as
+`76a55f6` during this work; subsequent edits remain in the working tree. No
+remote push or PR was created. Memory observation #100860 preserves diagnosis.
+
 # Handoff
 
 ## 2026-10-02 — trunk reconciled, three live pipeline defects fixed
@@ -305,3 +393,15 @@ pristine `dev`, unrelated to recent work.
   **Q4_K_M**. Test via LM Studio.
 - Do NOT kill the git-session checkpoint hook — its handoff marker was the only
   pointer to an anvil commit unreachable from both trunks.
+
+Codex hints use `strict_scope=true`: only the current cwd or ancestor project
+scopes qualify; unscoped, child, and sibling lessons are excluded. Prompt and
+pre-tool hints send the same capped text as a visible `systemMessage` and
+model-visible `additionalContext`, prefixed with the current project path.
+
+Pre-PR checks: Ruff passed for all changed Python files, Python compileall
+passed, Node syntax checks passed for 12 integration/installer files, whitespace
+and credential-pattern scans passed. No remaining blocking review findings.
+Publication uses one clean commit on `codex/codex-memory-repair`, then the
+required integration promotion through `dev -> main`. Hook activation still
+requires the user's trust review of new/changed host definitions.

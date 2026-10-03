@@ -29,6 +29,7 @@ const CODEX = createHostWiring({ root: ROOT, home: HOME }).codex;
 const REQUIRED = [
   'integrations/codex/session-start.js',
   'integrations/codex/session-end.js',
+  'integrations/codex/user-prompt-submit.js',
   'integrations/codex/pre-tool-trigger.js',
   'integrations/codex/post-tool-hook.js',
   'integrations/codex/drain-spool.js',
@@ -90,7 +91,7 @@ function ensureExecutableBits() {
 
 function installCodexHooks() {
   installHookSymlinks(CODEX, ROOT);
-  registerHookEntries(CODEX.settingsFile, CODEX.hookEntries);
+  registerHookEntries(CODEX.settingsFile, CODEX.hookEntries, { updateMatchers: true });
   const sessionEnd = CODEX.hookEntries.find((item) => item.event === 'SessionEnd');
   if (sessionEnd) unregisterHookEntries(CODEX.settingsFile, [{ ...sessionEnd, event: 'Stop' }]);
 }

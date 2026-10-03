@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-03-28",
+  "lastUpdated": "2026-10-03",
   "projects": {
     "postgis": {
       "status": "pending",
@@ -10,7 +10,7 @@
           "task": "Install PostGIS extension for pg16",
           "status": "pending",
           "priority": "medium",
-          "notes": "Brew bottle targets pg17/18 — must build from source against pg16 (same as pgvector). Install deps: brew install gdal geos proj json-c protobuf-c sfcgal. Then compile PostGIS 3.5 with PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config. Alternative: upgrade to pg17 first (requires pg_upgrade), then use bottled PostGIS."
+          "notes": "Brew bottle targets pg17/18 \u2014 must build from source against pg16 (same as pgvector). Install deps: brew install gdal geos proj json-c protobuf-c sfcgal. Then compile PostGIS 3.5 with PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config. Alternative: upgrade to pg17 first (requires pg_upgrade), then use bottled PostGIS."
         }
       ]
     },
@@ -41,7 +41,7 @@
           "task": "Save lesson about pgvector + brew on pg16",
           "status": "pending",
           "priority": "low",
-          "notes": "Bottled pgvector doesn't support pg16 — must build from source. Same applies to PostGIS."
+          "notes": "Bottled pgvector doesn't support pg16 \u2014 must build from source. Same applies to PostGIS."
         },
         {
           "id": "5",
@@ -49,6 +49,32 @@
           "status": "pending",
           "priority": "low",
           "notes": "Script currently does brew install pgvector which installs wrong version for pg16."
+        }
+      ]
+    },
+    "codex-integration": {
+      "status": "in-progress",
+      "tasks": [
+        {
+          "id": "codex-hooks-20261003",
+          "task": "Repair native Codex prompt capture, session identity and model-visible lesson hints; verify hook processes",
+          "status": "completed",
+          "priority": "high",
+          "notes": "CODE_REVIEW complete; 27 passed, 1 expected skip. API reloaded, Codex hooks registered without reordering. Native prompt saved and real project file-scope hint verified through Node process. Automatic activation requires user hook trust review."
+        },
+        {
+          "id": "codex-backfill-20261003",
+          "task": "Backfill genuine Codex transcript prompts with native sessions, original project scope, timestamps and idempotency",
+          "status": "completed",
+          "priority": "high",
+          "notes": "Imported 1,699 genuine prompts across 91 native sessions from 253 local transcripts; 7,222 existing tool calls linked. Repeat preview and linkage pass changed zero rows. Source timestamps/projects preserved; 17 tests passed; audit reports logs/codex-backfill/."
+        },
+        {
+          "id": "codex-pr-20261003",
+          "task": "Review and publish Codex memory repairs through dev to main pull request",
+          "status": "in-progress",
+          "priority": "high",
+          "notes": "Review fixes applied; 401 passed, 2 skipped; Ruff, Python compilation, Node syntax and credential scan passed. Ready to push and open PR."
         }
       ]
     }

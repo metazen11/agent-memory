@@ -2,11 +2,9 @@
 /**
  * Ingest Codex user prompts into agent-memory.
  *
- * Codex exposes no UserPromptSubmit-style hook, so prompts never reached
- * mem_user_prompts the way Claude's user-prompt-submit.js delivers them.
- * Without them, mem_observations.prompt_number stays NULL for every Codex row
- * and the tool_calls⋈user_prompts join used by the fine-tune dataset builder
- * yields no Codex training data.
+ * Legacy CLI fallback only: modern Codex uses user-prompt-submit.js for live
+ * capture. Desktop may not write history.jsonl at all. Enable this fallback
+ * explicitly with AGENT_MEMORY_CODEX_HISTORY_FALLBACK=1 if needed.
  *
  * Codex does maintain ~/.codex/history.jsonl ({session_id, text, ts}), which is
  * the same information after the fact. This tails that file and POSTs new
@@ -14,7 +12,7 @@
  * so re-running is safe; we additionally persist a cursor to avoid re-POSTing
  * the whole file on every invocation.
  *
- * Wired to SessionStart (drains the previous session's prompts) and SessionEnd.
+ * Opt-in SessionEnd drain for older CLI installations.
  */
 const fs = require('fs');
 const path = require('path');

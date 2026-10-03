@@ -149,6 +149,7 @@ async def create_lesson(lesson: LessonCreate):
 async def list_lessons(
     project: str | None = None,
     severity: str | None = None,
+    strict_scope: bool = False,
     active: bool | None = True,
     limit: int = Query(default=20, le=100),
 ):
@@ -166,7 +167,16 @@ async def list_lessons(
         # Before this change, project=None returned every lesson regardless of
         # scope, which leaked other-project lessons into the session-start /
         # user-prompt-submit injections.
-        if project is not None:
+        if strict_scope:
+            # Hint injection is bound to cwd, including ancestor project scopes.
+            # Exclude unscoped rows and never pull child/sibling projects.
+            if project:
+                clause, pidx = project_path_filter_strict(pidx)
+                conditions.append(clause)
+                params.extend([project, project])
+            else:
+                conditions.append('FALSE')
+        elif project is not None:
             basename = Path(project).name or project
             clause, pidx = project_path_filter(pidx)
             conditions.append(
@@ -191,7 +201,7 @@ async def list_lessons(
 
         params.append(limit)
         rows = await conn.fetch(f"""
-            SELECT l.*, p.name as project_name
+            SELECT l.*, {"p.full_path" if strict_scope else "p.name"} as project_name
             FROM mem_lessons l
             LEFT JOIN mem_projects p ON p.id = l.project_id
             {where}
@@ -215,6 +225,7 @@ async def match_lessons(
     tool_output_preview: str = Query(default=""),
     trigger_phase: str | None = None,
     modified_files: str = Query(default=""),
+    strict_scope: bool = False,
 ):
     """Match active lessons for a tool/lifecycle event.
 
@@ -264,10 +275,10 @@ async def match_lessons(
         # every project under /Users/mz/_CODING/*.
         if project:
             path_clause, pidx = project_path_filter_strict(pidx)
-            conditions.append(f"(l.project_id IS NULL OR {path_clause})")
+            conditions.append(path_clause if strict_scope else f"(l.project_id IS NULL OR {path_clause})")
             params.extend([project, project])
         else:
-            conditions.append("l.project_id IS NULL")
+            conditions.append("FALSE" if strict_scope else "l.project_id IS NULL")
 
         # Phase-specific: also filter by trigger_phase in SQL
         if trigger_on == "phase" and trigger_phase:
@@ -281,7 +292,7 @@ async def match_lessons(
             SELECT l.id, l.title, l.rule, l.severity,
                    l.trigger_pattern, l.trigger_output_pattern,
                    l.trigger_phase, l.trigger_files,
-                   l.trigger_count, p.name as project_name
+                   l.trigger_count, {"p.full_path" if strict_scope else "p.name"} as project_name
             FROM mem_lessons l
             LEFT JOIN mem_projects p ON p.id = l.project_id
             {where}

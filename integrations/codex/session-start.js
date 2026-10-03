@@ -14,6 +14,7 @@ const {
   formatRecentObservations,
   formatLessons,
   sessionHintsEnabled,
+  lessonAppliesToProject,
 } = require('./common');
 const fs = require('fs');
 
@@ -32,7 +33,7 @@ async function main() {
   const hookMode = !!event;
   const cwd = event?.cwd || process.cwd();
   const project = projectNameFromCwd(cwd);
-  const sessionId = process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
+  const sessionId = event?.session_id || process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
   const hintsOn = sessionHintsEnabled();
 
   let online = true;
@@ -82,6 +83,8 @@ async function main() {
     }
   }
 
+  lessons = lessons.filter(l => lessonAppliesToProject(l, cwd));
+
   const context = [
     '# Agent Memory (Codex)',
     '',
@@ -111,6 +114,7 @@ async function main() {
 
   if (hookMode) {
     console.log(JSON.stringify({
+      ...(lessons.length ? { systemMessage: `Agent Memory hints — ${cwd}\n${formatLessons(lessons.slice(0, 5))}`.slice(0, 6000) } : {}),
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: context,
