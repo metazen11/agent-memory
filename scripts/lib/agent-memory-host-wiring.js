@@ -78,12 +78,14 @@ function createHostWiring({ root, home }) {
       ['integrations/codex/pre-tool-trigger.js', 'agent-memory-pre-tool-trigger.js'],
       ['integrations/codex/post-tool-hook.js', 'agent-memory-post-tool-use.js'],
       ['integrations/codex/session-end.js', 'agent-memory-session-end.js'],
+      ['integrations/codex/user-prompt-submit.js', 'agent-memory-user-prompt-submit.js'],
     ],
     hookEntries: [
       { event: 'SessionStart', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-session-start.js')}'`, 60) },
       { event: 'PreToolUse', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-pre-tool-trigger.js')}'`, 2, 'Edit|Write|NotebookEdit|Bash') },
-      { event: 'PostToolUse', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-post-tool-use.js')}'`, 5, 'Read|Edit|Write|Bash|Grep|Glob|NotebookEdit|WebFetch|WebSearch') },
+      { event: 'PostToolUse', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-post-tool-use.js')}'`, 5, '*') },
       { event: 'SessionEnd', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-session-end.js')}'`, 10) },
+      { event: 'UserPromptSubmit', entry: hookEntry(`node '${path.join(codexHooksDir, 'agent-memory-user-prompt-submit.js')}'`, 5) },
     ],
   };
 
@@ -96,7 +98,7 @@ function installHookSymlinks(host, root) {
   }
 }
 
-function registerHookEntries(settingsFile, entries) {
+function registerHookEntries(settingsFile, entries, { updateMatchers = false } = {}) {
   const settings = readJson(settingsFile, { hooks: {} });
   if (!settings.hooks) settings.hooks = {};
   let added = 0;
@@ -107,7 +109,7 @@ function registerHookEntries(settingsFile, entries) {
       candidate.hooks && candidate.hooks.some((hook) => hook.command === command)
     ));
     if (existing) {
-      if (entry.matcher && !existing.matcher) existing.matcher = entry.matcher;
+      if (entry.matcher && (!existing.matcher || updateMatchers)) existing.matcher = entry.matcher;
       continue;
     }
     settings.hooks[event].push(entry);

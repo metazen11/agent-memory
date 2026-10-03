@@ -90,6 +90,21 @@ async def queue_observation(item: QueueItem):
         tool_input_json = json.dumps(tool_input_norm) if tool_input_norm else None
         last_user_message_norm = normalize_text(item.last_user_message)
 
+        # Native Codex prompt hooks persist before tool execution. Keep live
+        # ledger rows linked so historical backfill is not needed every time.
+        previous_prompt = None
+        if source_system in ("codex", "codex-cli"):
+            previous_prompt = await conn.fetchrow(
+                """SELECT id, prompt_text, turn_index, prompt_number
+                   FROM mem_user_prompts
+                   WHERE session_id = $1 AND project_id = $2
+                     AND created_at <= now()
+                   ORDER BY created_at DESC, id DESC LIMIT 1""",
+                session_db_id, project_id,
+            )
+            if previous_prompt and not last_user_message_norm:
+                last_user_message_norm = previous_prompt["prompt_text"]
+
         # Insert into observation queue (for LLM-based observation extraction)
         queue_row = await conn.fetchrow("""
             INSERT INTO mem_observation_queue
@@ -126,9 +141,9 @@ async def queue_observation(item: QueueItem):
                 session_id, project_id, queue_id, tool_name, tool_input,
                 tool_response_preview, tool_success, tool_error,
                 prompt_text, cwd, source_system, source_mode, source_agent,
-                git_branch, git_sha
+                git_branch, git_sha, prev_user_prompt_id, turn_index
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING id
         """,
             session_db_id, project_id, queue_id,
@@ -136,6 +151,8 @@ async def queue_observation(item: QueueItem):
             response_preview, tool_success, tool_error, last_user_message_norm,
             cwd_norm, source_system, item.source_mode, item.source_agent,
             git_ctx.branch, git_ctx.sha,
+            previous_prompt["id"] if previous_prompt else None,
+            (previous_prompt["turn_index"] or previous_prompt["prompt_number"]) if previous_prompt else None,
         )
 
         # Backlink queue row to tool_call

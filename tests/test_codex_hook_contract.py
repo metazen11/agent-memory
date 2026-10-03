@@ -47,7 +47,7 @@ def test_codex_pre_tool_hook_mode_outputs_contract_safe_json(tmp_path: Path) -> 
         },
         cwd=tmp_path,
     )
-    assert set(out).issubset({"systemMessage"})
+    assert set(out).issubset({"systemMessage", "hookSpecificOutput"})
 
 
 def test_codex_session_start_hook_mode_injects_context(tmp_path: Path) -> None:

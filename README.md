@@ -358,3 +358,67 @@ Operator details: `docs/backups.md`.
 
 No `LICENSE` file is committed. Treat the repo as private until one is added.
 Maintainer: `mz@wfca.com` (see `~/.claude/CLAUDE.md`).
+
+## Codex and ChatGPT Work memory
+
+Codex uses native hooks installed by `node install-codex.js`. Session lifecycle,
+prompts, and tool calls use the host session ID. `UserPromptSubmit` records
+prompts before tool execution and supplies up to five critical lesson hints.
+`PreToolUse` queries both input and file-scope lessons (including patch paths)
+and returns model-visible `additionalContext`. `PostToolUse` matches all local
+tools, including MCP calls. Hosted tools may not emit local hook events.
+
+After installation or a changed hook definition, review and trust agent-memory
+hooks in Codex's hook settings (`/hooks` in the CLI), then reopen the chat.
+Installing tools alone does not trust hooks. The legacy history collector is
+only a fallback; Codex Desktop does not necessarily update `history.jsonl`.
+Ordinary ChatGPT Chat does not run local Codex hooks; ChatGPT Work requires
+these scripts and the memory service in its execution environment.
+See [the adapter guide](codex.agent-memory.md) for controls and fallback commands.
+
+Codex hints use `strict_scope=true`: only the current cwd or ancestor project
+scopes qualify; unscoped, child, and sibling lessons are excluded. Prompt and
+pre-tool hints send the same capped text as a visible `systemMessage` and
+model-visible `additionalContext`, prefixed with the current project path.
+
+Legacy SessionEnd history ingestion is opt-in with
+`AGENT_MEMORY_CODEX_HISTORY_FALLBACK=1`; native capture is the default.
+
+Codex prompt backfill (native session IDs, source timestamps, secret redaction,
+and original project scope):
+
+```bash
+.venv/bin/python scripts/backfill/backfill_codex_prompts.py
+.venv/bin/python scripts/backfill/backfill_codex_prompts.py --commit --link-tools
+```
+
+The default previews missing records. Imports use `scripts/psql_wrapper.sh`,
+commit one session atomically, and pace transactions. Re-running skips imported
+prompts while preserving repeated human turns. Injected context, tool outputs,
+and delegated subagent instructions are excluded. Run reports under
+`logs/codex-backfill/` contain counts and project paths, never prompt text.
+Backfill rows retain `backfill_run_id` and `retention_class=backfill_codex`.
+Tool-call records already captured by hooks are preserved. `--link-tools` fills
+missing prompt links only when native session, project, and timestamp order
+match. The report stores changed tool/prompt IDs for audit and rollback.
+
+Native prompts spool during API outages and the spool drain works without shared
+session state. Live Codex queue ingestion links tools to the latest prompt in
+the same native session and canonical project. Strict hint scopes compare path
+prefixes literally, including `_` and `%`. Backfill reports default to a unique
+run filename so a later run preserves the previous audit manifest.
+
+
+PR #69 review follow-up: backfill reconciliation uses each occurrence's native
+session, canonical project, text hash and UTC source timestamp; a later repeated
+prompt cannot hide an earlier missing turn. The transactional duplicate guard
+also includes project identity. Records captured with a different server timestamp
+are reported as candidates rather than guessed into source turns; inspect a
+preview before importing them. Offline file-scope matching supports the API's
+Python `fnmatch` patterns (`*`, `?`, sets, ranges and negated sets).
+
+The working root is `/Users/mz/_CODING`. Dropbox is archival only. Legacy path
+strings from historical records are translated to the local root at comparison
+and ingestion boundaries without opening the archive. Hints display the local
+project path. Prompt hints require a scoped critical lesson; pre-tool warnings
+require a matching tool, input or file pattern. No match produces no hint.

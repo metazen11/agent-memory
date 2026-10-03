@@ -25,7 +25,7 @@ const WIRING = createHostWiring({ root: ROOT, home: HOME });
 function repairHost(host) {
   if (!host.detect()) return { name: host.name, skipped: true };
   installHookSymlinks(host, ROOT);
-  const added = registerHookEntries(host.settingsFile, host.hookEntries);
+  const added = registerHookEntries(host.settingsFile, host.hookEntries, { updateMatchers: host.name === 'codex' });
   if (host.name === 'codex') {
     const sessionEnd = host.hookEntries.find((item) => item.event === 'SessionEnd');
     if (sessionEnd) unregisterHookEntries(host.settingsFile, [{ ...sessionEnd, event: 'Stop' }]);

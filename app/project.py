@@ -143,7 +143,7 @@ def project_path_filter_strict(param_idx: int) -> tuple[str, int]:
     Usage::
 
         clause, next_idx = project_path_filter_strict(pidx)
-        # clause = "(p.full_path = $3 OR $4 LIKE p.full_path || '/%')"
+        # clause = "(p.full_path = $3 OR starts_with($4, p.full_path || '/'))"
         # next_idx = 5
         params.extend([cwd, cwd])  # bind 2 times
 
@@ -152,6 +152,6 @@ def project_path_filter_strict(param_idx: int) -> tuple[str, int]:
     """
     clause = (
         f"(p.full_path = ${param_idx}"
-        f" OR ${param_idx + 1} LIKE p.full_path || '/%')"
+        f" OR starts_with(${param_idx + 1}, p.full_path || '/'))"
     )
     return clause, param_idx + 2
