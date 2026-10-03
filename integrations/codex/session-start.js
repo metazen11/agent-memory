@@ -32,7 +32,7 @@ async function main() {
   const hookMode = !!event;
   const cwd = event?.cwd || process.cwd();
   const project = projectNameFromCwd(cwd);
-  const sessionId = process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
+  const sessionId = event?.session_id || process.env.AGENT_MEMORY_SESSION_ID || generateSessionId();
   const hintsOn = sessionHintsEnabled();
 
   let online = true;

@@ -90,7 +90,7 @@ function ensureExecutableBits() {
 
 function installCodexHooks() {
   installHookSymlinks(CODEX, ROOT);
-  registerHookEntries(CODEX.settingsFile, CODEX.hookEntries);
+  registerHookEntries(CODEX.settingsFile, CODEX.hookEntries, { updateMatchers: true });
   const sessionEnd = CODEX.hookEntries.find((item) => item.event === 'SessionEnd');
   if (sessionEnd) unregisterHookEntries(CODEX.settingsFile, [{ ...sessionEnd, event: 'Stop' }]);
 }

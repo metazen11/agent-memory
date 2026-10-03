@@ -34,14 +34,15 @@ function readHookEvent() {
 }
 
 async function main() {
-  const hookMode = !!readHookEvent();
+  const event = readHookEvent();
+  const hookMode = !!event;
 
   // Kick these off regardless of session state: the spool and the prompt
   // history both outlive any single session.
   spawnBackgroundTask('drain-spool.js');
   spawnBackgroundTask('ingest-history.js');
 
-  const state = readSessionState();
+  const state = event?.session_id ? { session_id: event.session_id } : readSessionState();
   if (!state?.session_id) {
     console.log(JSON.stringify(hookMode ? {} : { ok: true, skipped: 'no_session_state' }));
     return;

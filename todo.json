@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-03-28",
+  "lastUpdated": "2026-10-03",
   "projects": {
     "postgis": {
       "status": "pending",
@@ -10,7 +10,7 @@
           "task": "Install PostGIS extension for pg16",
           "status": "pending",
           "priority": "medium",
-          "notes": "Brew bottle targets pg17/18 — must build from source against pg16 (same as pgvector). Install deps: brew install gdal geos proj json-c protobuf-c sfcgal. Then compile PostGIS 3.5 with PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config. Alternative: upgrade to pg17 first (requires pg_upgrade), then use bottled PostGIS."
+          "notes": "Brew bottle targets pg17/18 \u2014 must build from source against pg16 (same as pgvector). Install deps: brew install gdal geos proj json-c protobuf-c sfcgal. Then compile PostGIS 3.5 with PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config. Alternative: upgrade to pg17 first (requires pg_upgrade), then use bottled PostGIS."
         }
       ]
     },
@@ -41,7 +41,7 @@
           "task": "Save lesson about pgvector + brew on pg16",
           "status": "pending",
           "priority": "low",
-          "notes": "Bottled pgvector doesn't support pg16 — must build from source. Same applies to PostGIS."
+          "notes": "Bottled pgvector doesn't support pg16 \u2014 must build from source. Same applies to PostGIS."
         },
         {
           "id": "5",
@@ -49,6 +49,17 @@
           "status": "pending",
           "priority": "low",
           "notes": "Script currently does brew install pgvector which installs wrong version for pg16."
+        }
+      ]
+    },
+    "codex-integration": {
+      "status": "in-progress",
+      "tasks": [
+        {
+          "id": "codex-hooks-20261003",
+          "task": "Repair native Codex prompt capture, session identity and model-visible lesson hints; verify hook processes",
+          "status": "in-progress",
+          "priority": "high"
         }
       ]
     }
