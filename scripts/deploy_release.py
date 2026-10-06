@@ -19,7 +19,7 @@ STORE = Path.home() / ".local/share/agent-memory"
 
 
 def run(*args, **kwargs):
-    return subprocess.check_output(list(args), text=True, **kwargs).strip()
+    return subprocess.check_output(list(args), text=True, timeout=120, **kwargs).strip()
 
 
 def gh_json(*args):

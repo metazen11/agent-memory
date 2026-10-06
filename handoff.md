@@ -485,3 +485,8 @@ Local verification: 441 passed, 2 skipped, one existing embedding-library warnin
 Live Anvil observation and lesson probes passed; lesson inference took 14.75s.
 CODE_REVIEW preceded TEST; corrected rollback bootstrap identity verification and
 bounded subprocess output buffering. Work is tracked by GitHub issue #71.
+
+Server protection now requires quality/integrity on dev and quality/integrity/drift
+on main, strict and enforced for administrators. Actual launchd failure injection
+verified that an unstartable candidate is rejected and the committed bootstrap
+release restores database/embedding readiness. Integration PR: #72.

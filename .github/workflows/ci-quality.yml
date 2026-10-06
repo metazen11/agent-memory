@@ -41,8 +41,10 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
           HEAD: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
-          if [ "$BASE" = main ]; then test "$HEAD" = dev; fi
+          if [ "$BASE" = main ]; then test "$HEAD" = dev; test "$HEAD_REPO" = "$BASE_REPO"; fi
           if [ "$BASE" = dev ]; then test "$HEAD" != main; test "$HEAD" != dev; fi
       - uses: actions/setup-python@v5
         with:
@@ -71,7 +73,9 @@ jobs:
         run: python -m pytest tests/ -q --junitxml=/tmp/tests.xml
       - name: Produce tested release artifact
         if: github.event_name == 'push'
-        run: python scripts/build_release.py "$GITHUB_SHA" /tmp/release
+        run: |
+          python scripts/build_release.py "$GITHUB_SHA" /tmp/release
+          python -m pip freeze > /tmp/release/runtime-ci.txt
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'push'
         with:

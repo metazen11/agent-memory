@@ -14,13 +14,17 @@ than living in one developer's `~/.claude/`.
 ## Rules
 
 1. **Use a feature branch and PR to `dev`.** Never push directly to either trunk. `dev` reaches
-   `main` through a pull request. That PR is the single human review gate.
+   `main` through a pull request. Review and green checks precede promotion.
 2. **Never let `dev` fall behind `main`.** If something reaches production
    without passing through `dev`, the next `dev -> main` PR renders those
    commits as **deletions** and silently reverts shipped work. Fix it the
    moment you notice:
    ```
-   git checkout dev && git fetch origin && git merge origin/main && git push origin dev
+   git fetch origin
+   git switch -c codex/sync-trunks origin/dev
+   git merge origin/main
+   git push -u origin codex/sync-trunks
+   gh pr create --base dev --head codex/sync-trunks
    ```
 3. **Don't promote red work.** A `dev -> main` PR merges only with CI green.
 4. **Verify the end state, not the action.** "I pushed it" is not "it landed".
@@ -30,7 +34,7 @@ than living in one developer's `~/.claude/`.
 
 | Layer | Where it runs | Bypassable? |
 |---|---|---|
-| **Branch protection** on `main` | GitHub (server) | No — `enforce_admins` is on |
+| **Branch protection** on `dev` and `main` | GitHub (server) | No — `enforce_admins` is on |
 | **`trunk-drift` workflow** | GitHub Actions | No — fails the check |
 | **`.githooks/pre-push`** | your machine | Yes: `ALLOW_PROTECTED_PUSH=1` (audited) |
 | **This document** | your eyes | Entirely |
