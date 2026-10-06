@@ -3,8 +3,8 @@ import json
 import logging
 import re
 
-from app.config import settings
 from app import llm_provider_status as provider_status
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -7,11 +7,11 @@ push runs for the current main SHA from this repository's ci-quality workflow.
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
 import time
+from pathlib import Path
 
 REPO = "metazen11/agent-memory"
 ROOT = Path(__file__).absolute().parents[1]

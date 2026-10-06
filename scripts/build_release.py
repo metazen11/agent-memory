@@ -2,9 +2,9 @@
 
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 sha = sys.argv[1]
 output = Path(sys.argv[2])

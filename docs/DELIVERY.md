@@ -6,7 +6,7 @@ named checks with up-to-date branches and applies to administrators. Review
 happens before testing; authorization to promote is recorded in the task.
 
 `ci-quality.yml` uses a disposable PostgreSQL/pgvector service and an isolated
-API. It runs changed-file Ruff, Python/Node syntax checks, and the complete test
+API. It runs changed-file Ruff with versioned explicit rules, Python/Node syntax checks, and the complete test
 suite. The embedding model is the standard 768-dimensional MPNet model, avoiding
 remote Python execution and proprietary model credentials. Anvil and Anthropic
 are disabled in CI; subprocess failure tests exercise their adapter boundary.

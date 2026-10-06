@@ -490,3 +490,7 @@ Server protection now requires quality/integrity on dev and quality/integrity/dr
 on main, strict and enforced for administrators. Actual launchd failure injection
 verified that an unstartable candidate is rejected and the committed bootstrap
 release restores database/embedding readiness. Integration PR: #72.
+
+The first hosted run exposed different Ruff defaults from the host
+(0.6.9 vs 0.16.10). Versioned explicit lint rules and the CI Ruff pin now
+make that gate portable; imports were normalized under the shared contract.

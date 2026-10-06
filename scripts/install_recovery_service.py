@@ -4,11 +4,11 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
 LABELS = ("com.metazen.agent-memory-api", "com.metazen.agent-memory-recovery")

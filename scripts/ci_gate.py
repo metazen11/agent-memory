@@ -1,8 +1,8 @@
 """Required portable review gate: syntax plus lint on changed Python files."""
 
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 base = os.environ.get("BASE")
 before = os.environ.get("BEFORE")

@@ -1,10 +1,10 @@
 """Install the trusted pull-based CD controller as a macOS login service."""
 
 import os
-from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
 STORE = Path.home() / ".local/share/agent-memory"
