@@ -155,7 +155,7 @@ def test_bridge_disables_tools_and_raw_logging(tmp_path, tool_calls):
         "from anvil.llm import raw_logging\n"
         "from anvil.config import settings\n"
         "def chat_completion(**kwargs):\n"
-        '    assert not settings.llm_daemon_enabled\n'
+        "    assert not settings.llm_daemon_enabled\n"
         '    assert kwargs["tools"] == []\n'
         '    assert kwargs["max_tokens"] == 900\n'
         '    raw_logging.log_raw_llm_interaction(secret="do not record")\n'
@@ -209,3 +209,15 @@ async def test_health_surfaces_fallback_failure(monkeypatch, status, expected):
     monkeypatch.setattr(anvil.settings, "anvil_fallback_enabled", True)
     monkeypatch.setitem(anvil._status, "status", status)
     assert (await route.health())["status"] == expected
+
+
+def test_observation_provenance_is_stored_without_changing_embedding_input():
+    from app.queue_worker import _build_raw_text
+
+    observation = {
+        "title": "Atomic replay",
+        "narrative": "Receipt replay is idempotent.",
+        "_provider": "anvil:mlx:test",
+    }
+    assert "[enrichment_provider: anvil:mlx:test]" in _build_raw_text(observation)
+    assert "anvil:" not in _build_raw_text(observation, include_provider=False)

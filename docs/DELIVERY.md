@@ -66,7 +66,7 @@ group. Invalid output and invocation failures raise a retryable error for queue
 observations. Intentional `skip:true` remains a skip. Lesson synthesis tries
 Anthropic, then Anvil, then local GGUF; the existing rule-quality validator still
 applies. Observation generation retains local GGUF first, then Anthropic, then
-Anvil. Provider provenance appears in observation raw JSON, lesson
+Anvil. Provider provenance appears in observation `raw_text` (excluded from embedding input), lesson
 `synthesized_by`, and `/api/health` under `llm.anvil_fallback`.
 
 The installed `anvil run` CLI advertises file/shell tools even in its minimal

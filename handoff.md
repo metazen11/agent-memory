@@ -506,3 +506,6 @@ Implementation tasks completed in todo.json; final delivery promotion remains
 tracked through PR #72 and issue #71. The production controller consumes only a
 successful exact-main-SHA push artifact and records its final deployment state
 under ~/.local/share/agent-memory/deployment.json and GitHub Deployments.
+
+Anvil provider attribution persists in observation raw_text, outside the
+embedding input, as well as lesson synthesized_by and health status.
