@@ -1,13 +1,12 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
 from app.config import settings
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import normalize_observation_type
-from app.observation_llm import generate_observation, SKIP_TOOLS
+from app.observation_llm import SKIP_TOOLS, generate_observation
 from app.path_normalize import normalize_json, normalize_text
 
 logger = logging.getLogger(__name__)
@@ -95,7 +94,7 @@ async def process_one(pool) -> bool:
             embedding = None
             embedding_model_id = None
             try:
-                embedding = await embed_text(raw_text)
+                embedding = await embed_text(_build_raw_text(obs_data, include_provider=False))
                 model_row = await conn.fetchrow(
                     "SELECT id FROM embedding_models WHERE is_default = true LIMIT 1"
                 )
@@ -180,7 +179,7 @@ async def process_one(pool) -> bool:
             return True
 
 
-def _build_raw_text(obs_data: dict) -> str:
+def _build_raw_text(obs_data: dict, *, include_provider: bool = True) -> str:
     """Combine observation fields into searchable raw text."""
     parts = [obs_data.get("title", "")]
     if obs_data.get("subtitle"):
@@ -189,6 +188,8 @@ def _build_raw_text(obs_data: dict) -> str:
         parts.append(obs_data["narrative"])
     for fact in obs_data.get("facts", []):
         parts.append(f"- {fact}")
+    if include_provider and obs_data.get("_provider"):
+        parts.append(f"[enrichment_provider: {obs_data['_provider']}]")
     return "\n".join(parts)
 
 

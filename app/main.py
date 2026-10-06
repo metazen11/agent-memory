@@ -5,15 +5,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.db import init_pool, close_pool, get_pool
+from app.db import close_pool, get_pool, init_pool
 from app.migrate import run_migrations_with_pool
 from app.queue_worker import start_worker, stop_worker
-from app.routes.health import router as health_router
-from app.routes.observations import router as observations_router
-from app.routes.sessions import router as sessions_router
 from app.routes.admin import router as admin_router
+from app.routes.health import router as health_router
 from app.routes.lessons import router as lessons_router
+from app.routes.observations import router as observations_router
 from app.routes.prompts import router as prompts_router
+from app.routes.sessions import router as sessions_router
 from app.routes.tool_calls import router as tool_calls_router
 
 logging.basicConfig(
@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
             logger.info(f"Applied migrations: {', '.join(applied)}")
     except Exception as e:
         logger.error(f"Migration failed: {e}")
+        await close_pool()
+        raise
 
     # Warn on passwordless PostgreSQL
     if not settings.postgres_password and not settings.allow_trust_auth:

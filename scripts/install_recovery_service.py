@@ -2,12 +2,13 @@
 """Install, inspect or remove login-supervised local memory recovery on macOS."""
 
 import argparse
+import json
 import os
-from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
 LABELS = ("com.metazen.agent-memory-api", "com.metazen.agent-memory-recovery")
@@ -70,6 +71,11 @@ def main():
         }
         if not api:
             config["StartInterval"] = 60
+        manifest = ROOT / "release.json"
+        if manifest.exists():
+            config["EnvironmentVariables"]["AGENT_MEMORY_RELEASE_SHA"] = json.loads(
+                manifest.read_text()
+            )["sha"]
         temporary = target.with_suffix(".tmp")
         temporary.write_bytes(plistlib.dumps(config))
         temporary.chmod(0o600)

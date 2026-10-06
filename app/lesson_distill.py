@@ -293,14 +293,14 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
     calls" — too thin AND wrong), so the provider is persisted on the
     lesson row to make them findable for re-synthesis later.
     """
+    from app import llm_provider_status as provider_status
     from app.config import settings
     from app.observation_llm import (
-        parse_llm_response,
+        _ANTHROPIC_MIN_INTERVAL,
         _generate_local_sync,
         _get_anthropic_client,
-        _ANTHROPIC_MIN_INTERVAL,
+        parse_llm_response,
     )
-    from app import llm_provider_status as provider_status
 
     user_prompt = build_synth_prompt(candidate)
 
@@ -318,8 +318,9 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
     # low" — ~130 seconds of sleeping per 10-candidate run for calls that
     # could not succeed. The breaker collapses that to a single attempt.
     if provider_status.anthropic_available(settings.anthropic_api_key):
-        import time
         import asyncio as _asyncio
+        import time
+
         import app.observation_llm as _ol
 
         now = time.monotonic()
@@ -349,6 +350,14 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
             if parsed and (parsed.get("rule") or parsed.get("skip")):
                 parsed["_provider"] = PROVIDER_ANTHROPIC
                 return parsed
+
+    if settings.anvil_fallback_enabled:
+        from app.anvil_enrichment import EnrichmentUnavailable, generate_json
+        try:
+            result = await generate_json(SYNTH_SYSTEM_PROMPT, user_prompt, "lesson")
+            return result
+        except EnrichmentUnavailable:
+            logger.warning("distill: Anvil unavailable; trying local GGUF")
 
     # Fallback: local GGUF.
     if settings.observation_llm_model:
