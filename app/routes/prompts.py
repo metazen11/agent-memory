@@ -13,8 +13,9 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.ingest_receipts import claim_receipt, finish_receipt
 from app.db import get_pool
 from app.path_normalize import normalize_text
 from app.project import ensure_project
@@ -74,6 +75,7 @@ class PromptOut(BaseModel):
 
 class PromptCreate(BaseModel):
     """Payload from the UserPromptSubmit hook."""
+    ingest_id: str | None = Field(default=None, max_length=128)
     session_id: str
     prompt: str
     cwd: Optional[str] = None
@@ -157,6 +159,9 @@ async def create_prompt(request: Request, body: PromptCreate):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            prior = await claim_receipt(conn, "/api/prompts", body.ingest_id)
+            if prior is not None:
+                return prior
             # mem_sessions.project_id is NOT NULL, so fall back to the
             # 'unknown' project the way observations.py does for queue
             # writes without a cwd.
@@ -174,7 +179,7 @@ async def create_prompt(request: Request, body: PromptCreate):
                 _FIND_PROMPT_BY_HASH_SQL,
                 session_db_id, content_hash,
             )
-            if existing:
+            if existing and not body.ingest_id:
                 return {
                     "id": existing["id"],
                     "prompt_number": existing["prompt_number"],
@@ -190,6 +195,9 @@ async def create_prompt(request: Request, body: PromptCreate):
                 session_db_id, project_id, prompt_number,
                 redacted, body.agent_name, content_hash,
             )
+            await finish_receipt(conn, "/api/prompts", body.ingest_id, {
+                "id": inserted["id"], "prompt_number": inserted["prompt_number"], "status": "created",
+            })
 
     return {
         "id": inserted["id"],

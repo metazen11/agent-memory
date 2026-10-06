@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require('fs');
+const spool = require('./spool');
 const http = require('http');
 const path = require('path');
 const os = require('os');
@@ -179,21 +180,11 @@ function saveSpooledPromptPayload(payload) {
 }
 
 function saveSpooledQueuePayload(payload) {
-  ensureSpoolDir();
-  const file = path.join(SPOOL_DIR, `${Date.now()}-${process.pid}.json`);
-  fs.writeFileSync(file, JSON.stringify(payload) + '\n', 'utf8');
-  return file;
+  return spool.save(SPOOL_DIR, payload);
 }
 
 function listSpooledPayloadFiles() {
-  try {
-    return fs.readdirSync(SPOOL_DIR)
-      .filter((f) => f.endsWith('.json'))
-      .sort()
-      .map((f) => path.join(SPOOL_DIR, f));
-  } catch {
-    return [];
-  }
+  return spool.files(SPOOL_DIR);
 }
 
 async function postQueuePayload(payload, timeoutMs = 1500) {
@@ -201,29 +192,9 @@ async function postQueuePayload(payload, timeoutMs = 1500) {
 }
 
 async function drainSpooledQueue() {
-  const files = listSpooledPayloadFiles();
-  let drained = 0;
-  for (const file of files) {
-    const payload = readJsonFile(file, null);
-    if (!payload) {
-      try { fs.unlinkSync(file); } catch {}
-      continue;
-    }
-    try {
-      if (payload.route === '/api/prompts' && payload.payload) {
-        await requestJson('POST', '/api/prompts', payload.payload, 2500);
-      } else {
-        await postQueuePayload(payload, 2500);
-      }
-      drained += 1;
-      try { fs.unlinkSync(file); } catch {}
-      // Share the normal write budget with live capture during recovery.
-      await new Promise(resolve => setTimeout(resolve, 650));
-    } catch {
-      break;
-    }
-  }
-  return drained;
+  const result = await spool.drain(listSpooledPayloadFiles(),
+    (route, payload) => requestJson('POST', route, payload, 2500));
+  return result.drained;
 }
 
 async function refreshSnapshots({ projectPath, projectName, includeLessons = true }) {
