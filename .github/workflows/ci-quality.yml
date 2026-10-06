@@ -27,6 +27,8 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://agentmem@127.0.0.1:5432/agent_memory
+      AGENT_MEMORY_DSN: postgresql://agentmem@127.0.0.1:5432/agent_memory
+      AGENT_MEMORY_TEST_PG_DSN: postgresql://agentmem@127.0.0.1:5432/postgres
       ALLOW_TRUST_AUTH: 'true'
       EMBEDDING_MODEL: sentence-transformers/all-mpnet-base-v2
       ANVIL_FALLBACK_ENABLED: 'false'

@@ -494,3 +494,9 @@ release restores database/embedding readiness. Integration PR: #72.
 The first hosted run exposed different Ruff defaults from the host
 (0.6.9 vs 0.16.10). Versioned explicit lint rules and the CI Ruff pin now
 make that gate portable; imports were normalized under the shared contract.
+
+Disposable CI revealed tests relying on the host OS PostgreSQL role and an
+existing operator lesson. CI now supplies both test DSNs explicitly, and the
+dotfile hook regression owns/deactivates its lesson fixture. Added bridge tests
+that reject returned tool calls and prove tool/raw-log/agent-loop isolation.
+Anvil timeout/failure now degrades health explicitly.

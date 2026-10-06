@@ -81,7 +81,10 @@ async def health():
     # which is exactly the condition an operator needs to see. A provider
     # that is simply not configured is a deployment choice, not a fault,
     # so it does NOT degrade the overall status.
-    llm_degraded = any(p.get("circuit_open") for p in result["llm"]["providers"])
+    llm_degraded = any(p.get("circuit_open") for p in result["llm"]["providers"]) or (
+        settings.anvil_fallback_enabled
+        and result["llm"]["anvil_fallback"]["status"] in ("failed", "timeout")
+    )
     result["status"] = "ok" if db_ok and emb_ok and not llm_degraded else "degraded"
 
     return result
