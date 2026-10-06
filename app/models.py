@@ -59,6 +59,7 @@ CONCEPT_TAGS = (
 
 class QueueItem(BaseModel):
     """Payload from post-tool-use hook."""
+    ingest_id: str | None = Field(default=None, max_length=128)
     session_id: str
     tool_name: str | None = None
     tool_input: dict | None = None

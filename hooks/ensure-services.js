@@ -224,6 +224,12 @@ function ensureServer() {
     return false;
   }
 
+  const managedPlist = path.join(require('os').homedir(), 'Library/LaunchAgents/com.metazen.agent-memory-api.plist');
+  if (PLATFORM === 'darwin' && fs.existsSync(managedPlist)) {
+    // launchd owns the API process; never spawn an unmanaged duplicate.
+    const uid = typeof process.getuid === 'function' ? process.getuid() : run('id -u');
+    run(`launchctl kickstart gui/${uid}/com.metazen.agent-memory-api`);
+  } else {
   notice('Starting memory server (FastAPI)...');
   debug('Starting FastAPI server...');
 
@@ -243,6 +249,8 @@ function ensureServer() {
   fs.writeFileSync(PID_FILE, String(child.pid), 'utf8');
   fs.closeSync(logStream);
   debug(`Spawned uvicorn (PID ${child.pid})`);
+
+  }
 
   // Wait for health endpoint
   for (let i = 0; i < 15; i++) {

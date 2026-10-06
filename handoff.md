@@ -1,3 +1,35 @@
+## 2026-10-05 — Supervised service and spool recovery
+
+Failure: startup raced PostgreSQL readiness, API exited and was never restarted.
+No host watcher was running; native Desktop hooks only spooled, and local drain
+could not discover other repos/worktrees. Initial inventory: 1,502 JSON files.
+
+Added login LaunchAgents for API restart and a global bounded replay pass every
+60 seconds. Working root stays `~/_CODING`; no symlink or Dropbox traversal.
+Atomic spool writes and per-file locks preserve queued records through exits.
+Migration 018 replay receipts commit atomically with API writes; legacy spool
+copies share stable identity. Malformed/validation failures are quarantined,
+transient failures retain files. Status: `~/.codex/agent-memory-recovery.json`.
+
+CODE_REVIEW before TEST covered transaction boundaries, lost acknowledgment,
+lock ownership, permanent versus transient errors, source project/session
+preservation, supervised process ownership and discovery boundaries.
+
+Verification: **427 passed, 2 skipped**, with the existing embedding-library
+warning. Ruff, Python compile and Node syntax checks passed. Killed only the
+verified launchd-managed API process with SIGKILL: it recovered with a new PID
+and healthy DB in **23.5 seconds**. The recovery job retained unacknowledged
+files during the outage and resumed: first successful full pass drained 40
+files; cumulative 46 acknowledged, zero quarantines, 1,629 pending across 25
+spool directories at verification. Backlog continues draining every minute;
+these counts are a timestamped sample, not a completion claim.
+
+Installed jobs: `com.metazen.agent-memory-api` (KeepAlive) and
+`com.metazen.agent-memory-recovery` (60-second bounded passes, retry on exit).
+Rollback: installer `uninstall` stops/removes both jobs while preserving data.
+Migration 018 has a down script; dropping receipts forfeits replay dedupe, so
+retain it unless deliberately reverting the whole ingestion change.
+
 ## 2026-10-03 — PR #69 automated review follow-up
 
 Addressed three GitHub review comments: source occurrence identity replaces

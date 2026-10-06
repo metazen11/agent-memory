@@ -422,3 +422,39 @@ strings from historical records are translated to the local root at comparison
 and ingestion boundaries without opening the archive. Hints display the local
 project path. Prompt hints require a scoped critical lesson; pre-tool warnings
 require a matching tool, input or file pattern. No match produces no hint.
+
+
+## Supervised local recovery (macOS)
+
+```bash
+.venv/bin/python scripts/install_recovery_service.py install
+.venv/bin/python scripts/install_recovery_service.py status
+cat ~/.codex/agent-memory-recovery.json
+```
+
+Login LaunchAgents supervise the API and invoke a bounded recovery pass every
+60 seconds, independently of Codex Desktop/CLI hooks. The API restarts after
+exit, including when PostgreSQL is initially unavailable; launchd throttles
+restarts by 30 seconds. Recovery discovers `.agent-memory-codex/spool` under
+`~/_CODING`, including worktrees, without following symlinks or visiting Dropbox.
+The worker processes up to 40 files per pass, with pacing and retries for
+network errors, rate limits and server failures. Service recovery remains
+separate from LLM provider billing status.
+
+Spool writes use exclusive temporary files, fsync and atomic rename. Replay
+locks stop overlapping local and global drains; dead owners are reclaimed.
+Files are removed only after API acknowledgment. Migration 018 stores an
+idempotency receipt in the same transaction as queue/ledger/prompt writes,
+so retrying after a lost response or process exit cannot duplicate an event.
+New hooks generate event UUIDs; legacy spool identity uses filename + contents
+to also deduplicate identical files copied into worktrees. Separate identified
+prompt events can have the same text. Older unkeyed captures have no receipt,
+so their pre-existing duplicate status cannot be reconstructed automatically.
+
+Malformed payloads and permanent HTTP validation errors move to each repo's
+`.agent-memory-codex/quarantine` with a reason; they are preserved for inspection.
+The status JSON reports backlog, drain totals, quarantine totals, last success
+and dependency failures without including payload text. Logs are `logs/server.log`
+and `logs/recovery.log`. The jobs run while this macOS user is logged in; they
+resume after login/wake. To remove supervision, run the installer with
+`uninstall`; spool files, receipts and quarantine records are preserved.
