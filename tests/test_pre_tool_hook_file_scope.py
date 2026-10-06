@@ -48,7 +48,7 @@ def _fresh_session() -> str:
 
 
 @pytest.fixture
-def file_scope_lesson():
+def file_scope_lesson(request):
     """Create a uniquely-named file_scope lesson, deactivate it afterwards.
 
     Writes straight to Postgres rather than through POST /api/lessons.
@@ -62,12 +62,12 @@ def file_scope_lesson():
     import asyncio
 
     marker = uuid.uuid4().hex[:10]
-    filename = f"zz-{marker}-fixture.json"
+    filename = getattr(request, "param", f"zz-{marker}-fixture.json")
     title = f"file_scope fixture {marker}"
-    rule = f"FIXTURE-{marker}: this lesson must reach the hook."
+    rule = f"FIXTURE-{marker}: this lesson must reach the hook. Preserve CLAUDE_PLUGIN_ROOT in plugin manifests."
 
     async def _create() -> int:
-        from app.db import init_pool, get_pool
+        from app.db import get_pool, init_pool
         from app.embeddings import embed_text
 
         await init_pool()
@@ -151,7 +151,8 @@ def test_bash_command_delivers_file_scope_lesson(file_scope_lesson):
     assert file_scope_lesson["marker"] in out.get("systemMessage", "")
 
 
-def test_dotfile_keeps_leading_dot_in_bash_extraction():
+@pytest.mark.parametrize("file_scope_lesson", [".mcp.json"], indirect=True)
+def test_dotfile_keeps_leading_dot_in_bash_extraction(file_scope_lesson):
     """Token extraction preserves a leading dot (regression: `.mcp.json`)."""
     out = _run_hook({
         "session_id": _fresh_session(),
@@ -160,7 +161,8 @@ def test_dotfile_keeps_leading_dot_in_bash_extraction():
         "tool_input": {"command": "sed -i s/a/b/ .mcp.json"},
     })
     msg = out.get("systemMessage", "")
-    # Lesson 48 is the shipped CLAUDE_PLUGIN_ROOT lesson scoped to .mcp.json.
+    # Use an owned fixture; a fresh CI database has no operator lesson 48.
+    assert file_scope_lesson["marker"] in msg
     assert "CLAUDE_PLUGIN_ROOT" in msg, (
         "editing .mcp.json via Bash should surface the CLAUDE_PLUGIN_ROOT lesson"
     )

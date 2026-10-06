@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # Anthropic API (optional fallback for observation LLM)
     anthropic_api_key: str = ""
 
+    # Opt-in inference fallback using the installed Anvil runtime, without agents/tools.
+    anvil_fallback_enabled: bool = False
+    anvil_root: str = "/opt/anvil"
+    anvil_timeout_seconds: float = 60.0
+
     # Server
     host: str = "127.0.0.1"
     port: int = 3377

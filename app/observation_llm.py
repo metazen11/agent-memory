@@ -3,8 +3,8 @@ import json
 import logging
 import re
 
-from app.config import settings
 from app import llm_provider_status as provider_status
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -270,8 +270,19 @@ async def generate_observation(
     # anthropic_available() folds together "no key configured" and "breaker
     # open on a billing/auth failure" — both mean do not attempt the call.
     if provider_status.anthropic_available(settings.anthropic_api_key):
-        return await generate_observation_anthropic(
+        result = await generate_observation_anthropic(
             tool_name, tool_input, tool_response_preview, cwd, last_user_message
         )
+        if result is not None:
+            return result
+
+    if settings.anvil_fallback_enabled:
+        from app.anvil_enrichment import generate_json
+        result = await generate_json(
+            SYSTEM_PROMPT,
+            build_user_prompt(tool_name, tool_input, tool_response_preview, cwd, last_user_message),
+            "observation",
+        )
+        return None if result.get("skip") else result
 
     return None

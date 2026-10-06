@@ -467,3 +467,45 @@ Published `e830fcd` to `codex/codex-memory-repair` and `dev`. Promotion PR:
 https://github.com/metazen11/agent-memory/pull/69 (`dev -> main`), open and
 mergeable. Local gate: 401 passed, 2 skipped; remote push checks passed.
 The PR is attached to the Codex chat. Merge remains the human review gate.
+
+## 2026-10-05 — CI/CD and Anvil fallback
+
+Branch `codex/cicd-anvil-fallback` adds a hosted quality gate, feature-to-dev PR
+contract, and trusted pull-based local delivery from successful main artifacts.
+The host has no Actions runner. Releases are isolated outside the coding checkout;
+activation checks exact SHA, database and embeddings, with previous-release
+rollback. Dependencies and migration changes require explicit host preparation.
+
+Anthropic is failing with exhausted credits. The installed Anvil MLX engine
+produced a valid live observation through a tools-free subprocess bridge. Anvil
+remains an opt-in fallback; malformed output/timeouts must preserve queue retries.
+See docs/DELIVERY.md for configuration, deployment state, and operational limits.
+
+Local verification: 446 passed, 2 skipped, one existing embedding-library warning.
+Live Anvil observation and lesson probes passed; lesson inference took 14.75s.
+CODE_REVIEW preceded TEST; corrected rollback bootstrap identity verification and
+bounded subprocess output buffering. Work is tracked by GitHub issue #71.
+
+Server protection now requires quality/integrity on dev and quality/integrity/drift
+on main, strict and enforced for administrators. Actual launchd failure injection
+verified that an unstartable candidate is rejected and the committed bootstrap
+release restores database/embedding readiness. Integration PR: #72.
+
+The first hosted run exposed different Ruff defaults from the host
+(0.6.9 vs 0.16.10). Versioned explicit lint rules and the CI Ruff pin now
+make that gate portable; imports were normalized under the shared contract.
+
+Disposable CI revealed tests relying on the host OS PostgreSQL role and an
+existing operator lesson. CI now supplies both test DSNs explicitly, and the
+dotfile hook regression owns/deactivates its lesson fixture. Added bridge tests
+that reject returned tool calls and prove tool/raw-log/agent-loop isolation.
+Anvil timeout/failure now degrades health explicitly.
+
+Hosted isolated CI run 37418309368 passed on ba20cd4 (fresh database and API).
+Implementation tasks completed in todo.json; final delivery promotion remains
+tracked through PR #72 and issue #71. The production controller consumes only a
+successful exact-main-SHA push artifact and records its final deployment state
+under ~/.local/share/agent-memory/deployment.json and GitHub Deployments.
+
+Anvil provider attribution persists in observation raw_text, outside the
+embedding input, as well as lesson synthesized_by and health status.

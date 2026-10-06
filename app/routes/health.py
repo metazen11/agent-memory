@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -14,7 +15,13 @@ router = APIRouter()
 @router.get("/api/health")
 async def health():
     """Health check: DB connectivity, embedding model, queue depth, LLM provider."""
-    result = {"db": {}, "embeddings": {}, "queue": {}, "llm": {}}
+    result = {
+        "db": {},
+        "embeddings": {},
+        "queue": {},
+        "llm": {},
+        "release_sha": os.environ.get("AGENT_MEMORY_RELEASE_SHA"),
+    }
 
     # DB check
     try:
@@ -24,12 +31,15 @@ async def health():
             has_vector = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
             )
-            queue_pending = await conn.fetchval(
-                "SELECT count(*) FROM mem_observation_queue WHERE status = 'pending'"
-            ) or 0
-            obs_count = await conn.fetchval(
-                "SELECT count(*) FROM mem_observations"
-            ) or 0
+            queue_pending = (
+                await conn.fetchval(
+                    "SELECT count(*) FROM mem_observation_queue WHERE status = 'pending'"
+                )
+                or 0
+            )
+            obs_count = (
+                await conn.fetchval("SELECT count(*) FROM mem_observations") or 0
+            )
         result["db"] = {
             "status": "ok",
             "version": version.split(",")[0] if version else "unknown",
@@ -55,7 +65,10 @@ async def health():
     # would bill the account on every poll and would wait out the 13s
     # rate limiter. snapshot() reads only in-process state recorded by the
     # real calls, so it is free and cannot itself fail.
+    from app.anvil_enrichment import snapshot as anvil_snapshot
+
     result["llm"] = {
+        "anvil_fallback": anvil_snapshot(),
         "local_model_configured": bool(settings.observation_llm_model),
         "providers": [llm_provider_status.snapshot(settings.anthropic_api_key)],
     }
@@ -68,8 +81,9 @@ async def health():
     # which is exactly the condition an operator needs to see. A provider
     # that is simply not configured is a deployment choice, not a fault,
     # so it does NOT degrade the overall status.
-    llm_degraded = any(
-        p.get("circuit_open") for p in result["llm"]["providers"]
+    llm_degraded = any(p.get("circuit_open") for p in result["llm"]["providers"]) or (
+        settings.anvil_fallback_enabled
+        and result["llm"]["anvil_fallback"]["status"] in ("failed", "timeout")
     )
     result["status"] = "ok" if db_ok and emb_ok and not llm_degraded else "degraded"
 
