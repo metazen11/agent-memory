@@ -481,7 +481,7 @@ produced a valid live observation through a tools-free subprocess bridge. Anvil
 remains an opt-in fallback; malformed output/timeouts must preserve queue retries.
 See docs/DELIVERY.md for configuration, deployment state, and operational limits.
 
-Local verification: 441 passed, 2 skipped, one existing embedding-library warning.
+Local verification: 446 passed, 2 skipped, one existing embedding-library warning.
 Live Anvil observation and lesson probes passed; lesson inference took 14.75s.
 CODE_REVIEW preceded TEST; corrected rollback bootstrap identity verification and
 bounded subprocess output buffering. Work is tracked by GitHub issue #71.
@@ -500,3 +500,9 @@ existing operator lesson. CI now supplies both test DSNs explicitly, and the
 dotfile hook regression owns/deactivates its lesson fixture. Added bridge tests
 that reject returned tool calls and prove tool/raw-log/agent-loop isolation.
 Anvil timeout/failure now degrades health explicitly.
+
+Hosted isolated CI run 37418309368 passed on ba20cd4 (fresh database and API).
+Implementation tasks completed in todo.json; final delivery promotion remains
+tracked through PR #72 and issue #71. The production controller consumes only a
+successful exact-main-SHA push artifact and records its final deployment state
+under ~/.local/share/agent-memory/deployment.json and GitHub Deployments.
