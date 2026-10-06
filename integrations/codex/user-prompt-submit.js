@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!event.session_id || typeof event.prompt !== 'string') return {};
   const project = normalizeProjectPath(event.cwd || process.cwd());
-  const payload = { session_id: event.session_id, prompt: event.prompt, cwd: project, agent_name: 'codex-cli' };
+  const payload = { ingest_id: randomUUID(), session_id: event.session_id, prompt: event.prompt, cwd: project, agent_name: 'codex-cli' };
   // Await persistence so the following tool call can link to this prompt.
   try {
     await requestJson('POST', '/api/prompts', payload, 1200);

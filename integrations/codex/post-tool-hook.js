@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const { readSessionState, postQueuePayload, saveSpooledQueuePayload } = require('./common');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 
 function readStdinEvent() {
   if (process.stdin.isTTY) return null;
@@ -70,6 +71,7 @@ async function main() {
   }
 
   const payload = {
+    ingest_id: randomUUID(),
     session_id: sessionId,
     hook_event_name: 'PostToolUse',
     tool_name: args.tool || null,

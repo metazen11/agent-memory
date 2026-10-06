@@ -82,6 +82,13 @@
           "status": "completed",
           "priority": "high",
           "notes": "Resolved all three PR #69 findings: exact session/project/hash/time occurrence identity, fnmatch-compatible offline globs, canonical path comparisons with no archive access. 422 passed, 2 skipped; 33,099 glob cases agreed. Read-only backfill preview reports 465 unmatched source identities; no data re-imported. Automatic hints still require user hook trust review."
+        },
+        {
+          "id": "codex-recovery-20261005",
+          "task": "Supervise service recovery and replay all local repo spools with durable deduplication, quarantine and visible status",
+          "status": "completed",
+          "priority": "high",
+          "notes": "Reviewed and implemented launchd API restart plus bounded global replay; installed both login jobs. Atomic spool writes, locks, quarantine, transactional migration-018 receipts and status JSON. 427 passed, 2 skipped; forced API exit recovered in 23.5 seconds; replay resumed with 40-file batch. Backlog drains every minute; status ~/.codex/agent-memory-recovery.json."
         }
       ]
     }

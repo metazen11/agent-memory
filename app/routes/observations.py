@@ -1,3 +1,4 @@
+from app.ingest_receipts import claim_receipt, finish_receipt
 import json
 import logging
 import re
@@ -68,7 +69,10 @@ async def _ensure_session(conn, session_id: str, project_id: int, agent_type: st
 async def queue_observation(item: QueueItem):
     """Accept tool call data for async observation processing."""
     pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
+        prior = await claim_receipt(conn, "/api/queue", item.ingest_id)
+        if prior is not None:
+            return prior
         # Path normalization (migration 014): rewrite stale /Dropbox/_CODING/
         # to /_CODING/ at the live write boundary. The hooks already
         # normalize, but a stale shell or non-Claude agent might POST raw
@@ -160,6 +164,8 @@ async def queue_observation(item: QueueItem):
             "UPDATE mem_observation_queue SET tool_call_id = $1 WHERE id = $2",
             tc_row["id"], queue_id,
         )
+
+        await finish_receipt(conn, "/api/queue", item.ingest_id, {"status": "queued"})
 
     return {"status": "queued"}
 
