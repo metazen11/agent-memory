@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
             logger.info(f"Applied migrations: {', '.join(applied)}")
     except Exception as e:
         logger.error(f"Migration failed: {e}")
+        await close_pool()
+        raise
 
     # Warn on passwordless PostgreSQL
     if not settings.postgres_password and not settings.allow_trust_auth:

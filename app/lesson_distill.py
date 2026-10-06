@@ -350,6 +350,14 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
                 parsed["_provider"] = PROVIDER_ANTHROPIC
                 return parsed
 
+    if settings.anvil_fallback_enabled:
+        from app.anvil_enrichment import generate_json, EnrichmentUnavailable
+        try:
+            result = await generate_json(SYNTH_SYSTEM_PROMPT, user_prompt, "lesson")
+            return result
+        except EnrichmentUnavailable:
+            logger.warning("distill: Anvil unavailable; trying local GGUF")
+
     # Fallback: local GGUF.
     if settings.observation_llm_model:
         try:

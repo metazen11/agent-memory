@@ -41,7 +41,7 @@ chat datasets.
 
 ## Branching contract
 
-This repo enforces a branching contract: work lands on `dev`, and `dev`
+This repo enforces a branching contract: feature PRs land on `dev`, and `dev`
 reaches `main` only through a reviewed pull request. Direct pushes to `main`
 are refused.
 
@@ -458,3 +458,11 @@ and dependency failures without including payload text. Logs are `logs/server.lo
 and `logs/recovery.log`. The jobs run while this macOS user is logged in; they
 resume after login/wake. To remove supervision, run the installer with
 `uninstall`; spool files, receipts and quarantine records are preserved.
+
+## CI/CD and enrichment fallback
+
+[Delivery contract](docs/DELIVERY.md): disposable database/API integration tests,
+required named CI checks, exact-commit release artifacts, and supervised local
+production deployment with health checks and rollback. An opt-in, tools-free
+Anvil inference bridge provides enrichment when Anthropic is unavailable. Health
+reports fallback provider status and the deployed release SHA.

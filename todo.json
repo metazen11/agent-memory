@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastUpdated": "2026-10-03",
+  "lastUpdated": "2026-10-05",
   "projects": {
     "postgis": {
       "status": "pending",
@@ -91,6 +91,24 @@
           "notes": "Reviewed and implemented launchd API restart plus bounded global replay; installed both login jobs. Atomic spool writes, locks, quarantine, transactional migration-018 receipts and status JSON. 427 passed, 2 skipped; forced API exit recovered in 23.5 seconds; replay resumed with 40-file batch. Backlog drains every minute; status ~/.codex/agent-memory-recovery.json."
         }
       ]
+    },
+    "delivery": {
+      "status": "in-progress",
+      "tasks": [
+        {
+          "id": "cicd-20261005",
+          "task": "Require feature-to-dev and dev-to-main green CI with isolated integration tests and verified local deployment/rollback",
+          "status": "in_progress",
+          "priority": "high"
+        },
+        {
+          "id": "anvil-fallback-20261005",
+          "task": "Test and wire bounded tools-disabled Anvil inference fallback for enrichment with provenance and failure handling",
+          "status": "in_progress",
+          "priority": "high"
+        }
+      ],
+      "issue": "https://github.com/metazen11/agent-memory/issues/71"
     }
   }
 }

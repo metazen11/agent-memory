@@ -9,11 +9,11 @@ than living in one developer's `~/.claude/`.
 | Branch | Role | How it receives commits |
 |---|---|---|
 | `main` | production | **only** a reviewed PR from `dev` |
-| `dev` | integration | direct pushes, after a green local gate |
+| `dev` | integration | a feature PR with green `quality` and `integrity` checks |
 
 ## Rules
 
-1. **Never push directly to `main`.** Work lands on `dev`, and `dev` reaches
+1. **Use a feature branch and PR to `dev`.** Never push directly to either trunk. `dev` reaches
    `main` through a pull request. That PR is the single human review gate.
 2. **Never let `dev` fall behind `main`.** If something reaches production
    without passing through `dev`, the next `dev -> main` PR renders those
@@ -80,3 +80,9 @@ exactly why the two server-side layers above carry the real weight.
 warning. It does **not** skip GitHub branch protection — that needs an
 explicit, logged settings change. If you find yourself reaching for it
 regularly, the contract is wrong; fix the contract, not the push.
+
+## Tested delivery
+
+See [docs/DELIVERY.md](docs/DELIVERY.md) for the required CI checks, disposable
+integration stage, exact-commit release artifacts, local production CD, and
+rollback contract. Main promotion requires `quality`, `integrity`, and `drift`.

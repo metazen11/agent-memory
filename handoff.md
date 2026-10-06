@@ -467,3 +467,21 @@ Published `e830fcd` to `codex/codex-memory-repair` and `dev`. Promotion PR:
 https://github.com/metazen11/agent-memory/pull/69 (`dev -> main`), open and
 mergeable. Local gate: 401 passed, 2 skipped; remote push checks passed.
 The PR is attached to the Codex chat. Merge remains the human review gate.
+
+## 2026-10-05 — CI/CD and Anvil fallback
+
+Branch `codex/cicd-anvil-fallback` adds a hosted quality gate, feature-to-dev PR
+contract, and trusted pull-based local delivery from successful main artifacts.
+The host has no Actions runner. Releases are isolated outside the coding checkout;
+activation checks exact SHA, database and embeddings, with previous-release
+rollback. Dependencies and migration changes require explicit host preparation.
+
+Anthropic is failing with exhausted credits. The installed Anvil MLX engine
+produced a valid live observation through a tools-free subprocess bridge. Anvil
+remains an opt-in fallback; malformed output/timeouts must preserve queue retries.
+See docs/DELIVERY.md for configuration, deployment state, and operational limits.
+
+Local verification: 441 passed, 2 skipped, one existing embedding-library warning.
+Live Anvil observation and lesson probes passed; lesson inference took 14.75s.
+CODE_REVIEW preceded TEST; corrected rollback bootstrap identity verification and
+bounded subprocess output buffering. Work is tracked by GitHub issue #71.

@@ -1,5 +1,7 @@
 """Integration tests for /api/lessons endpoints."""
 
+from pathlib import Path
+
 import pytest
 
 # Module-level storage for IDs created during test run
@@ -90,7 +92,7 @@ async def test_match_endpoint_skips_broad_match_input_lessons(client, test_prefi
         "RETURNING id;"
     )
     result = subprocess.run(
-        ["bash", "/Users/mz/_CODING/agentMemory/scripts/psql_wrapper.sh", "-tA", "-c", insert_sql],
+        ["bash", str(Path(__file__).absolute().parents[1] / "scripts/psql_wrapper.sh"), "-tA", "-c", insert_sql],
         capture_output=True, text=True, timeout=10,
     )
     if result.returncode != 0:
@@ -114,7 +116,7 @@ async def test_match_endpoint_skips_broad_match_input_lessons(client, test_prefi
     finally:
         # Clean up the legacy row
         subprocess.run(
-            ["bash", "/Users/mz/_CODING/agentMemory/scripts/psql_wrapper.sh", "-c",
+            ["bash", str(Path(__file__).absolute().parents[1] / "scripts/psql_wrapper.sh"), "-c",
              f"DELETE FROM mem_lessons WHERE id = {legacy_id};"],
             capture_output=True, text=True, timeout=10,
         )
