@@ -22,6 +22,7 @@ def main():
         # Do not retain a second raw copy of potentially sensitive memory data.
         raw_logging.log_raw_llm_interaction = lambda **kwargs: None
         settings.mlx_thinking_enabled = False
+        settings.llm_daemon_enabled = False
         result = chat_completion(
             messages=request["messages"],
             tools=[],

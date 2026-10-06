@@ -61,7 +61,7 @@ fallback. Defaults: `ANVIL_ROOT=/opt/anvil`, `ANVIL_TIMEOUT_SECONDS=60`.
 The bridge invokes Anvil's Python runtime and `chat_completion` directly, with
 **no tools**, agent runner, hooks, memory recursion or raw interaction logging.
 It redacts the input, validates returned JSON and records provider identity.
-Fallback failures degrade health explicitly. Only one inference subprocess runs at a time. A timeout kills its entire process
+Fallback failures degrade health explicitly. Daemon proxying is disabled so process termination also stops inference. Only one inference subprocess runs at a time. A timeout kills its entire process
 group. Invalid output and invocation failures raise a retryable error for queue
 observations. Intentional `skip:true` remains a skip. Lesson synthesis tries
 Anthropic, then Anvil, then local GGUF; the existing rule-quality validator still

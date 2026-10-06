@@ -145,7 +145,7 @@ def test_bridge_disables_tools_and_raw_logging(tmp_path, tool_calls):
     (package / "__init__.py").write_text("")
     (package / "llm/__init__.py").write_text("")
     (package / "config.py").write_text(
-        'from types import SimpleNamespace\nsettings=SimpleNamespace(model_backend="test", model_name="model", mlx_thinking_enabled=True)\n'
+        'from types import SimpleNamespace\nsettings=SimpleNamespace(model_backend="test", model_name="model", mlx_thinking_enabled=True, llm_daemon_enabled=True)\n'
     )
     (package / "llm/raw_logging.py").write_text(
         'def log_raw_llm_interaction(**kwargs):\n    raise RuntimeError("raw logging enabled")\n'
@@ -153,7 +153,9 @@ def test_bridge_disables_tools_and_raw_logging(tmp_path, tool_calls):
     (package / "runner.py").write_text('raise RuntimeError("agent runner imported")\n')
     (package / "llm/engine.py").write_text(
         "from anvil.llm import raw_logging\n"
+        "from anvil.config import settings\n"
         "def chat_completion(**kwargs):\n"
+        '    assert not settings.llm_daemon_enabled\n'
         '    assert kwargs["tools"] == []\n'
         '    assert kwargs["max_tokens"] == 900\n'
         '    raw_logging.log_raw_llm_interaction(secret="do not record")\n'
