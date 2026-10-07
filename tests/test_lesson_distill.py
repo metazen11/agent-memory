@@ -11,14 +11,13 @@ from __future__ import annotations
 import pytest
 
 from app.lesson_distill import (
+    _extract_files,
+    _extract_pattern,
     build_trigger,
     is_noise,
     normalize_error,
     validate_lesson_payload,
-    _extract_files,
-    _extract_pattern,
 )
-
 
 # ── Normalization / clustering ────────────────────────────────
 
@@ -246,7 +245,8 @@ async def test_duplicate_detection_catches_resynthesized_lesson():
     like with like and scores the same pair at 1.00.
     """
     import httpx
-    from app.db import init_pool, get_pool
+
+    from app.db import get_pool, init_pool
     from app.lesson_distill import find_duplicate_lesson
 
     title = "Distill dedup fixture lesson"
@@ -283,3 +283,30 @@ async def test_duplicate_detection_catches_resynthesized_lesson():
             assert dup["similarity"] >= 0.90
         finally:
             await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
+
+
+# ── Condensing synthesized rules (issue #75) ──────────────────
+
+async def test_synthesized_long_rule_goes_through_condenser(monkeypatch):
+    from app import lesson_condense
+    from app.lesson_distill import condense_payload
+
+    async def fake(rule, detail=None):
+        return lesson_condense.PreparedRule(rule="Short.", detail=rule, provider="anvil:mlx:m")
+    monkeypatch.setattr(lesson_condense, "prepare_rule", fake)
+    payload = {"rule": "r" * 500}
+    assert await condense_payload(payload) is None
+    assert payload == {"rule": "Short.", "detail": "r" * 500}
+
+
+async def test_synthesized_rule_rejected_when_condenser_fails(monkeypatch):
+    from app import lesson_condense
+    from app.lesson_distill import condense_payload
+
+    async def fake(rule, detail=None):
+        raise lesson_condense.CondenseRejected("all providers failed")
+    monkeypatch.setattr(lesson_condense, "prepare_rule", fake)
+    payload = {"rule": "r" * 500}
+    reason = await condense_payload(payload)
+    assert reason and "all providers failed" in reason
+    assert payload["rule"] == "r" * 500

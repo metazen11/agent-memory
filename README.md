@@ -169,6 +169,79 @@ curl -X PATCH localhost:3377/api/lessons/<id> \
      -H 'content-type: application/json' -d '{"active":false}'
 ```
 
+## Lesson condensing
+
+`user-prompt-submit` injects each active CRITICAL lesson's `rule` capped at
+**280 characters**. Long rules that tell the incident story first lost their
+actual instruction to that cap, so every write path now keeps `rule` short:
+
+- `rule` (<= 280 chars) is the instruction that gets injected.
+- `detail` (optional, unbounded) holds the backstory. It is stored and
+  indexed for search but never injected.
+
+`POST /api/lessons`, `PATCH /api/lessons/{id}`, MCP `create_lesson` and the
+distiller all route a rule over 280 chars through `app/lesson_condense.py`.
+It returns one imperative rule (WHEN it applies + WHAT to do, exact
+commands and flags kept) and moves the original into `detail`. Provider
+order:
+
+1. **Anvil bridge, pinned model.** The bridge subprocess gets
+   `ANVIL_MODEL_BACKEND` / `ANVIL_MODEL_PATH` from agent-memory settings
+   (and `ANVIL_MODEL_NAME=""`). Process env beats Anvil's `.env`, so the
+   condenser never depends on Anvil's global model or on LM Studio. The
+   provider shows up as `anvil:mlx:<model dir>`.
+2. **Claude Haiku**, if `ANTHROPIC_API_KEY` is set and its breaker is closed.
+
+Each provider gets one retry that tells it the length of its answer. If all
+of them fail, the write is **refused** (HTTP 422 / MCP `RULE_TOO_LONG`). A
+rule is never truncated: a cut-off rule loses the instruction this exists
+to keep. The database enforces the cap too (migration 019,
+`chk_lesson_rule_len`).
+
+| Setting (`.env`) | Default | Purpose |
+|---|---|---|
+| `ANVIL_CONDENSE_ENABLED` | `true` | Use the Anvil bridge for condensing. This is separate from `ANVIL_FALLBACK_ENABLED` |
+| `ANVIL_CONDENSE_BACKEND` | `mlx` | Anvil backend passed as `ANVIL_MODEL_BACKEND` |
+| `ANVIL_CONDENSE_MODEL_PATH` | `~/.lmstudio/models/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-MLX` | Model passed as `ANVIL_MODEL_PATH` (`~` is expanded) |
+| `ANVIL_CONDENSE_TIMEOUT_SECONDS` | `120` | Per-call bridge timeout |
+| `ANVIL_ROOT` | `/opt/anvil` | Anvil install whose Python runs the bridge |
+
+**Changing the model:** set `ANVIL_CONDENSE_MODEL_PATH` (and
+`ANVIL_CONDENSE_BACKEND` if it is not an MLX model) in `.env`, then restart
+the API. Anvil's own config does not need to change. To check it, condense
+one long rule and confirm the provider string:
+
+```bash
+.venv/bin/python - <<'PY'
+import asyncio
+from app.lesson_condense import condense_rule
+print(asyncio.run(condense_rule(open("long-rule.txt").read())))
+PY
+```
+
+### Backfill (one-time, review-gated)
+
+Rows that were already over 280 chars when migration 019 ran are flagged
+`legacy_long_rule = true`. Without that flag, every UPDATE on them (trigger
+counts, deactivation) would fail the new CHECK. To condense them:
+
+```bash
+# 1. Dry run (default): read-only. Writes review JSON + a Markdown rendering
+.venv/bin/python scripts/condense_lessons.py --out review.json
+
+# 2. Read review.md. Edit or delete entries in review.json, then apply
+#    exactly those rows. This copies mem_lessons to
+#    mem_lessons_backup_<UTC ts> and updates everything in ONE transaction.
+#    If any row changed since the review, nothing is applied.
+.venv/bin/python scripts/condense_lessons.py --apply --review-file review.json
+
+# 3. Validate the CHECK constraint
+.venv/bin/python scripts/condense_lessons.py --validate-constraint
+```
+
+Rollback: `UPDATE mem_lessons l SET rule = b.rule, detail = b.detail,
+legacy_long_rule = b.legacy_long_rule FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;`
+
 ## Hooks — how data gets in
 
 Five Node.js hooks live in `hooks/`. They are designed fire-and-forget

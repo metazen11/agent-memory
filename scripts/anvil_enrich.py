@@ -8,6 +8,13 @@ import sys
 from pathlib import Path
 
 
+def _provider(settings) -> str:
+    # Local backends (mlx) are identified by model_path; model_name is empty
+    # when a caller pins ANVIL_MODEL_NAME="" (app/lesson_condense.py).
+    model = settings.model_name or Path(settings.model_path).name
+    return f"anvil:{settings.model_backend}:{model}"
+
+
 def main():
     root = Path(os.environ.get("AGENT_MEMORY_ANVIL_ROOT", "/opt/anvil"))
     sys.path.insert(0, str(root))
@@ -34,7 +41,7 @@ def main():
     json.dump(
         {
             "content": result.get("content", ""),
-            "provider": f"anvil:{settings.model_backend}:{settings.model_name}",
+            "provider": _provider(settings),
         },
         sys.stdout,
     )

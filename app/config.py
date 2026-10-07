@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     anvil_root: str = "/opt/anvil"
     anvil_timeout_seconds: float = 60.0
 
+    # Lesson-rule condenser (app/lesson_condense.py). Uses the Anvil bridge
+    # with the backend/model PINNED here, passed to the bridge subprocess as
+    # ANVIL_MODEL_BACKEND / ANVIL_MODEL_PATH (process env beats Anvil's .env),
+    # so it never depends on Anvil's global model or on LM Studio.
+    # Independent of anvil_fallback_enabled: it only runs when a lesson is
+    # written with a rule over 280 chars.
+    anvil_condense_enabled: bool = True
+    anvil_condense_backend: str = "mlx"
+    anvil_condense_model_path: str = (
+        "~/.lmstudio/models/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-MLX"
+    )
+    anvil_condense_timeout_seconds: float = 120.0
+
     # Server
     host: str = "127.0.0.1"
     port: int = 3377
