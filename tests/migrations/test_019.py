@@ -4,7 +4,8 @@ Pins:
 - `detail` exists and is nullable; full-text search indexes it.
 - While pre-019 long rules still exist, a BEFORE INSERT/UPDATE trigger
   enforces the cap on every write that could introduce a long active rule:
-  any INSERT, any change of `rule`, and reactivation of a long row. Other
+  any INSERT, any change of `rule`, reactivation of a long row, and
+  promotion of a long row to `critical`. Other
   UPDATEs on a long legacy row (trigger_count, deactivation) keep working.
   A bare `CHECK ... NOT VALID` cannot do this: Postgres checks every new
   row version on UPDATE, so counter updates on legacy rows would fail.
@@ -31,11 +32,15 @@ async def pre019_db(throwaway_db: str) -> str:
     await apply_migrations_before(throwaway_db, 19)
     conn = await asyncpg.connect(throwaway_db)
     try:
-        for title, active in (("legacy", True), ("legacy-inactive", False), ("legacy-2", True)):
+        for title, active, severity in (
+            ("legacy", True, "critical"),
+            ("legacy-inactive", False, "critical"),
+            ("legacy-2", True, "warning"),
+        ):
             await conn.execute(
                 "INSERT INTO mem_lessons (title, rule, severity, trigger_on, trigger_tool, raw_text, active)"
-                " VALUES ($1, $2, 'critical', 'input', 'Bash', $1, $3)",
-                title, LONG, active,
+                " VALUES ($1, $2, $4, 'input', 'Bash', $1, $3)",
+                title, LONG, active, severity,
             )
     finally:
         await conn.close()
@@ -112,6 +117,13 @@ async def test_reactivating_long_legacy_row_refused(conn):
     """RED against the flag design: PATCH {"active": true} revived a 600-char rule."""
     with pytest.raises(asyncpg.CheckViolationError):
         await conn.execute("UPDATE mem_lessons SET active = true WHERE title = 'legacy-inactive'")
+
+
+async def test_promoting_long_legacy_row_to_critical_refused(conn):
+    """Active critical lessons are the injected set; promoting a long one
+    recreates the truncated-instruction state (codex review)."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await conn.execute("UPDATE mem_lessons SET severity = 'critical' WHERE title = 'legacy-2'")
 
 
 async def test_legacy_long_row_still_accepts_counter_updates(conn):

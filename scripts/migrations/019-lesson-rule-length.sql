@@ -24,7 +24,9 @@
 -- produce a long ACTIVE-able rule:
 --   * any INSERT with a rule > 280;
 --   * any UPDATE that changes `rule` to > 280;
---   * any UPDATE that reactivates a row whose rule is > 280.
+--   * any UPDATE that reactivates a row whose rule is > 280;
+--   * any UPDATE that promotes such a row to severity 'critical' (active
+--     critical lessons are the set user-prompt-submit injects).
 -- Other updates of a long legacy row (counters, deactivation) still pass.
 -- No state can be written to bypass it.
 --
@@ -65,6 +67,7 @@ BEGIN
         TG_OP = 'INSERT'
         OR NEW.rule IS DISTINCT FROM OLD.rule
         OR (NEW.active AND NOT OLD.active)
+        OR (NEW.severity = 'critical' AND OLD.severity IS DISTINCT FROM 'critical')
     ) THEN
         RAISE EXCEPTION 'lesson rule is % chars (max 280); condense it and put the backstory in detail',
             char_length(NEW.rule)

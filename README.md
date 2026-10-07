@@ -242,8 +242,9 @@ cap instead. It refuses:
 
 - any INSERT with a long rule;
 - any change of `rule` to a long one;
-- reactivating a row whose rule is still long. `PATCH {"active": true}`
-  returns 409; send a short `rule` in the same PATCH.
+- reactivating a row whose rule is still long, or promoting it to
+  `critical`. Such a PATCH returns 409; send a short `rule` in the same
+  PATCH.
 
 There is no flag or column that turns the trigger off. The backfill
 condenses **every** long row, active and inactive. Inactive rows are
