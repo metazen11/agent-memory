@@ -115,6 +115,8 @@ async def test_too_long_output_retried_once_with_length_feedback(monkeypatch):
     assert out.rule == "Short enough rule."
     assert len(calls["anvil"]) == 2
     assert "400 characters" in calls["anvil"][1]
+    assert f"at most {lc.RETRY_TARGET_CHARS}" in calls["anvil"][1]
+    assert "y" * 400 not in calls["anvil"][1], "retry must not quote the over-long answer"
     assert calls["haiku"] == []
 
 

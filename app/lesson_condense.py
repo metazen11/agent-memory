@@ -148,18 +148,26 @@ def _user_prompt(rule: str) -> str:
     return f"Condense this lesson into one rule:\n\n{rule}"
 
 
+# The retry asks for a TIGHTER target than the hard limit. Measured on the
+# live backfill dry run: a retry that only restated "max 280" and quoted the
+# previous answer got the SAME answer back verbatim in 16 of 18 cases
+# (293 -> 293, 315 -> 315, ...). The model copies the answer it is shown.
+RETRY_TARGET_CHARS = 200
+
+
 def _retry_prompt(rule: str, previous: str) -> str:
     if not previous:
         problem = "Your previous answer was empty."
     else:
         problem = (
-            f"Your previous answer was {len(previous)} characters; the limit is "
-            f"{MAX_RULE_CHARS}. Previous answer:\n{previous}"
+            f"Your previous answer was {len(previous)} characters, over the "
+            f"{MAX_RULE_CHARS}-character limit."
         )
     return (
-        f"{problem}\n\nRewrite it as ONE imperative rule of at most "
-        f"{MAX_RULE_CHARS} characters. Output only the rule.\n\n"
-        f"Original lesson:\n{rule}"
+        f"{problem} Write a NEW, shorter rule of at most {RETRY_TARGET_CHARS} "
+        "characters: keep only the single most important instruction and the "
+        "exact command or flag it needs; drop secondary clauses and examples. "
+        f"Output only the rule.\n\nOriginal lesson:\n{rule}"
     )
 
 
