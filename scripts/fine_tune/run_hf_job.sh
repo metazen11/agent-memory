@@ -217,8 +217,24 @@ ENV_ARGS=(
 
 CMD=(hf jobs uv run --flavor "$HW_FLAVOR" --timeout "$JOB_TIMEOUT")
 # JOB_NAMESPACE routes billing + execution to an org (e.g. WFCA) instead of the
-# running user's personal namespace. Personal WFCAMZ has no Jobs credits (402);
-# set JOB_NAMESPACE=WFCA to bill the org. Empty = user's own namespace.
+# running user's personal namespace. Empty = user's own namespace.
+#
+# CORRECTED 2026-10-06 — this comment previously said "Personal WFCAMZ has no
+# Jobs credits (402); set JOB_NAMESPACE=WFCA to bill the org." That is
+# BACKWARDS and it misled three sessions. Verified from the live job list:
+#   `hf jobs ps -a`                 -> 2 jobs on PERSONAL (one COMPLETED l4x1)
+#   `hf jobs ps -a --namespace WFCA`-> "No jobs found"
+# The personal namespace is where runs have actually SUCCEEDED; the ORG is
+# what returned 402.
+#
+# Both namespaces now carry a prepaid balance (billingMode=prepaid, canPay=true
+# on each): WFCA $4.00 (the pooled $2/seat/mo Team credits), WFCAMZ $5.13. An
+# l4x1 hour is $0.80 billed per minute, so a ~3h run is ~$2.40 — either
+# namespace can fund one.
+#
+# The org 402 is therefore NOT "no payment method" and NOT "no credits". Its
+# cause is still unestablished; do not guess it in a comment again. Check
+# https://huggingface.co/organizations/WFCA/settings/billing before blaming it.
 [ -n "${JOB_NAMESPACE:-}" ] && CMD+=(--namespace "$JOB_NAMESPACE")
 [ -n "$JOB_IMAGE" ] && CMD+=(--image "$JOB_IMAGE")
 CMD+=("${ENV_ARGS[@]}")
