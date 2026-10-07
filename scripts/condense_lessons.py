@@ -144,7 +144,9 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
             raise ValueError(f"lesson #{r['id']}: reviewed new_rule missing or > {MAX_RULE_CHARS} chars")
     prepared = []
     for r in rows:
-        current = await conn.fetchrow("SELECT rule, detail FROM mem_lessons WHERE id = $1", r["id"])
+        current = await conn.fetchrow(
+            "SELECT title, rule, detail FROM mem_lessons WHERE id = $1", r["id"]
+        )
         if current is None or current["rule"] != r["old_rule"]:
             # Checked before any embedding work; re-checked in the UPDATE.
             raise ReviewMismatch(
@@ -152,8 +154,12 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
             )
         current_detail = current["detail"]
         detail = f"{r['old_rule']}\n\n{current_detail}" if current_detail else r["old_rule"]
-        raw_text = lesson_raw_text(r["title"], r["new_rule"], detail)
-        prepared.append((r, current_detail, detail, raw_text, await embed(raw_text)))
+        # The LIVE title (it may have been edited since the review); the
+        # UPDATE below re-checks it so raw_text can never go stale.
+        raw_text = lesson_raw_text(current["title"], r["new_rule"], detail)
+        prepared.append(
+            (r, current["title"], current_detail, detail, raw_text, await embed(raw_text))
+        )
     # All lower case: Postgres folds unquoted identifiers, so the printed
     # name must work when pasted unquoted into psql or --rollback.
     backup = "mem_lessons_backup_" + datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%S%f")
@@ -164,16 +170,17 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
             " ADD COLUMN condensed_by_apply BOOLEAN NOT NULL DEFAULT false,"
             " ADD COLUMN applied_fingerprint TEXT"
         )
-        for r, current_detail, detail, raw_text, embedding in prepared:
+        for r, title, current_detail, detail, raw_text, embedding in prepared:
             status = await conn.execute(
                 """
                 UPDATE mem_lessons
                    SET rule = $2, detail = $4, raw_text = $5,
                        embedding = $6::vector
                  WHERE id = $1 AND rule = $3 AND detail IS NOT DISTINCT FROM $7
+                   AND title = $8
                 """,
                 r["id"], r["new_rule"], r["old_rule"], detail, raw_text, embedding,
-                current_detail,
+                current_detail, title,
             )
             if status != "UPDATE 1":
                 raise ReviewMismatch(

@@ -248,3 +248,18 @@ async def test_lookups_are_schema_qualified_not_search_path(db, stub, capsys):
     err = capsys.readouterr().err
     assert code == 2
     assert "does not exist" in err
+
+
+async def test_apply_uses_live_title_for_search_text(db, stub):
+    """Codex P3: a title edited between review and --apply must not leave
+    raw_text/embedding built from the stale reviewed title."""
+    conn = await asyncpg.connect(db)
+    try:
+        await _transition_with(conn, [("old-title", LONG, True, "info")])
+        rows = [r for r in await cl.build_review(conn) if r["title"] == "old-title"]
+        await conn.execute("UPDATE mem_lessons SET title = 'new-title' WHERE title = 'old-title'")
+        await cl.apply_review(conn, rows, embed=fake_embed)
+        raw = await conn.fetchval("SELECT raw_text FROM mem_lessons WHERE title = 'new-title'")
+    finally:
+        await conn.close()
+    assert raw.startswith("new-title\n")
