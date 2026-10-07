@@ -48,6 +48,9 @@ SYSTEM_PROMPT = (
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
+# Anvil backends that load weights from ANVIL_MODEL_PATH on this machine.
+LOCAL_BACKENDS = frozenset({"mlx", "local"})
+
 
 class ProviderUnavailable(RuntimeError):
     """A provider could not produce any answer (not configured, down, error)."""
@@ -106,13 +109,23 @@ def anvil_model_env() -> dict[str, str]:
 async def _call_anvil(system: str, user: str) -> tuple[str, str]:
     if not settings.anvil_condense_enabled:
         raise ProviderUnavailable("anvil condenser disabled (anvil_condense_enabled=false)")
+    env = anvil_model_env()
+    model_path = env["ANVIL_MODEL_PATH"]
+    # Fail closed: given a path that does not exist, Anvil auto-discovers
+    # some OTHER local model and answers anyway, silently breaking the pin.
+    # Only local backends load from a filesystem path.
+    if env["ANVIL_MODEL_BACKEND"] in LOCAL_BACKENDS and not os.path.exists(model_path):
+        raise ProviderUnavailable(
+            f"pinned model path does not exist: {model_path} "
+            "(set ANVIL_CONDENSE_MODEL_PATH)"
+        )
     from app.anvil_enrichment import EnrichmentUnavailable, generate_text
 
     try:
         return await generate_text(
             system,
             user,
-            env_overrides=anvil_model_env(),
+            env_overrides=env,
             timeout=settings.anvil_condense_timeout_seconds,
             keep_warm_seconds=settings.anvil_condense_keep_warm_seconds,
         )

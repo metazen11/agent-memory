@@ -234,7 +234,7 @@ def test_untriggerable_candidate_is_refused_not_emitted():
 # ── Duplicate detection ───────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_duplicate_detection_catches_resynthesized_lesson():
+async def test_duplicate_detection_catches_resynthesized_lesson(client):
     """A re-run must not create a second copy of the same lesson.
 
     Regression: the pre-synthesis probe embeds ERROR TEXT while lessons
@@ -243,11 +243,24 @@ async def test_duplicate_detection_catches_resynthesized_lesson():
     also swallow an unrelated lesson at 0.644 — so a scheduled re-run
     created a byte-identical duplicate. find_duplicate_lesson() compares
     like with like and scores the same pair at 1.00.
-    """
-    import httpx
 
-    from app.db import get_pool, init_pool
+    Writes a lesson, so it runs only against a disposable stack: it used to
+    hard-code http://localhost:3377 and wrote rows (ids 266/267/269) into
+    the LIVE database on every local run. It now uses the suite's `client`
+    (AGENT_MEMORY_TEST_URL) and connects to DATABASE_URL, the same database
+    that server uses, and skips unless one of those was set explicitly.
+    """
+    import os
+
+    import asyncpg
+
     from app.lesson_distill import find_duplicate_lesson
+
+    if not os.environ.get("CI") and not os.environ.get("AGENT_MEMORY_TEST_URL"):
+        pytest.skip("writes a lesson; set AGENT_MEMORY_TEST_URL (+ DATABASE_URL) to a disposable stack")
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL must point at the test server's database")
 
     title = "Distill dedup fixture lesson"
     rule = (
@@ -255,34 +268,27 @@ async def test_duplicate_detection_catches_resynthesized_lesson():
         "targeting public_html; it is a plain directory, not a repository."
     )
 
-    async with httpx.AsyncClient(
-        base_url="http://localhost:3377", timeout=10.0,
-        headers={"X-Agent-Name": "claude"},
-    ) as client:
-        resp = await client.post("/api/lessons", json={
-            "title": title,
-            "rule": rule,
-            "severity": "warning",
-            "trigger_on": "input",
-            "trigger_tool": "bash_run",
-        })
-        if resp.status_code == 429:
-            # Shared localhost write bucket (require_auth=False keys it on
-            # client host, so tests, CLI runs and live hooks all compete).
-            pytest.skip("shared localhost write budget exhausted; re-run when idle")
-        resp.raise_for_status()
-        lesson_id = resp.json()["id"]
+    resp = await client.post("/api/lessons", json={
+        "title": title,
+        "rule": rule,
+        "severity": "warning",
+        "trigger_on": "input",
+        "trigger_tool": "bash_run",
+    })
+    if resp.status_code == 429:
+        pytest.skip("shared localhost write budget exhausted; re-run when idle")
+    resp.raise_for_status()
+    lesson_id = resp.json()["id"]
 
-        try:
-            await init_pool()
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                dup = await find_duplicate_lesson(conn, title, rule)
-            assert dup is not None, "identical lesson was not detected as duplicate"
-            assert dup["id"] == lesson_id
-            assert dup["similarity"] >= 0.90
-        finally:
-            await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
+    conn = await asyncpg.connect(dsn)
+    try:
+        dup = await find_duplicate_lesson(conn, title, rule)
+        assert dup is not None, "identical lesson was not detected as duplicate"
+        assert dup["id"] == lesson_id
+        assert dup["similarity"] >= 0.90
+    finally:
+        await conn.close()
+        await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
 
 
 # ── Condensing synthesized rules (issue #75) ──────────────────

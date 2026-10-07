@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""One-time, review-gated backfill: condense active lessons whose rule > 280.
+"""One-time, review-gated backfill: condense every lesson whose rule > 280.
 
 Issue #75. Three separate, explicit steps:
 
-1. Dry run (DEFAULT, read-only): condense every ACTIVE lesson whose rule is
-   over 280 chars and write a review file (JSON + a Markdown rendering)::
+1. Dry run (DEFAULT, read-only): condense every lesson whose rule is over
+   280 chars, ACTIVE AND INACTIVE, and write a review file (JSON + a
+   Markdown rendering). Inactive rows are included: left long they would
+   block the final CHECK, and reactivating one would revive a long rule::
 
        .venv/bin/python scripts/condense_lessons.py --out review.json
 
@@ -16,14 +18,17 @@ Issue #75. Three separate, explicit steps:
 
        .venv/bin/python scripts/condense_lessons.py --apply --review-file review.json
 
-3. Validate migration 019's CHECK constraint::
+3. Finalize migration 019: install the validated
+   CHECK (char_length(rule) <= 280) and drop the transition trigger.
+   Refused while any rule is still over 280 chars::
 
        .venv/bin/python scripts/condense_lessons.py --validate-constraint
 
-Rollback after --apply::
+Rollback after --apply (before step 3; afterwards the CHECK refuses the
+long rules, so roll back 019 itself first)::
 
     UPDATE mem_lessons l SET rule = b.rule, detail = b.detail,
-           legacy_long_rule = b.legacy_long_rule
+           raw_text = b.raw_text, embedding = b.embedding
       FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;
 """
 
@@ -57,10 +62,10 @@ class ReviewMismatch(RuntimeError):
 
 
 async def build_review(conn) -> list[dict]:
-    """Condense every active over-long rule. Read-only."""
+    """Condense every over-long rule, active or not. Read-only."""
     rows = await conn.fetch(
-        "SELECT id, title, rule, severity FROM mem_lessons"
-        " WHERE active AND char_length(rule) > $1 ORDER BY id",
+        "SELECT id, title, rule, severity, active FROM mem_lessons"
+        " WHERE char_length(rule) > $1 ORDER BY id",
         MAX_RULE_CHARS,
     )
     review = []
@@ -69,6 +74,7 @@ async def build_review(conn) -> list[dict]:
             "id": row["id"],
             "title": row["title"],
             "severity": row["severity"],
+            "active": row["active"],
             "old_length": len(row["rule"]),
             "old_rule": row["rule"],
         }
@@ -129,7 +135,13 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
             raise ValueError(f"lesson #{r['id']}: reviewed new_rule missing or > {MAX_RULE_CHARS} chars")
     prepared = []
     for r in rows:
-        current_detail = await conn.fetchval("SELECT detail FROM mem_lessons WHERE id = $1", r["id"])
+        current = await conn.fetchrow("SELECT rule, detail FROM mem_lessons WHERE id = $1", r["id"])
+        if current is None or current["rule"] != r["old_rule"]:
+            # Checked before any embedding work; re-checked in the UPDATE.
+            raise ReviewMismatch(
+                f"lesson #{r['id']} changed since review (or is gone); nothing applied"
+            )
+        current_detail = current["detail"]
         detail = f"{r['old_rule']}\n\n{current_detail}" if current_detail else r["old_rule"]
         raw_text = lesson_raw_text(r["title"], r["new_rule"], detail)
         prepared.append((r, current_detail, detail, raw_text, await embed(raw_text)))
@@ -141,7 +153,7 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
                 """
                 UPDATE mem_lessons
                    SET rule = $2, detail = $4, raw_text = $5,
-                       embedding = $6::vector, legacy_long_rule = false
+                       embedding = $6::vector
                  WHERE id = $1 AND rule = $3 AND detail IS NOT DISTINCT FROM $7
                 """,
                 r["id"], r["new_rule"], r["old_rule"], detail, raw_text, embedding,
@@ -155,7 +167,10 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
 
 
 async def validate_constraint(conn) -> None:
-    await conn.execute(f"ALTER TABLE mem_lessons VALIDATE CONSTRAINT {CONSTRAINT}")
+    """Swap 019's transition trigger for the validated CHECK (see 019).
+
+    Raises asyncpg.CheckViolationError while any rule is over 280 chars."""
+    await conn.execute("SELECT mem_lessons_finalize_rule_cap()")
 
 
 def _dsn() -> str:
@@ -168,7 +183,8 @@ async def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="(default) write a review file; no DB writes")
     mode.add_argument("--apply", action="store_true", help="apply a reviewed file (requires --review-file)")
-    mode.add_argument("--validate-constraint", action="store_true", help=f"VALIDATE {CONSTRAINT}")
+    mode.add_argument("--validate-constraint", action="store_true",
+                      help=f"install the validated {CONSTRAINT} CHECK (after a full apply)")
     parser.add_argument("--out", type=Path, help="dry-run output path (default: ./lesson-condense-review-<ts>.json)")
     parser.add_argument("--review-file", type=Path)
     parser.add_argument("--dsn", help="override DATABASE_URL")
@@ -180,11 +196,24 @@ async def main(argv: list[str] | None = None) -> int:
             if not args.review_file:
                 parser.error("--apply requires --review-file")
             rows = json.loads(args.review_file.read_text())["lessons"]
-            backup = await apply_review(conn, rows)
+            try:
+                backup = await apply_review(conn, rows)
+            except (ReviewMismatch, ValueError) as error:
+                print(f"error: {error}", file=sys.stderr)
+                return 2
             print(f"applied {len(rows)} lessons; backup table: {backup}")
         elif args.validate_constraint:
-            await validate_constraint(conn)
-            print(f"{CONSTRAINT} validated")
+            try:
+                await validate_constraint(conn)
+            except asyncpg.CheckViolationError:
+                remaining = await conn.fetchval(
+                    "SELECT count(*) FROM mem_lessons WHERE char_length(rule) > $1",
+                    MAX_RULE_CHARS,
+                )
+                print(f"error: {remaining} lessons still exceed {MAX_RULE_CHARS} chars;"
+                      " run the dry run + --apply first. Nothing changed.", file=sys.stderr)
+                return 2
+            print(f"{CONSTRAINT} installed and validated; transition trigger dropped")
         else:
             out = args.out or Path(
                 f"lesson-condense-review-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.json"

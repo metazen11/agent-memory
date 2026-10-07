@@ -231,9 +231,24 @@ PY
 
 ### Backfill (one-time, review-gated)
 
-Rows that were already over 280 chars when migration 019 ran are flagged
-`legacy_long_rule = true`. Without that flag, every UPDATE on them (trigger
-counts, deactivation) would fail the new CHECK. To condense them:
+Migration 019 ends with a single validated
+`CHECK (char_length(rule) <= 280)`. On a database with no long rules
+(fresh install, CI), it installs that CHECK straight away.
+
+Existing long rules complicate this. A CHECK, even `NOT VALID`, would make
+every UPDATE on those rows fail, including trigger counts and deactivation.
+So while any rule over 280 chars exists, a transition trigger enforces the
+cap instead. It refuses:
+
+- any INSERT with a long rule;
+- any change of `rule` to a long one;
+- reactivating a row whose rule is still long. `PATCH {"active": true}`
+  returns 409; send a short `rule` in the same PATCH.
+
+There is no flag or column that turns the trigger off. The backfill
+condenses **every** long row, active and inactive. Inactive rows are
+included because the final CHECK cannot be installed while any long row
+remains.
 
 ```bash
 # 1. Dry run (default): read-only. Writes review JSON + a Markdown rendering
@@ -241,16 +256,27 @@ counts, deactivation) would fail the new CHECK. To condense them:
 
 # 2. Read review.md. Edit or delete entries in review.json, then apply
 #    exactly those rows. This copies mem_lessons to
-#    mem_lessons_backup_<UTC ts> and updates everything in ONE transaction.
-#    If any row changed since the review, nothing is applied.
+#    mem_lessons_backup_<UTC ts>, then updates rule, detail, raw_text and
+#    the embedding in ONE transaction. If any row changed since the review,
+#    it exits 2 and applies nothing.
 .venv/bin/python scripts/condense_lessons.py --apply --review-file review.json
 
-# 3. Validate the CHECK constraint
+# 3. Finalize: install the validated CHECK and drop the transition trigger.
+#    Exits 2 and changes nothing while any rule is still over 280 chars.
 .venv/bin/python scripts/condense_lessons.py --validate-constraint
 ```
 
-Rollback: `UPDATE mem_lessons l SET rule = b.rule, detail = b.detail,
-legacy_long_rule = b.legacy_long_rule FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;`
+Rollback of step 2, before step 3, restores search fields too:
+
+```sql
+UPDATE mem_lessons l
+   SET rule = b.rule, detail = b.detail, raw_text = b.raw_text, embedding = b.embedding
+  FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;
+```
+
+After step 3 the CHECK refuses the long rules. In that case, run
+`019-lesson-rule-length.down.sql` first; it drops `detail` too, so restore
+from the backup table.
 
 ## Hooks — how data gets in
 

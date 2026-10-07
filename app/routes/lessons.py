@@ -3,6 +3,7 @@ import logging
 import re
 from pathlib import Path
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
@@ -448,10 +449,6 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         params = []
         pidx = 1
 
-        if update.rule is not None:
-            # A rewritten rule is no longer a grandfathered pre-019 row.
-            sets.append("legacy_long_rule = false")
-
         for field in (
             "title", "rule", "detail", "severity", "trigger_tool", "trigger_pattern",
             "active", "trigger_on", "trigger_output_pattern", "trigger_phase",
@@ -499,12 +496,17 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
                 logger.warning(f"Re-embedding failed: {e}")
 
         params.append(lesson_id)
-        row = await conn.fetchrow(f"""
-            UPDATE mem_lessons
-            SET {", ".join(sets)}
-            WHERE id = ${pidx}
-            RETURNING *
-        """, *params)
+        try:
+            row = await conn.fetchrow(f"""
+                UPDATE mem_lessons
+                SET {", ".join(sets)}
+                WHERE id = ${pidx}
+                RETURNING *
+            """, *params)
+        except asyncpg.CheckViolationError as error:
+            # Migration 019: e.g. reactivating a pre-019 lesson whose rule
+            # is still over 280 chars. Send a new `rule` in the same PATCH.
+            raise HTTPException(status_code=409, detail=str(error))
 
         if not row:
             raise HTTPException(status_code=404, detail="Lesson not found")
@@ -519,7 +521,7 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         return LessonOut(
             **{
                 k: row[k] for k in row.keys()
-                if k not in ("embedding", "raw_text", "tsv", "legacy_long_rule")
+                if k not in ("embedding", "raw_text", "tsv")
             },
             project_name=project_name,
         )

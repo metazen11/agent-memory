@@ -229,3 +229,32 @@ async def test_generate_text_returns_raw_text_and_pins_env(monkeypatch):
     assert content == text
     assert provider == "anvil:mlx:m"
     assert spawn.call_args.kwargs["env"]["ANVIL_MODEL_BACKEND"] == "mlx"
+
+
+async def test_missing_pinned_model_path_fails_closed(monkeypatch, tmp_path):
+    """With a nonexistent pinned path, Anvil silently auto-discovered ANOTHER
+    MLX model. The condenser must refuse before spawning the bridge."""
+    from unittest.mock import AsyncMock
+
+    from app import anvil_enrichment
+
+    spawn = AsyncMock()
+    monkeypatch.setattr(anvil_enrichment, "generate_text", spawn)
+    monkeypatch.setattr(lc.settings, "anvil_condense_enabled", True)
+    monkeypatch.setattr(lc.settings, "anvil_condense_model_path", str(tmp_path / "nope"))
+    with pytest.raises(lc.ProviderUnavailable, match="does not exist"):
+        await lc._call_anvil("s", "u")
+    spawn.assert_not_called()
+
+
+async def test_existing_pinned_model_path_is_used(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from app import anvil_enrichment
+
+    spawn = AsyncMock(return_value=("Rule.", "anvil:mlx:m"))
+    monkeypatch.setattr(anvil_enrichment, "generate_text", spawn)
+    monkeypatch.setattr(lc.settings, "anvil_condense_enabled", True)
+    monkeypatch.setattr(lc.settings, "anvil_condense_model_path", str(tmp_path))
+    assert await lc._call_anvil("s", "u") == ("Rule.", "anvil:mlx:m")
+    assert spawn.call_args.kwargs["env_overrides"]["ANVIL_MODEL_PATH"] == str(tmp_path)

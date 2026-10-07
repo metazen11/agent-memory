@@ -10,7 +10,10 @@
 BEGIN;
 
 ALTER TABLE mem_lessons DROP CONSTRAINT IF EXISTS chk_lesson_rule_len;
-ALTER TABLE mem_lessons DROP COLUMN IF EXISTS legacy_long_rule;
+DROP TRIGGER IF EXISTS trg_mem_lessons_rule_cap ON mem_lessons;
+DROP FUNCTION IF EXISTS mem_lessons_finalize_rule_cap();
+DROP FUNCTION IF EXISTS mem_lessons_enforce_rule_cap();
+
 -- tsv depends on detail: restore the 002 expression first.
 DROP INDEX IF EXISTS idx_mem_lessons_tsv;
 ALTER TABLE mem_lessons DROP COLUMN IF EXISTS tsv;
