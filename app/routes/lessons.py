@@ -7,7 +7,12 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
 from app.embeddings import embed_text
-from app.lesson_condense import CondenseRejected, lesson_raw_text, prepare_rule
+from app.lesson_condense import (
+    MAX_RULE_CHARS,
+    CondenseRejected,
+    lesson_raw_text,
+    prepare_rule,
+)
 from app.models import LessonCreate, LessonMatch, LessonOut, LessonUpdate
 from app.path_normalize import normalize_text
 from app.project import ensure_project, project_path_filter, project_path_filter_strict
@@ -424,11 +429,19 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         raise HTTPException(status_code=400, detail=f"trigger_on must be one of {VALID_TRIGGER_ON}")
     if update.trigger_phase is not None and update.trigger_phase not in VALID_TRIGGER_PHASES:
         raise HTTPException(status_code=400, detail=f"trigger_phase must be one of {VALID_TRIGGER_PHASES}")
-    if update.rule is not None:
-        # Condense before taking a pool connection: a model call can take seconds.
-        prepared = await _prepare_or_422(update.rule, update.detail)
-        update = update.model_copy(update={"rule": prepared.rule, "detail": prepared.detail})
     pool = await get_pool()
+    if update.rule is not None:
+        detail = update.detail
+        if detail is None and len(update.rule.strip()) > MAX_RULE_CHARS:
+            # Condensing writes the new long rule into `detail`. Keep the
+            # lesson's existing detail after it instead of overwriting it.
+            async with pool.acquire() as conn:
+                detail = await conn.fetchval(
+                    "SELECT detail FROM mem_lessons WHERE id = $1", lesson_id
+                )
+        # Condense outside any held connection: a model call can take seconds.
+        prepared = await _prepare_or_422(update.rule, detail)
+        update = update.model_copy(update={"rule": prepared.rule, "detail": prepared.detail})
     async with pool.acquire() as conn:
         # Build dynamic SET clause
         sets = []

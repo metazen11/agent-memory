@@ -393,3 +393,28 @@ async def test_create_lesson_with_detail_round_trips(client, test_project, test_
     listed = await client.get("/api/lessons", params={"project": test_project, "limit": 100})
     match = [lesson for lesson in listed.json() if lesson["id"] == data["id"]]
     assert match and match[0]["detail"] == data["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_long_rule_keeps_existing_detail(client, test_project, test_prefix):
+    """A rule-only PATCH that triggers condensing must not overwrite the
+    lesson's existing detail (codex review finding on #75)."""
+    resp = await client.post("/api/lessons", json={
+        "title": f"{test_prefix}-patch-detail", "rule": "Run the gate first.",
+        "detail": "Original backstory zeta.", "severity": "info",
+        "project": test_project, "trigger_tool": "Bash", "trigger_pattern": test_prefix,
+    })
+    assert resp.status_code == 200, resp.text
+    lesson_id = resp.json()["id"]
+    _created_lesson_ids.append(lesson_id)
+
+    patched = await client.patch(f"/api/lessons/{lesson_id}", json={"rule": _LONG_RULE})
+    listed = await client.get("/api/lessons", params={"project": test_project, "limit": 100})
+    row = next(lesson for lesson in listed.json() if lesson["id"] == lesson_id)
+    if patched.status_code == 422:  # no condenser provider (CI)
+        assert row["rule"] == "Run the gate first."
+        assert row["detail"] == "Original backstory zeta."
+        return
+    assert patched.status_code == 200, patched.text
+    assert len(row["rule"]) <= 280
+    assert row["detail"] == f"{_LONG_RULE}\n\nOriginal backstory zeta."
