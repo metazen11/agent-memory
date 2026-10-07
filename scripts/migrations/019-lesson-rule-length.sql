@@ -24,7 +24,8 @@
 -- scripts/condense_lessons.py --apply clears the flag as it condenses each
 -- row, and --validate-constraint then VALIDATEs the constraint.
 --
--- Idempotent: IF NOT EXISTS guards + a catalog check around ADD CONSTRAINT.
+-- Idempotent: IF NOT EXISTS guards, a catalog check around ADD CONSTRAINT,
+-- and the tsv drop/re-add yields the same column on a re-run.
 -- Brief ACCESS EXCLUSIVE lock; mem_lessons is ~hundreds of rows.
 
 BEGIN;
@@ -39,6 +40,18 @@ COMMENT ON COLUMN mem_lessons.detail IS
 COMMENT ON COLUMN mem_lessons.legacy_long_rule IS
     'TRUE only for rows whose rule already exceeded 280 chars when migration 019 '
     'ran. Cleared by scripts/condense_lessons.py --apply. New rows: always false.';
+
+-- Full-text search must still find a lesson by its backstory once that
+-- text moves from `rule` to `detail`. `tsv` is a generated column (002), so
+-- its expression can only change by drop + re-add (rewrites a tiny table).
+DROP INDEX IF EXISTS idx_mem_lessons_tsv;
+ALTER TABLE mem_lessons DROP COLUMN IF EXISTS tsv;
+ALTER TABLE mem_lessons ADD COLUMN tsv tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(rule, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(detail, '')), 'C')
+) STORED;
+CREATE INDEX idx_mem_lessons_tsv ON mem_lessons USING GIN(tsv);
 
 UPDATE mem_lessons
    SET legacy_long_rule = true

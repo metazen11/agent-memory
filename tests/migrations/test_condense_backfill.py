@@ -45,6 +45,10 @@ async def seeded_db(throwaway_db: str) -> str:
     return throwaway_db
 
 
+async def fake_embed(text: str) -> str:
+    return "[" + ",".join(["0.1"] * 768) + "]"
+
+
 @pytest.fixture
 def stub_condenser(monkeypatch):
     async def fake(rule: str, detail=None):
@@ -90,7 +94,7 @@ async def test_apply_refuses_stale_review(seeded_db, stub_condenser, tmp_path):
         rows = await cl.build_review(conn)
         rows[0]["old_rule"] = rows[0]["old_rule"] + " (edited since review)"
         with pytest.raises(cl.ReviewMismatch):
-            await cl.apply_review(conn, rows)
+            await cl.apply_review(conn, rows, embed=fake_embed)
         # Nothing applied, no backup left behind by the rolled-back transaction.
         assert await conn.fetchval("SELECT count(*) FROM mem_lessons WHERE detail IS NOT NULL") == 0
     finally:
@@ -103,7 +107,7 @@ async def test_apply_refuses_over_long_reviewed_rule(seeded_db, stub_condenser):
         rows = await cl.build_review(conn)
         rows[0]["new_rule"] = "z" * 281
         with pytest.raises(ValueError):
-            await cl.apply_review(conn, rows)
+            await cl.apply_review(conn, rows, embed=fake_embed)
     finally:
         await conn.close()
 
@@ -113,13 +117,18 @@ async def test_apply_backs_up_then_applies_exactly_reviewed_rows(seeded_db, stub
     try:
         rows = await cl.build_review(conn)
         reviewed = [r for r in rows if r["title"] == "a-long"]  # operator dropped b-long
-        backup = await cl.apply_review(conn, reviewed)
+        backup = await cl.apply_review(conn, reviewed, embed=fake_embed)
         assert backup.startswith("mem_lessons_backup_")
         assert await conn.fetchval(f'SELECT count(*) FROM "{backup}"') == 4
         assert await conn.fetchval(f"SELECT rule FROM \"{backup}\" WHERE title = 'a-long'") == LONG_A
 
-        a = await conn.fetchrow("SELECT rule, detail, legacy_long_rule FROM mem_lessons WHERE title='a-long'")
+        a = await conn.fetchrow(
+            "SELECT rule, detail, legacy_long_rule, raw_text, embedding IS NOT NULL AS has_emb"
+            " FROM mem_lessons WHERE title='a-long'"
+        )
         assert a["rule"] == reviewed[0]["new_rule"]
+        assert a["raw_text"] == f"a-long\n{a['rule']}\n\n{LONG_A}"
+        assert a["has_emb"] is True
         assert a["detail"] == LONG_A
         assert a["legacy_long_rule"] is False
         b = await conn.fetchrow("SELECT rule, detail FROM mem_lessons WHERE title='b-long'")

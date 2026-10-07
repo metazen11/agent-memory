@@ -11,6 +11,14 @@ BEGIN;
 
 ALTER TABLE mem_lessons DROP CONSTRAINT IF EXISTS chk_lesson_rule_len;
 ALTER TABLE mem_lessons DROP COLUMN IF EXISTS legacy_long_rule;
+-- tsv depends on detail: restore the 002 expression first.
+DROP INDEX IF EXISTS idx_mem_lessons_tsv;
+ALTER TABLE mem_lessons DROP COLUMN IF EXISTS tsv;
 ALTER TABLE mem_lessons DROP COLUMN IF EXISTS detail;
+ALTER TABLE mem_lessons ADD COLUMN tsv tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(rule, '')), 'B')
+) STORED;
+CREATE INDEX idx_mem_lessons_tsv ON mem_lessons USING GIN(tsv);
 
 COMMIT;

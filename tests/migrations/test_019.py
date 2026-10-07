@@ -111,3 +111,24 @@ async def test_new_rows_are_not_grandfathered(pre019_db):
     finally:
         await conn.close()
     assert n == 0
+
+
+async def test_full_text_search_finds_lesson_by_detail(pre019_db):
+    """Condensing moves the backstory into `detail`; FTS must still hit it."""
+    conn = await asyncpg.connect(pre019_db)
+    try:
+        await conn.execute(
+            "INSERT INTO mem_lessons (title, rule, detail, severity, trigger_on, trigger_tool, raw_text)"
+            " VALUES ('fts', 'Run the gate.', 'The zanzibarquokka outage happened first.',"
+            " 'info', 'input', 'Bash', 'fts')"
+        )
+        hit = await conn.fetchval(
+            "SELECT title FROM mem_lessons WHERE tsv @@ plainto_tsquery('english', 'zanzibarquokka')"
+        )
+        index = await conn.fetchval(
+            "SELECT indexname FROM pg_indexes WHERE indexname = 'idx_mem_lessons_tsv'"
+        )
+    finally:
+        await conn.close()
+    assert hit == "fts"
+    assert index == "idx_mem_lessons_tsv"

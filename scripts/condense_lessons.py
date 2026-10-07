@@ -45,6 +45,7 @@ if str(ROOT) not in sys.path:
 from app.lesson_condense import (  # noqa: E402
     MAX_RULE_CHARS,
     CondenseRejected,
+    lesson_raw_text,
     prepare_rule,
 )
 
@@ -106,29 +107,45 @@ def write_review(rows: list[dict], path: Path) -> Path:
     return path
 
 
-async def apply_review(conn, rows: list[dict]) -> str:
+async def _embed(text: str) -> str | None:
+    from app.embeddings import embed_text
+
+    vector = await embed_text(text)
+    return "[" + ",".join(str(v) for v in vector) + "]"
+
+
+async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
     """Back up mem_lessons, then apply exactly ``rows`` in one transaction.
 
-    Returns the backup table name.
+    ``raw_text`` and ``embedding`` are rebuilt from the condensed rule plus
+    detail (the same shape as every other writer), so search and dedup see
+    the reviewed text. Embeddings are computed BEFORE the transaction opens.
+    If they cannot be computed, nothing is applied. Returns the backup
+    table name.
     """
     for r in rows:
         new = r.get("new_rule")
         if not new or len(new) > MAX_RULE_CHARS:
             raise ValueError(f"lesson #{r['id']}: reviewed new_rule missing or > {MAX_RULE_CHARS} chars")
+    prepared = []
+    for r in rows:
+        current_detail = await conn.fetchval("SELECT detail FROM mem_lessons WHERE id = $1", r["id"])
+        detail = f"{r['old_rule']}\n\n{current_detail}" if current_detail else r["old_rule"]
+        raw_text = lesson_raw_text(r["title"], r["new_rule"], detail)
+        prepared.append((r, current_detail, detail, raw_text, await embed(raw_text)))
     backup = "mem_lessons_backup_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     async with conn.transaction():
         await conn.execute(f'CREATE TABLE "{backup}" AS TABLE mem_lessons')
-        for r in rows:
+        for r, current_detail, detail, raw_text, embedding in prepared:
             status = await conn.execute(
                 """
                 UPDATE mem_lessons
-                   SET rule = $2,
-                       detail = CASE WHEN detail IS NULL THEN $3
-                                     ELSE $3 || E'\\n\\n' || detail END,
-                       legacy_long_rule = false
-                 WHERE id = $1 AND rule = $3
+                   SET rule = $2, detail = $4, raw_text = $5,
+                       embedding = $6::vector, legacy_long_rule = false
+                 WHERE id = $1 AND rule = $3 AND detail IS NOT DISTINCT FROM $7
                 """,
-                r["id"], r["new_rule"], r["old_rule"],
+                r["id"], r["new_rule"], r["old_rule"], detail, raw_text, embedding,
+                current_detail,
             )
             if status != "UPDATE 1":
                 raise ReviewMismatch(

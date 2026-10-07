@@ -625,6 +625,16 @@ async def distill_once(
             **trigger,
         }
 
+        # Validate the full rule, condense it, THEN dedup: the duplicate
+        # check must compare the rule that will actually be stored.
+        ok, reason = validate_lesson_payload(payload)
+        if ok:
+            reason = await condense_payload(payload)
+            ok = reason is None
+        if not ok:
+            rejected.append({"error": cand["normalized_error"][:80], "reason": reason})
+            continue
+
         duplicate = await find_duplicate_lesson(conn, payload["title"], payload["rule"])
         if duplicate:
             rejected.append({
@@ -634,14 +644,6 @@ async def distill_once(
                     f"({duplicate['similarity']:.2f} similar)"
                 ),
             })
-            continue
-
-        ok, reason = validate_lesson_payload(payload)
-        if ok:
-            reason = await condense_payload(payload)
-            ok = reason is None
-        if not ok:
-            rejected.append({"error": cand["normalized_error"][:80], "reason": reason})
             continue
 
         payload["_evidence"] = {
