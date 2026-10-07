@@ -276,14 +276,25 @@ unquoted in psql.
 ```
 
 In one transaction this restores `rule`, `detail`, `raw_text` and
-`embedding` for exactly the rows that `--apply` condensed and that still
-hold the rule it wrote. The backup table records both. Unrelated lessons,
-and condensed lessons edited since the apply, are left alone and reported
-as skipped. Restoring
-writes the long rules back, which the transition trigger would refuse.
-So the trigger is disabled for that transaction only: `DISABLE TRIGGER`
-is transactional and holds an exclusive lock until commit, so no other
-session writes while it is off. This needs table ownership.
+`embedding`. It only touches rows that meet both conditions:
+
+- `--apply` condensed the row. The backup table records which rows.
+- Every editable column is unchanged since the apply: rule, detail,
+  active, severity, title, triggers and project. `--apply` stores a
+  fingerprint of the post-apply state to check this.
+
+It also refuses any row whose `active` or `severity` differs from the
+pre-apply snapshot. Because the trigger is off during the restore, this
+guard ensures the rollback cannot create an active or critical long rule
+that did not exist before. Every other row is left as it is, and its id
+is printed under `skipped ids`.
+
+Restoring writes the long rules back, which the transition trigger would
+refuse, so the trigger is disabled for that transaction only.
+`DISABLE TRIGGER` is transactional. Its SHARE ROW EXCLUSIVE lock is held
+until commit: other sessions can still read the table, but none can write
+while the trigger is off. This needs table ownership. A dropped
+connection rolls everything back, trigger included, and exits 2.
 
 After step 3, `--rollback` refuses, because the CHECK forbids long rules.
 Run `019-lesson-rule-length.down.sql` first. That drops `detail`, so
