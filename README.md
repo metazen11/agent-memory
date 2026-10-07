@@ -169,6 +169,144 @@ curl -X PATCH localhost:3377/api/lessons/<id> \
      -H 'content-type: application/json' -d '{"active":false}'
 ```
 
+## Lesson condensing
+
+`user-prompt-submit` injects each active CRITICAL lesson's `rule` capped at
+**280 characters**. Long rules that tell the incident story first lost their
+actual instruction to that cap, so every write path now keeps `rule` short:
+
+- `rule` (<= 280 chars) is the instruction that gets injected.
+- `detail` (optional, unbounded) holds the backstory. It is stored and
+  indexed for search but never injected.
+
+`POST /api/lessons`, `PATCH /api/lessons/{id}`, MCP `create_lesson` and the
+distiller all route a rule over 280 chars through `app/lesson_condense.py`.
+It returns one imperative rule (WHEN it applies + WHAT to do, exact
+commands and flags kept) and moves the original into `detail`. Provider
+order:
+
+1. **Anvil bridge, pinned model.** The bridge subprocess gets
+   `ANVIL_MODEL_BACKEND` / `ANVIL_MODEL_PATH` from agent-memory settings
+   (and `ANVIL_MODEL_NAME=""`). Process env beats Anvil's `.env`, so the
+   condenser never depends on Anvil's global model or on LM Studio. The
+   provider shows up as `anvil:mlx:<model dir>`.
+2. **Claude Haiku**, if `ANTHROPIC_API_KEY` is set and its breaker is closed.
+
+**Warm model.** A cold call (about 10s on the 9B MLX model) is mostly model
+load. Generation is only about 60 tokens. The condenser therefore keeps one
+`scripts/anvil_enrich.py --serve` process per pinned model. Warm calls take
+about 3s. The process is killed after `ANVIL_CONDENSE_KEEP_WARM_SECONDS`
+idle, on any error or timeout, and at API shutdown. It also exits when its
+parent's pipe closes. Anvil's shared LLM daemon (`:3399`) is deliberately
+not used: it is keyed by backend only and serves Anvil's global model, not
+the pinned one.
+
+Each provider gets one retry that tells it the length of its answer. If all
+of them fail, the write is **refused** (HTTP 422 / MCP `RULE_TOO_LONG`). A
+rule is never truncated: a cut-off rule loses the instruction this exists
+to keep. The database enforces the cap too (migration 019,
+`chk_lesson_rule_len`).
+
+| Setting (`.env`) | Default | Purpose |
+|---|---|---|
+| `ANVIL_CONDENSE_ENABLED` | `true` | Use the Anvil bridge for condensing. This is separate from `ANVIL_FALLBACK_ENABLED` |
+| `ANVIL_CONDENSE_BACKEND` | `mlx` | Anvil backend passed as `ANVIL_MODEL_BACKEND` |
+| `ANVIL_CONDENSE_MODEL_PATH` | `~/.lmstudio/models/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-MLX` | Model passed as `ANVIL_MODEL_PATH` (`~` is expanded) |
+| `ANVIL_CONDENSE_TIMEOUT_SECONDS` | `120` | Per-call bridge timeout |
+| `ANVIL_CONDENSE_KEEP_WARM_SECONDS` | `300` | Keep the bridge process, and its loaded model, alive this long after the last call. `0` loads the model on every call |
+| `ANVIL_ROOT` | `/opt/anvil` | Anvil install whose Python runs the bridge |
+
+**Changing the model:** set `ANVIL_CONDENSE_MODEL_PATH` (and
+`ANVIL_CONDENSE_BACKEND` if it is not an MLX model) in `.env`, then restart
+the API. Anvil's own config does not need to change. To check it, condense
+one long rule and confirm the provider string:
+
+```bash
+.venv/bin/python - <<'PY'
+import asyncio
+from app.lesson_condense import condense_rule
+print(asyncio.run(condense_rule(open("long-rule.txt").read())))
+PY
+```
+
+### Backfill (one-time, review-gated)
+
+Migration 019 ends with a single validated
+`CHECK (char_length(rule) <= 280)`. On a database with no long rules
+(fresh install, CI), it installs that CHECK straight away.
+
+Existing long rules complicate this. A CHECK, even `NOT VALID`, would make
+every UPDATE on those rows fail, including trigger counts and deactivation.
+So while any rule over 280 chars exists, a transition trigger enforces the
+cap instead. It refuses:
+
+- any INSERT with a long rule;
+- any change of `rule` to a long one;
+- reactivating a row whose rule is still long, or promoting it to
+  `critical`. Such a PATCH returns 409; send a short `rule` in the same
+  PATCH.
+
+There is no flag or column that turns the trigger off. The backfill
+condenses **every** long row, active and inactive. Inactive rows are
+included because the final CHECK cannot be installed while any long row
+remains.
+
+```bash
+# 1. Dry run (default): read-only. Writes review JSON + a Markdown rendering
+.venv/bin/python scripts/condense_lessons.py --out review.json
+
+# 2. Read review.md. Edit or delete entries in review.json, then apply
+#    exactly those rows. This copies mem_lessons to
+#    mem_lessons_backup_<UTC ts>, then updates rule, detail, raw_text and
+#    the embedding in ONE transaction. If any row changed since the review,
+#    it exits 2 and applies nothing.
+.venv/bin/python scripts/condense_lessons.py --apply --review-file review.json
+
+# 3. Finalize: install the validated CHECK and drop the transition trigger.
+#    Exits 2 and changes nothing while any rule is still over 280 chars.
+.venv/bin/python scripts/condense_lessons.py --validate-constraint
+```
+
+**Rollback** of step 2 (only before step 3). Use the backup table name
+that `--apply` printed. The name is all lower case, so it also works
+unquoted in psql.
+
+```bash
+.venv/bin/python scripts/condense_lessons.py --rollback mem_lessons_backup_<ts>
+```
+
+In one transaction this restores `rule`, `detail`, `raw_text` and
+`embedding`. It only touches rows that meet both conditions:
+
+- `--apply` condensed the row. The backup table records which rows.
+- Every editable column is unchanged since the apply: rule, detail,
+  active, severity, title, triggers and project. `--apply` stores a
+  fingerprint of the post-apply state to check this.
+
+It also refuses any row whose `active` or `severity` differs from the
+pre-apply snapshot. Because the trigger is off during the restore, this
+guard ensures the rollback cannot create an active or critical long rule
+that did not exist before. Every other row is left as it is, and its id
+is printed under `skipped ids`.
+
+Restoring writes the long rules back, which the transition trigger would
+refuse, so the trigger is disabled for that transaction only.
+`DISABLE TRIGGER` is transactional. Its SHARE ROW EXCLUSIVE lock is held
+until commit: other sessions can still read the table, but none can write
+while the trigger is off. This needs table ownership. A dropped
+connection rolls everything back, trigger included, and exits 2.
+
+After step 3, `--rollback` refuses, because the CHECK forbids long rules.
+Run `019-lesson-rule-length.down.sql` first. That drops `detail`, so
+restore from the backup table by hand.
+
+Every mode exits 2 with a one-line `error:` on expected failures: a stale
+review, long rows remaining, a missing privilege, or a bad backup name.
+
+Migration 019 also makes `mem_lessons.active` `NOT NULL` (`NULL` becomes
+`false`). A `NULL` there let `active = NULL` then `active = true` slip a
+long rule past the reactivation guard.
+
 ## Hooks — how data gets in
 
 Five Node.js hooks live in `hooks/`. They are designed fire-and-forget

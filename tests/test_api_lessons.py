@@ -340,3 +340,81 @@ async def test_archive_alias_lookup_uses_local_scope_without_archive_access(clie
                 assert own["project_name"] == local
     finally:
         await client.patch(f"/api/lessons/{lesson_id}", json={"active": False})
+
+
+# ── Rule length / condensing (issue #75) ──────────────────────
+
+_LONG_RULE = (
+    "Story: on 2026-08-17 the incident materialized view froze for three days "
+    "because REFRESH CONCURRENTLY failed on a duplicate gid. " * 5
+    + "Always run scripts/apply_schemas.py --check before applying a migration."
+)
+
+
+@pytest.mark.asyncio
+async def test_create_long_rule_is_condensed_or_explicitly_rejected(client, test_project, test_prefix):
+    """A rule over 280 chars must never be stored over-long or silently
+    truncated. In CI no condenser provider exists (no Anvil, no Anthropic
+    key), so this exercises the explicit-rejection branch; against a server
+    with a working provider it exercises the condense branch.
+    """
+    title = f"{test_prefix}-long-rule"
+    resp = await client.post("/api/lessons", json={
+        "title": title, "rule": _LONG_RULE, "severity": "info",
+        "project": test_project, "trigger_tool": "Bash", "trigger_pattern": test_prefix,
+    })
+    if resp.status_code == 422:
+        detail = resp.json()["detail"]
+        assert isinstance(detail, str) and "280" in detail
+        listed = await client.get("/api/lessons", params={"project": test_project, "limit": 100})
+        assert title not in [lesson["title"] for lesson in listed.json()]
+        return
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    _created_lesson_ids.append(data["id"])
+    assert len(data["rule"]) <= 280
+    assert data["rule"] != _LONG_RULE[:len(data["rule"])], "rule was truncated, not condensed"
+    assert data["detail"] == _LONG_RULE
+
+
+@pytest.mark.asyncio
+async def test_create_lesson_with_detail_round_trips(client, test_project, test_prefix):
+    resp = await client.post("/api/lessons", json={
+        "title": f"{test_prefix}-detail", "rule": "Run the CI gate before pushing.",
+        "detail": "Background: the gate caught 3 regressions in October.",
+        "severity": "info", "project": test_project,
+        "trigger_tool": "Bash", "trigger_pattern": test_prefix,
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    _created_lesson_ids.append(data["id"])
+    assert data["rule"] == "Run the CI gate before pushing."
+    assert data["detail"] == "Background: the gate caught 3 regressions in October."
+    listed = await client.get("/api/lessons", params={"project": test_project, "limit": 100})
+    match = [lesson for lesson in listed.json() if lesson["id"] == data["id"]]
+    assert match and match[0]["detail"] == data["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_long_rule_keeps_existing_detail(client, test_project, test_prefix):
+    """A rule-only PATCH that triggers condensing must not overwrite the
+    lesson's existing detail (codex review finding on #75)."""
+    resp = await client.post("/api/lessons", json={
+        "title": f"{test_prefix}-patch-detail", "rule": "Run the gate first.",
+        "detail": "Original backstory zeta.", "severity": "info",
+        "project": test_project, "trigger_tool": "Bash", "trigger_pattern": test_prefix,
+    })
+    assert resp.status_code == 200, resp.text
+    lesson_id = resp.json()["id"]
+    _created_lesson_ids.append(lesson_id)
+
+    patched = await client.patch(f"/api/lessons/{lesson_id}", json={"rule": _LONG_RULE})
+    listed = await client.get("/api/lessons", params={"project": test_project, "limit": 100})
+    row = next(lesson for lesson in listed.json() if lesson["id"] == lesson_id)
+    if patched.status_code == 422:  # no condenser provider (CI)
+        assert row["rule"] == "Run the gate first."
+        assert row["detail"] == "Original backstory zeta."
+        return
+    assert patched.status_code == 200, patched.text
+    assert len(row["rule"]) <= 280
+    assert row["detail"] == f"{_LONG_RULE}\n\nOriginal backstory zeta."

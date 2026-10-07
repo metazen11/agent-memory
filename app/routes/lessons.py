@@ -3,12 +3,19 @@ import logging
 import re
 from pathlib import Path
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Query
 
-from app.path_normalize import normalize_text
 from app.db import get_pool
 from app.embeddings import embed_text
-from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
+from app.lesson_condense import (
+    MAX_RULE_CHARS,
+    CondenseRejected,
+    lesson_raw_text,
+    prepare_rule,
+)
+from app.models import LessonCreate, LessonMatch, LessonOut, LessonUpdate
+from app.path_normalize import normalize_text
 from app.project import ensure_project, project_path_filter, project_path_filter_strict
 
 MAX_PATTERN_LEN = 500
@@ -34,6 +41,7 @@ def _row_to_lesson(row) -> LessonOut:
         project_name=row.get("project_name"),
         title=row["title"],
         rule=row["rule"],
+        detail=row.get("detail"),
         severity=row["severity"],
         trigger_tool=row["trigger_tool"],
         trigger_pattern=row["trigger_pattern"],
@@ -103,11 +111,23 @@ def _validate_trigger_on(lesson: LessonCreate) -> None:
         )
 
 
+async def _prepare_or_422(rule: str, detail: str | None):
+    """Condense an over-long rule, or refuse the write explicitly (422).
+
+    Never truncates: a truncated rule loses the instruction, which is the
+    failure this exists to prevent (issue #75)."""
+    try:
+        return await prepare_rule(rule, detail)
+    except CondenseRejected as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
 @router.post("/api/lessons", response_model=LessonOut)
 async def create_lesson(lesson: LessonCreate):
     _validate_pattern(lesson.trigger_pattern)
     _validate_pattern(lesson.trigger_output_pattern)
     _validate_trigger_on(lesson)
+    prepared = await _prepare_or_422(lesson.rule, lesson.detail)
     pool = await get_pool()
     async with pool.acquire() as conn:
         project_id = None
@@ -116,7 +136,7 @@ async def create_lesson(lesson: LessonCreate):
             project_id = await ensure_project(conn, lesson.project)
             project_name = lesson.project
 
-        raw_text = f"{lesson.title}\n{lesson.rule}"
+        raw_text = lesson_raw_text(lesson.title, prepared.rule, prepared.detail)
 
         # Generate embedding
         embedding_str = None
@@ -131,18 +151,19 @@ async def create_lesson(lesson: LessonCreate):
                 project_id, title, rule, severity,
                 trigger_tool, trigger_pattern, source_observation_id,
                 embedding, raw_text,
-                trigger_on, trigger_output_pattern, trigger_phase, trigger_files
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, $11, $12, $13)
-            RETURNING id, project_id, title, rule, severity,
+                trigger_on, trigger_output_pattern, trigger_phase, trigger_files,
+                detail
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, $11, $12, $13, $14)
+            RETURNING id, project_id, title, rule, detail, severity,
                       trigger_tool, trigger_pattern, source_observation_id,
                       trigger_count, last_triggered_at, active, created_at,
                       trigger_on, trigger_output_pattern, trigger_phase, trigger_files
         """,
-            project_id, lesson.title, lesson.rule, lesson.severity,
+            project_id, lesson.title, prepared.rule, lesson.severity,
             lesson.trigger_tool, lesson.trigger_pattern, lesson.source_observation_id,
             embedding_str, raw_text,
             lesson.trigger_on, lesson.trigger_output_pattern, lesson.trigger_phase,
-            lesson.trigger_files,
+            lesson.trigger_files, prepared.detail,
         )
 
         return LessonOut(
@@ -410,6 +431,18 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
     if update.trigger_phase is not None and update.trigger_phase not in VALID_TRIGGER_PHASES:
         raise HTTPException(status_code=400, detail=f"trigger_phase must be one of {VALID_TRIGGER_PHASES}")
     pool = await get_pool()
+    if update.rule is not None:
+        detail = update.detail
+        if detail is None and len(update.rule.strip()) > MAX_RULE_CHARS:
+            # Condensing writes the new long rule into `detail`. Keep the
+            # lesson's existing detail after it instead of overwriting it.
+            async with pool.acquire() as conn:
+                detail = await conn.fetchval(
+                    "SELECT detail FROM mem_lessons WHERE id = $1", lesson_id
+                )
+        # Condense outside any held connection: a model call can take seconds.
+        prepared = await _prepare_or_422(update.rule, detail)
+        update = update.model_copy(update={"rule": prepared.rule, "detail": prepared.detail})
     async with pool.acquire() as conn:
         # Build dynamic SET clause
         sets = []
@@ -417,8 +450,8 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         pidx = 1
 
         for field in (
-            "title", "rule", "severity", "trigger_tool", "trigger_pattern", "active",
-            "trigger_on", "trigger_output_pattern", "trigger_phase",
+            "title", "rule", "detail", "severity", "trigger_tool", "trigger_pattern",
+            "active", "trigger_on", "trigger_output_pattern", "trigger_phase",
         ):
             value = getattr(update, field)
             if value is not None:
@@ -435,18 +468,20 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
         if not sets:
             raise HTTPException(status_code=400, detail="No fields to update")
 
-        # Re-embed if title or rule changed
-        if update.title is not None or update.rule is not None:
+        # Re-embed if title, rule or detail changed
+        if update.title is not None or update.rule is not None or update.detail is not None:
             # Fetch current values for fields not being updated
             current = await conn.fetchrow(
-                "SELECT title, rule FROM mem_lessons WHERE id = $1", lesson_id
+                "SELECT title, rule, detail FROM mem_lessons WHERE id = $1", lesson_id
             )
             if not current:
                 raise HTTPException(status_code=404, detail="Lesson not found")
 
-            new_title = update.title or current["title"]
-            new_rule = update.rule or current["rule"]
-            raw_text = f"{new_title}\n{new_rule}"
+            raw_text = lesson_raw_text(
+                update.title or current["title"],
+                update.rule or current["rule"],
+                update.detail if update.detail is not None else current["detail"],
+            )
 
             try:
                 embedding = await embed_text(raw_text)
@@ -461,12 +496,17 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
                 logger.warning(f"Re-embedding failed: {e}")
 
         params.append(lesson_id)
-        row = await conn.fetchrow(f"""
-            UPDATE mem_lessons
-            SET {", ".join(sets)}
-            WHERE id = ${pidx}
-            RETURNING *
-        """, *params)
+        try:
+            row = await conn.fetchrow(f"""
+                UPDATE mem_lessons
+                SET {", ".join(sets)}
+                WHERE id = ${pidx}
+                RETURNING *
+            """, *params)
+        except asyncpg.CheckViolationError as error:
+            # Migration 019: e.g. reactivating a pre-019 lesson whose rule
+            # is still over 280 chars. Send a new `rule` in the same PATCH.
+            raise HTTPException(status_code=409, detail=str(error))
 
         if not row:
             raise HTTPException(status_code=404, detail="Lesson not found")
@@ -479,7 +519,10 @@ async def update_lesson(lesson_id: int, update: LessonUpdate):
                 project_name = p["name"]
 
         return LessonOut(
-            **{k: row[k] for k in row.keys() if k not in ("embedding", "raw_text", "tsv")},
+            **{
+                k: row[k] for k in row.keys()
+                if k not in ("embedding", "raw_text", "tsv")
+            },
             project_name=project_name,
         )
 
