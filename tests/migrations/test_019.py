@@ -126,6 +126,28 @@ async def test_promoting_long_legacy_row_to_critical_refused(conn):
         await conn.execute("UPDATE mem_lessons SET severity = 'critical' WHERE title = 'legacy-2'")
 
 
+async def test_null_detour_cannot_reactivate_long_row(conn):
+    """Re-audit repro: active=NULL then active=true slipped past
+    `NEW.active AND NOT OLD.active` (NULL when OLD.active IS NULL)."""
+    try:
+        await conn.execute("UPDATE mem_lessons SET active = NULL WHERE title = 'legacy-inactive'")
+    except asyncpg.NotNullViolationError:
+        pass
+    with pytest.raises(asyncpg.CheckViolationError):
+        await conn.execute("UPDATE mem_lessons SET active = true WHERE title = 'legacy-inactive'")
+    assert await conn.fetchval(
+        "SELECT active IS NOT TRUE FROM mem_lessons WHERE title = 'legacy-inactive'"
+    )
+
+
+async def test_active_column_is_not_null(conn):
+    nullable = await conn.fetchval(
+        "SELECT is_nullable FROM information_schema.columns"
+        " WHERE table_name = 'mem_lessons' AND column_name = 'active'"
+    )
+    assert nullable == "NO"
+
+
 async def test_legacy_long_row_still_accepts_counter_updates(conn):
     await conn.execute(
         "UPDATE mem_lessons SET trigger_count = trigger_count + 1 WHERE title = 'legacy'"

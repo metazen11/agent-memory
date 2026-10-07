@@ -60,14 +60,25 @@ ALTER TABLE mem_lessons ADD COLUMN tsv tsvector GENERATED ALWAYS AS (
 ) STORED;
 CREATE INDEX idx_mem_lessons_tsv ON mem_lessons USING GIN(tsv);
 
+-- `active` was nullable (002: BOOLEAN DEFAULT true). A NULL made the
+-- reactivation guard below evaluate to NULL, so active=NULL followed by
+-- active=true revived a long critical rule. Remove the state: NULL meant
+-- "not explicitly active", so it becomes false (live had 0 such rows).
+UPDATE mem_lessons SET active = false WHERE active IS NULL;
+ALTER TABLE mem_lessons ALTER COLUMN active SET NOT NULL;
+
 CREATE OR REPLACE FUNCTION mem_lessons_enforce_rule_cap() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Every comparison is NULL-safe (IS TRUE / IS DISTINCT FROM): in an OR,
+    -- a NULL term turns "refuse" into "allow". rule and severity are
+    -- NOT NULL (002) and active is NOT NULL (above); this is defence in depth.
     IF char_length(NEW.rule) > 280 AND (
         TG_OP = 'INSERT'
         OR NEW.rule IS DISTINCT FROM OLD.rule
-        OR (NEW.active AND NOT OLD.active)
-        OR (NEW.severity = 'critical' AND OLD.severity IS DISTINCT FROM 'critical')
+        OR (NEW.active IS TRUE AND OLD.active IS NOT TRUE)
+        OR (NEW.severity IS NOT DISTINCT FROM 'critical'
+            AND OLD.severity IS DISTINCT FROM 'critical')
     ) THEN
         RAISE EXCEPTION 'lesson rule is % chars (max 280); condense it and put the backstory in detail',
             char_length(NEW.rule)

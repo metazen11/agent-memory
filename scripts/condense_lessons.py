@@ -24,12 +24,17 @@ Issue #75. Three separate, explicit steps:
 
        .venv/bin/python scripts/condense_lessons.py --validate-constraint
 
-Rollback after --apply (before step 3; afterwards the CHECK refuses the
-long rules, so roll back 019 itself first)::
+Rollback of step 2 (only before step 3), using the backup table name
+--apply printed::
 
-    UPDATE mem_lessons l SET rule = b.rule, detail = b.detail,
-           raw_text = b.raw_text, embedding = b.embedding
-      FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;
+       .venv/bin/python scripts/condense_lessons.py --rollback mem_lessons_backup_<ts>
+
+It restores rule/detail/raw_text/embedding for every row that differs
+from the backup, in one transaction. After step 3 it refuses: the
+finalized CHECK forbids long rules, so run 019's down migration first.
+
+Every mode exits 2 with a one-line ``error:`` message on an expected
+failure (stale review, long rows left, missing privilege, bad name).
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,7 +151,9 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
         detail = f"{r['old_rule']}\n\n{current_detail}" if current_detail else r["old_rule"]
         raw_text = lesson_raw_text(r["title"], r["new_rule"], detail)
         prepared.append((r, current_detail, detail, raw_text, await embed(raw_text)))
-    backup = "mem_lessons_backup_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    # All lower case: Postgres folds unquoted identifiers, so the printed
+    # name must work when pasted unquoted into psql or --rollback.
+    backup = "mem_lessons_backup_" + datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%S%f")
     async with conn.transaction():
         await conn.execute(f'CREATE TABLE "{backup}" AS TABLE mem_lessons')
         for r, current_detail, detail, raw_text, embedding in prepared:
@@ -173,6 +181,53 @@ async def validate_constraint(conn) -> None:
     await conn.execute("SELECT mem_lessons_finalize_rule_cap()")
 
 
+_BACKUP_NAME = re.compile(r"mem_lessons_backup_[0-9a-z_]{1,40}")
+
+
+class RollbackRefused(RuntimeError):
+    pass
+
+
+async def rollback(conn, backup: str) -> int:
+    """Restore rule/detail/raw_text/embedding from a --apply backup table.
+
+    Runs in one transaction. While 019's transition trigger exists, the
+    restore must write long rules back, which the trigger refuses, so the
+    trigger is disabled for this transaction only. ALTER TABLE ... DISABLE
+    TRIGGER is transactional and holds an ACCESS EXCLUSIVE lock until
+    commit, so no other session can write while it is off. On any error
+    the whole thing rolls back, trigger included. Returns rows restored.
+    """
+    if not _BACKUP_NAME.fullmatch(backup):
+        raise RollbackRefused(f"not a condense_lessons backup table name: {backup!r}")
+    if await conn.fetchval("SELECT to_regclass($1)", backup) is None:
+        raise RollbackRefused(f"backup table {backup} does not exist")
+    if await conn.fetchval(
+        "SELECT count(*) FROM pg_constraint WHERE conname = $1", CONSTRAINT
+    ):
+        raise RollbackRefused(
+            f"019 is finalized ({CONSTRAINT} installed); long rules cannot be restored. "
+            "Run 019-lesson-rule-length.down.sql first."
+        )
+    has_trigger = await conn.fetchval(
+        "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_mem_lessons_rule_cap'"
+    )
+    async with conn.transaction():
+        if has_trigger:
+            await conn.execute("ALTER TABLE mem_lessons DISABLE TRIGGER trg_mem_lessons_rule_cap")
+        status = await conn.execute(f"""
+            UPDATE mem_lessons l
+               SET rule = b.rule, detail = b.detail,
+                   raw_text = b.raw_text, embedding = b.embedding
+              FROM {backup} b
+             WHERE b.id = l.id
+               AND (l.rule, l.detail, l.raw_text) IS DISTINCT FROM (b.rule, b.detail, b.raw_text)
+        """)
+        if has_trigger:
+            await conn.execute("ALTER TABLE mem_lessons ENABLE TRIGGER trg_mem_lessons_rule_cap")
+    return int(status.split()[-1])
+
+
 def _dsn() -> str:
     from app.config import settings
     return settings.effective_database_url
@@ -183,6 +238,8 @@ async def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="(default) write a review file; no DB writes")
     mode.add_argument("--apply", action="store_true", help="apply a reviewed file (requires --review-file)")
+    mode.add_argument("--rollback", metavar="BACKUP_TABLE",
+                      help="undo --apply from the backup table it printed (before finalize)")
     mode.add_argument("--validate-constraint", action="store_true",
                       help=f"install the validated {CONSTRAINT} CHECK (after a full apply)")
     parser.add_argument("--out", type=Path, help="dry-run output path (default: ./lesson-condense-review-<ts>.json)")
@@ -198,10 +255,17 @@ async def main(argv: list[str] | None = None) -> int:
             rows = json.loads(args.review_file.read_text())["lessons"]
             try:
                 backup = await apply_review(conn, rows)
-            except (ReviewMismatch, ValueError) as error:
+            except (ReviewMismatch, ValueError, asyncpg.PostgresError) as error:
                 print(f"error: {error}", file=sys.stderr)
                 return 2
             print(f"applied {len(rows)} lessons; backup table: {backup}")
+        elif args.rollback:
+            try:
+                restored = await rollback(conn, args.rollback)
+            except (RollbackRefused, asyncpg.PostgresError) as error:
+                print(f"error: {error}", file=sys.stderr)
+                return 2
+            print(f"restored {restored} lessons from {args.rollback}")
         elif args.validate_constraint:
             try:
                 await validate_constraint(conn)
@@ -212,6 +276,9 @@ async def main(argv: list[str] | None = None) -> int:
                 )
                 print(f"error: {remaining} lessons still exceed {MAX_RULE_CHARS} chars;"
                       " run the dry run + --apply first. Nothing changed.", file=sys.stderr)
+                return 2
+            except asyncpg.PostgresError as error:
+                print(f"error: {error}", file=sys.stderr)
                 return 2
             print(f"{CONSTRAINT} installed and validated; transition trigger dropped")
         else:

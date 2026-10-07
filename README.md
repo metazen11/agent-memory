@@ -267,17 +267,31 @@ remains.
 .venv/bin/python scripts/condense_lessons.py --validate-constraint
 ```
 
-Rollback of step 2, before step 3, restores search fields too:
+**Rollback** of step 2 (only before step 3). Use the backup table name
+that `--apply` printed. The name is all lower case, so it also works
+unquoted in psql.
 
-```sql
-UPDATE mem_lessons l
-   SET rule = b.rule, detail = b.detail, raw_text = b.raw_text, embedding = b.embedding
-  FROM mem_lessons_backup_<ts> b WHERE b.id = l.id;
+```bash
+.venv/bin/python scripts/condense_lessons.py --rollback mem_lessons_backup_<ts>
 ```
 
-After step 3 the CHECK refuses the long rules. In that case, run
-`019-lesson-rule-length.down.sql` first; it drops `detail` too, so restore
-from the backup table.
+In one transaction this restores `rule`, `detail`, `raw_text` and
+`embedding` for every row that differs from the backup. Restoring
+writes the long rules back, which the transition trigger would refuse.
+So the trigger is disabled for that transaction only: `DISABLE TRIGGER`
+is transactional and holds an exclusive lock until commit, so no other
+session writes while it is off. This needs table ownership.
+
+After step 3, `--rollback` refuses, because the CHECK forbids long rules.
+Run `019-lesson-rule-length.down.sql` first. That drops `detail`, so
+restore from the backup table by hand.
+
+Every mode exits 2 with a one-line `error:` on expected failures: a stale
+review, long rows remaining, a missing privilege, or a bad backup name.
+
+Migration 019 also makes `mem_lessons.active` `NOT NULL` (`NULL` becomes
+`false`). A `NULL` there let `active = NULL` then `active = true` slip a
+long rule past the reactivation guard.
 
 ## Hooks — how data gets in
 
