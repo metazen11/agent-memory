@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         "~/.lmstudio/models/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-MLX"
     )
     anvil_condense_timeout_seconds: float = 120.0
+    # Keep the condenser's bridge process (and its loaded model) alive this
+    # long after the last call; 0 = load the model per call. A cold call is
+    # dominated by the model load (~6-10s); warm calls skip it.
+    anvil_condense_keep_warm_seconds: float = 300.0
 
     # Server
     host: str = "127.0.0.1"

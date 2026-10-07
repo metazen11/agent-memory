@@ -114,6 +114,7 @@ async def _call_anvil(system: str, user: str) -> tuple[str, str]:
             user,
             env_overrides=anvil_model_env(),
             timeout=settings.anvil_condense_timeout_seconds,
+            keep_warm_seconds=settings.anvil_condense_keep_warm_seconds,
         )
     except EnrichmentUnavailable as error:
         raise ProviderUnavailable(f"anvil bridge failed: {error.__cause__!r}") from error

@@ -192,6 +192,15 @@ order:
    provider shows up as `anvil:mlx:<model dir>`.
 2. **Claude Haiku**, if `ANTHROPIC_API_KEY` is set and its breaker is closed.
 
+**Warm model.** A cold call (about 10s on the 9B MLX model) is mostly model
+load. Generation is only about 60 tokens. The condenser therefore keeps one
+`scripts/anvil_enrich.py --serve` process per pinned model. Warm calls take
+about 3s. The process is killed after `ANVIL_CONDENSE_KEEP_WARM_SECONDS`
+idle, on any error or timeout, and at API shutdown. It also exits when its
+parent's pipe closes. Anvil's shared LLM daemon (`:3399`) is deliberately
+not used: it is keyed by backend only and serves Anvil's global model, not
+the pinned one.
+
 Each provider gets one retry that tells it the length of its answer. If all
 of them fail, the write is **refused** (HTTP 422 / MCP `RULE_TOO_LONG`). A
 rule is never truncated: a cut-off rule loses the instruction this exists
@@ -204,6 +213,7 @@ to keep. The database enforces the cap too (migration 019,
 | `ANVIL_CONDENSE_BACKEND` | `mlx` | Anvil backend passed as `ANVIL_MODEL_BACKEND` |
 | `ANVIL_CONDENSE_MODEL_PATH` | `~/.lmstudio/models/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-MLX` | Model passed as `ANVIL_MODEL_PATH` (`~` is expanded) |
 | `ANVIL_CONDENSE_TIMEOUT_SECONDS` | `120` | Per-call bridge timeout |
+| `ANVIL_CONDENSE_KEEP_WARM_SECONDS` | `300` | Keep the bridge process, and its loaded model, alive this long after the last call. `0` loads the model on every call |
 | `ANVIL_ROOT` | `/opt/anvil` | Anvil install whose Python runs the bridge |
 
 **Changing the model:** set `ANVIL_CONDENSE_MODEL_PATH` (and
