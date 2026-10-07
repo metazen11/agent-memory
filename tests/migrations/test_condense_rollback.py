@@ -110,3 +110,49 @@ async def test_apply_db_permission_error_is_clean(db, tmp_path, monkeypatch, cap
     err = capsys.readouterr().err
     assert code == 2
     assert "permission denied" in err and "Traceback" not in err
+
+
+async def test_rollback_touches_only_rows_this_apply_condensed(throwaway_db, stub, capsys):
+    """Codex review: a rollback must not revert unrelated edits made after
+    --apply, nor a condensed row someone edited since."""
+
+    conn = await asyncpg.connect(throwaway_db)
+    try:
+        # Fresh scenario in the same DB: undo finalize so the transition applies.
+        await conn.execute("ALTER TABLE mem_lessons DROP CONSTRAINT chk_lesson_rule_len")
+        await conn.execute(
+            "CREATE TRIGGER trg_mem_lessons_rule_cap BEFORE INSERT OR UPDATE ON mem_lessons"
+            " FOR EACH ROW EXECUTE FUNCTION mem_lessons_enforce_rule_cap()"
+        )
+        await conn.execute("ALTER TABLE mem_lessons DISABLE TRIGGER trg_mem_lessons_rule_cap")
+        for title in ("s1", "s2"):
+            await conn.execute(
+                "INSERT INTO mem_lessons (title, rule, severity, trigger_on, trigger_tool, raw_text)"
+                " VALUES ($1, $2, 'warning', 'input', 'Bash', $1)", title, LONG,
+            )
+        await conn.execute(
+            "INSERT INTO mem_lessons (title, rule, severity, trigger_on, trigger_tool, raw_text)"
+            " VALUES ('bystander', 'Short and untouched.', 'info', 'input', 'Bash', 'b')"
+        )
+        await conn.execute("ALTER TABLE mem_lessons ENABLE TRIGGER trg_mem_lessons_rule_cap")
+
+        rows = [r for r in await cl.build_review(conn) if r["title"] in ("s1", "s2")]
+        backup = await cl.apply_review(conn, rows, embed=fake_embed)
+        # After the apply: an unrelated lesson and one condensed lesson get edited.
+        await conn.execute("UPDATE mem_lessons SET rule = 'Edited later.' WHERE title = 'bystander'")
+        await conn.execute("UPDATE mem_lessons SET rule = 'Hand-tuned.' WHERE title = 's2'")
+    finally:
+        await conn.close()
+
+    code = await cl.main(["--rollback", backup, "--dsn", throwaway_db])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    conn = await asyncpg.connect(throwaway_db)
+    try:
+        got = dict(await conn.fetch(
+            "SELECT title, rule FROM mem_lessons WHERE title IN ('s1', 's2', 'bystander')"
+        ))
+    finally:
+        await conn.close()
+    assert got == {"s1": LONG, "s2": "Hand-tuned.", "bystander": "Edited later."}
+    assert "skipped 1" in out.out

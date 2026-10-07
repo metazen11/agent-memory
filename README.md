@@ -276,7 +276,10 @@ unquoted in psql.
 ```
 
 In one transaction this restores `rule`, `detail`, `raw_text` and
-`embedding` for every row that differs from the backup. Restoring
+`embedding` for exactly the rows that `--apply` condensed and that still
+hold the rule it wrote. The backup table records both. Unrelated lessons,
+and condensed lessons edited since the apply, are left alone and reported
+as skipped. Restoring
 writes the long rules back, which the transition trigger would refuse.
 So the trigger is disabled for that transaction only: `DISABLE TRIGGER`
 is transactional and holds an exclusive lock until commit, so no other

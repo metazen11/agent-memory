@@ -29,8 +29,10 @@ Rollback of step 2 (only before step 3), using the backup table name
 
        .venv/bin/python scripts/condense_lessons.py --rollback mem_lessons_backup_<ts>
 
-It restores rule/detail/raw_text/embedding for every row that differs
-from the backup, in one transaction. After step 3 it refuses: the
+It restores rule/detail/raw_text/embedding, in one transaction, for
+exactly the rows that --apply condensed and that still hold the rule it
+wrote. Unrelated lessons, and condensed lessons edited since, are left
+alone (and counted as skipped). After step 3 it refuses: the
 finalized CHECK forbids long rules, so run 019's down migration first.
 
 Every mode exits 2 with a one-line ``error:`` message on an expected
@@ -156,6 +158,16 @@ async def apply_review(conn, rows: list[dict], embed=_embed) -> str:
     backup = "mem_lessons_backup_" + datetime.now(timezone.utc).strftime("%Y%m%dt%H%M%S%f")
     async with conn.transaction():
         await conn.execute(f'CREATE TABLE "{backup}" AS TABLE mem_lessons')
+        # Record which rows THIS apply rewrites, and to what, so --rollback
+        # can restore exactly those and skip anything edited afterwards.
+        await conn.execute(
+            f'ALTER TABLE "{backup}" ADD COLUMN condensed_by_apply BOOLEAN NOT NULL DEFAULT false,'
+            ' ADD COLUMN applied_rule TEXT'
+        )
+        await conn.executemany(
+            f'UPDATE "{backup}" SET condensed_by_apply = true, applied_rule = $2 WHERE id = $1',
+            [(r["id"], r["new_rule"]) for r in rows],
+        )
         for r, current_detail, detail, raw_text, embedding in prepared:
             status = await conn.execute(
                 """
@@ -196,12 +208,20 @@ async def rollback(conn, backup: str) -> int:
     trigger is disabled for this transaction only. ALTER TABLE ... DISABLE
     TRIGGER is transactional and holds an ACCESS EXCLUSIVE lock until
     commit, so no other session can write while it is off. On any error
-    the whole thing rolls back, trigger included. Returns rows restored.
+    the whole thing rolls back, trigger included.
+
+    Restores only the rows that apply condensed and that still carry the
+    rule it wrote. Returns ``(restored, skipped_edited_since)``.
     """
     if not _BACKUP_NAME.fullmatch(backup):
         raise RollbackRefused(f"not a condense_lessons backup table name: {backup!r}")
     if await conn.fetchval("SELECT to_regclass($1)", backup) is None:
         raise RollbackRefused(f"backup table {backup} does not exist")
+    if not await conn.fetchval(
+        "SELECT count(*) FROM information_schema.columns"
+        " WHERE table_name = $1 AND column_name = 'condensed_by_apply'", backup,
+    ):
+        raise RollbackRefused(f"{backup} does not record which rows were condensed; restore by hand")
     if await conn.fetchval(
         "SELECT count(*) FROM pg_constraint WHERE conname = $1", CONSTRAINT
     ):
@@ -215,17 +235,26 @@ async def rollback(conn, backup: str) -> int:
     async with conn.transaction():
         if has_trigger:
             await conn.execute("ALTER TABLE mem_lessons DISABLE TRIGGER trg_mem_lessons_rule_cap")
-        status = await conn.execute(f"""
-            UPDATE mem_lessons l
-               SET rule = b.rule, detail = b.detail,
-                   raw_text = b.raw_text, embedding = b.embedding
-              FROM {backup} b
-             WHERE b.id = l.id
-               AND (l.rule, l.detail, l.raw_text) IS DISTINCT FROM (b.rule, b.detail, b.raw_text)
+        # Only rows this apply condensed AND still holding the rule it wrote.
+        # Unrelated lessons, and condensed ones edited since, are untouched.
+        restored = await conn.fetchval(f"""
+            WITH r AS (
+                UPDATE mem_lessons l
+                   SET rule = b.rule, detail = b.detail,
+                       raw_text = b.raw_text, embedding = b.embedding
+                  FROM {backup} b
+                 WHERE b.id = l.id AND b.condensed_by_apply AND l.rule = b.applied_rule
+                RETURNING l.id
+            ) SELECT count(*) FROM r
+        """)
+        skipped = await conn.fetchval(f"""
+            SELECT count(*) FROM {backup} b JOIN mem_lessons l ON l.id = b.id
+             WHERE b.condensed_by_apply AND l.rule IS DISTINCT FROM b.rule
+               AND l.rule IS DISTINCT FROM b.applied_rule
         """)
         if has_trigger:
             await conn.execute("ALTER TABLE mem_lessons ENABLE TRIGGER trg_mem_lessons_rule_cap")
-    return int(status.split()[-1])
+    return restored, skipped
 
 
 def _dsn() -> str:
@@ -261,11 +290,12 @@ async def main(argv: list[str] | None = None) -> int:
             print(f"applied {len(rows)} lessons; backup table: {backup}")
         elif args.rollback:
             try:
-                restored = await rollback(conn, args.rollback)
+                restored, skipped = await rollback(conn, args.rollback)
             except (RollbackRefused, asyncpg.PostgresError) as error:
                 print(f"error: {error}", file=sys.stderr)
                 return 2
-            print(f"restored {restored} lessons from {args.rollback}")
+            print(f"restored {restored} lessons from {args.rollback}; skipped {skipped}"
+                  " condensed lessons edited since --apply")
         elif args.validate_constraint:
             try:
                 await validate_constraint(conn)
