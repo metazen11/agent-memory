@@ -224,11 +224,14 @@ function ensureServer() {
     return false;
   }
 
-  const managedPlist = path.join(require('os').homedir(), 'Library/LaunchAgents/com.metazen.agent-memory-api.plist');
-  if (PLATFORM === 'darwin' && fs.existsSync(managedPlist)) {
+  const managedLabel = PLATFORM === 'darwin'
+    ? require(path.join(path.dirname(fs.realpathSync(__filename)), 'launchd-api-label.js')).findManagedApiLabel()
+    : '';
+  if (managedLabel) {
     // launchd owns the API process; never spawn an unmanaged duplicate.
     const uid = typeof process.getuid === 'function' ? process.getuid() : run('id -u');
-    run(`launchctl kickstart gui/${uid}/com.metazen.agent-memory-api`);
+    debug(`Deferring to launchd job ${managedLabel}`);
+    run(`launchctl kickstart gui/${uid}/${managedLabel}`);
   } else {
   notice('Starting memory server (FastAPI)...');
   debug('Starting FastAPI server...');
