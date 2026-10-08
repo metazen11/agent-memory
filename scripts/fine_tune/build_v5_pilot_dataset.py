@@ -46,35 +46,31 @@ from v5_schema import (  # noqa: E402
 )
 
 # Defense-in-depth redaction. The ingest path is supposed to redact, but
-# webhook URLs (Slack/Discord) historically slipped through, so we re-run
-# the pattern set on every text leaf before it lands in the training set.
-# If app.config can't load (no .env in CI), fall back to a stripped-down
-# inline redactor with the same patterns.
-try:
-    from app.redact import redact_text, redact_json, SECRET_PATTERNS  # noqa: E402
-except Exception:  # pragma: no cover — defensive fallback
-    import re as _re
+# webhook URLs (Slack/Discord) and absolute home paths (#57) historically
+# slipped through, so we re-run the pattern set on every text leaf before it
+# lands in the training set.
+#
+# If app.config can't load (no .env in CI) we fall back to applying the
+# patterns unconditionally. The patterns themselves come from
+# app.redact_patterns, which has NO config dependency, so the fallback can
+# never drift from the real redactor. It did exactly that once: PATH_PATTERNS
+# was added to app.redact but not to a hand-copied stub here, silently
+# emitting unscrubbed home paths into the v5 training set.
+from app.redact_patterns import (  # noqa: E402
+    SECRET_PATTERNS,
+    PATH_PATTERNS,
+    PII_PATTERNS,
+)
 
-    SECRET_PATTERNS = [
-        (_re.compile(r"sk-ant-api\d{2}-[A-Za-z0-9_-]{80,}", _re.I), "[REDACTED:anthropic_key]"),
-        (_re.compile(r"sk-[A-Za-z0-9]{48,}"), "[REDACTED:openai_key]"),
-        (_re.compile(r"hf_[A-Za-z0-9]{30,}"), "[REDACTED:hf_token]"),
-        (_re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws_key]"),
-        (_re.compile(r"ghp_[A-Za-z0-9]{36,}"), "[REDACTED:github_token]"),
-        (_re.compile(r"gho_[A-Za-z0-9]{36,}"), "[REDACTED:github_oauth]"),
-        (_re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED:gitlab_token]"),
-        (_re.compile(r"xox[bpors]-[A-Za-z0-9-]{10,}"), "[REDACTED:slack_token]"),
-        (_re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+"), "[REDACTED:slack_webhook]"),
-        (_re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"), "[REDACTED:discord_webhook]"),
-        (_re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", _re.I), "[REDACTED:bearer_token]"),
-        (_re.compile(r"(?:password|passwd|pwd)\s*[=:]\s*\S+", _re.I), "[REDACTED:password]"),
-        (_re.compile(r"(?:postgresql|mysql|mongodb)://[^\s]+@[^\s]+", _re.I), "[REDACTED:connection_string]"),
-    ]
+try:
+    from app.redact import redact_text, redact_json  # noqa: E402
+except Exception:  # pragma: no cover — no .env; apply every pattern, ungated.
+    _ALL_PATTERNS = SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS
 
     def redact_text(text):
         if not text:
             return text
-        for pattern, replacement in SECRET_PATTERNS:
+        for pattern, replacement in _ALL_PATTERNS:
             text = pattern.sub(replacement, text)
         return text
 
@@ -86,6 +82,7 @@ except Exception:  # pragma: no cover — defensive fallback
         if isinstance(obj, str):
             return redact_text(obj)
         return obj
+
 
 PSQL_WRAPPER = REPO_ROOT / "scripts" / "psql_wrapper.sh"
 
