@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 
+from app.anvil_enrichment import EnrichmentOutage
 from app.config import settings
 from app.db import get_pool
 from app.embeddings import embed_text
@@ -167,6 +168,25 @@ async def process_one(pool) -> bool:
             logger.info(f"Created observation from queue #{queue_id}: {obs_data.get('title', '?')}")
             return True
 
+        except EnrichmentOutage as outage:
+            # Engine outage, not a bad item: release it uncharged so a long
+            # outage cannot burn through retries and drop captured memory.
+            # ponytail: timeouts are charged (an oversized item times out alone),
+            # so a model that hangs for a long time still costs retries; track
+            # per-row outage counts if that ever drops real memory.
+            if outage.charge:
+                await conn.execute("""
+                    UPDATE mem_observation_queue
+                    SET status = CASE WHEN retry_count >= $2 THEN 'failed' ELSE 'pending' END,
+                        retry_count = retry_count + 1
+                    WHERE id = $1
+                """, queue_id, settings.queue_max_retries)
+            else:
+                await conn.execute(
+                    "UPDATE mem_observation_queue SET status = 'pending' WHERE id = $1",
+                    queue_id,
+                )
+            raise
         except Exception as e:
             logger.error(f"Queue #{queue_id} processing failed: {e}")
             await conn.execute("""
@@ -196,12 +216,18 @@ def _build_raw_text(obs_data: dict, *, include_provider: bool = True) -> str:
 async def worker_loop():
     """Background loop that processes the observation queue."""
     logger.info("Queue worker started")
+    outage_delay = 0
     while True:
         try:
             pool = await get_pool()
             had_work = await process_one(pool)
+            outage_delay = 0
             if not had_work:
                 await asyncio.sleep(settings.queue_poll_interval)
+        except EnrichmentOutage as e:
+            outage_delay = min(max(outage_delay * 2, settings.queue_poll_interval), 300)
+            logger.warning(f"Enrichment outage ({e}); pausing queue {outage_delay}s")
+            await asyncio.sleep(outage_delay)
         except asyncio.CancelledError:
             logger.info("Queue worker stopped")
             return

@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import logging
 import os
 import signal
+import tempfile
 import time
 from pathlib import Path
 from typing import Literal
@@ -18,8 +20,23 @@ _gate = asyncio.Semaphore(1)
 _status = {"status": "not_used", "last_success": None, "provider": None}
 
 
+logger = logging.getLogger(__name__)
+
+
 class EnrichmentUnavailable(RuntimeError):
     pass
+
+
+class EnrichmentOutage(EnrichmentUnavailable):
+    """The bridge itself failed (engine crash, timeout), not one item's output.
+
+    Callers should pause before retrying. ``charge`` is set for timeouts: an
+    oversized item times out on its own, so it must still use up its retries.
+    """
+
+    def __init__(self, message: str, *, charge: bool = False):
+        super().__init__(message)
+        self.charge = charge
 
 
 class Observation(BaseModel):
@@ -123,33 +140,44 @@ async def _bridge(
 ) -> tuple[str, str]:
     """Run one tools-free completion through scripts/anvil_enrich.py.
 
-    Returns ``(content, provider)``. Raises ValueError/OSError/TimeoutError
-    on any bridge failure; callers translate those into EnrichmentUnavailable.
+    Returns ``(content, provider)``. Raises EnrichmentOutage when the bridge
+    process fails (its stderr tail is logged) and ValueError for bad output.
     ``env_overrides`` lets a caller pin ANVIL_MODEL_* for its own use without
     touching Anvil's global configuration.
     """
     async with _gate:
         process = None
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *_bridge_command(),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=True,
-                env=_bridge_env(env_overrides),
-            )
-            output = await asyncio.wait_for(
-                exchange(process, _request_line(system, user).encode()),
-                timeout or settings.anvil_timeout_seconds,
-            )
+        # A file, not a pipe: an unread stderr pipe can fill and wedge the child.
+        with tempfile.TemporaryFile() as stderr:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *_bridge_command(),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=stderr,
+                    start_new_session=True,
+                    env=_bridge_env(env_overrides),
+                )
+                output = await asyncio.wait_for(
+                    exchange(process, _request_line(system, user).encode()),
+                    timeout or settings.anvil_timeout_seconds,
+                )
+            except asyncio.TimeoutError as error:
+                raise EnrichmentOutage("Anvil bridge timed out", charge=True) from error
+            except OSError as error:
+                raise EnrichmentOutage("Anvil bridge did not start") from error
+            finally:
+                if process is not None and process.returncode is None:
+                    _kill(process)
+                    await process.wait()
             if process.returncode:
-                raise ValueError("Anvil command failed")
-            return _parse_envelope(output)
-        finally:
-            if process is not None and process.returncode is None:
-                _kill(process)
-                await process.wait()
+                stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - 2048))
+                tail = stderr.read().decode(errors="replace").strip()
+                logger.error(
+                    "Anvil bridge exited %s: %s", process.returncode, redact_text(tail)
+                )
+                raise EnrichmentOutage(f"Anvil bridge exited {process.returncode}")
+        return _parse_envelope(output)
 
 
 _reapers: set[asyncio.Task] = set()
@@ -266,9 +294,10 @@ _BRIDGE_ERRORS = (OSError, ValueError, KeyError, ValidationError, asyncio.Timeou
 
 
 def _record_failure(error: BaseException) -> None:
-    _status["status"] = (
-        "timeout" if isinstance(error, asyncio.TimeoutError) else "failed"
+    timed_out = isinstance(error, asyncio.TimeoutError) or isinstance(
+        error.__cause__, asyncio.TimeoutError
     )
+    _status["status"] = "timeout" if timed_out else "failed"
 
 
 async def generate_text(
@@ -297,6 +326,9 @@ async def generate_text(
             content, provider = await _bridge(
                 system, user, env_overrides=env_overrides, timeout=timeout
             )
+    except EnrichmentOutage as error:
+        _record_failure(error)
+        raise
     except _BRIDGE_ERRORS as error:
         _record_failure(error)
         raise EnrichmentUnavailable("Anvil enrichment unavailable") from error
@@ -322,6 +354,9 @@ async def generate_json(system: str, user: str, kind: str) -> dict:
                 data = Lesson.model_validate(data).model_dump()
             else:
                 raise ValueError("Unknown enrichment kind")
+    except EnrichmentOutage as error:
+        _record_failure(error)
+        raise
     except _BRIDGE_ERRORS as error:
         _record_failure(error)
         raise EnrichmentUnavailable("Anvil enrichment unavailable") from error
