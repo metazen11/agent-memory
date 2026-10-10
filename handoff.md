@@ -468,6 +468,26 @@ https://github.com/metazen11/agent-memory/pull/69 (`dev -> main`), open and
 mergeable. Local gate: 401 passed, 2 skipped; remote push checks passed.
 The PR is attached to the Codex chat. Merge remains the human review gate.
 
+## 2026-10-10 — Enrichment outages no longer drop queued memory
+
+Root cause of "memory stopped guiding": Anthropic out of credit and the Anvil
+fallback failing because Anvil began ignoring non-secret `.env` settings and
+fell back to a missing GGUF (fixed upstream in Anvil by migrating them). The
+worker charged each provider outage as an item failure (3 retries ~8s apart,
+then `failed`), dropping ~465 captured items over 3 days, and the bridge sent
+stderr to DEVNULL so the cause was invisible.
+
+Now a crashed/timed-out bridge raises `EnrichmentOutage`: the item returns to
+`pending` uncharged and the worker backs off (poll interval doubling, 300s cap).
+Malformed model output still consumes retries. The bridge stderr tail (2 KB) is
+logged through `redact_text`.
+
+Throughput: the one-shot bridge reloaded the 35B MLX model per observation
+(~10s), slower than captures arrive, so the requeued backlog grew (571 pending).
+`generate_json` now uses the `WarmBridge` (`ANVIL_KEEP_WARM_SECONDS`, default
+300) with the same outage mapping (process death = uncharged outage, timeout =
+charged outage, error line = charged item failure) and stderr capture.
+
 ## 2026-10-05 — CI/CD and Anvil fallback
 
 Branch `codex/cicd-anvil-fallback` adds a hosted quality gate, feature-to-dev PR

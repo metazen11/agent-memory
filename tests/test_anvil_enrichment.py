@@ -10,6 +10,12 @@ from app import anvil_enrichment as anvil
 from app import observation_llm
 
 
+@pytest.fixture(autouse=True)
+def one_shot_bridge(monkeypatch):
+    """These tests pin the one-shot path; tests/test_anvil_warm_bridge.py covers warm."""
+    monkeypatch.setattr(anvil.settings, "anvil_keep_warm_seconds", 0)
+
+
 class Process:
     pid = 123456789
     returncode = None
@@ -175,8 +181,9 @@ def test_bridge_disables_tools_and_raw_logging(tmp_path, tool_calls):
         check=False,
     )
     if tool_calls:
-        assert result.returncode != 0
-        assert not result.stdout
+        # Per-item failure: reported in-band (charged), not a crash (outage).
+        assert result.returncode == 0
+        assert "Enrichment requested tools" in json.loads(result.stdout)["error"]
     else:
         assert result.returncode == 0
         assert json.loads(result.stdout)["provider"] == "anvil:test:model"
@@ -221,3 +228,95 @@ def test_observation_provenance_is_stored_without_changing_embedding_input():
     }
     assert "[enrichment_provider: anvil:mlx:test]" in _build_raw_text(observation)
     assert "anvil:" not in _build_raw_text(observation, include_provider=False)
+
+
+@pytest.mark.asyncio
+async def test_crashed_bridge_is_an_outage_with_logged_redacted_cause(
+    monkeypatch, caplog
+):
+    """A dead bridge (e.g. missing model file) must say why, not fail silently."""
+    import sys
+
+    secret = "sk-ant-api03-" + "y" * 100
+    script = (
+        "import sys; sys.stdin.read(); "
+        f"sys.stderr.write('ValueError: Model path does not exist {secret}'); "
+        "sys.exit(1)"
+    )
+    monkeypatch.setattr(
+        anvil, "_bridge_command", lambda **_: [sys.executable, "-c", script]
+    )
+    with pytest.raises(anvil.EnrichmentOutage):
+        await anvil.generate_json("system", "user", "observation")
+    assert "Model path does not exist" in caplog.text
+    assert "y" * 100 not in caplog.text
+    assert anvil.snapshot()["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_outage_releases_queue_item_without_charging_retry(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app import queue_worker
+
+    class Conn:
+        def __init__(self):
+            self.executed = []
+
+        async def fetchrow(self, *_):
+            return {
+                "id": 7, "session_id": "s", "tool_name": "Edit", "tool_input": "{}",
+                "tool_response_preview": "", "cwd": "/tmp", "last_user_message": "",
+                "source_system": None, "source_mode": None, "source_agent": None,
+            }
+
+        async def execute(self, sql, *args):
+            self.executed.append(sql)
+
+    conn = Conn()
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield conn
+
+    monkeypatch.setattr(
+        queue_worker,
+        "generate_observation",
+        AsyncMock(side_effect=anvil.EnrichmentOutage("down")),
+    )
+    with pytest.raises(anvil.EnrichmentOutage):
+        await queue_worker.process_one(Pool())
+    assert len(conn.executed) == 1
+    assert "status = 'pending'" in conn.executed[0]
+    assert "retry_count" not in conn.executed[0]
+
+
+@pytest.mark.asyncio
+async def test_per_item_bridge_error_is_charged_not_an_outage(monkeypatch):
+    """One bad item must consume its retries, never stall the queue."""
+    import sys
+
+    script = (
+        "import sys, json; sys.stdin.read(); "
+        "print(json.dumps({'error': 'ValueError: context too long'}))"
+    )
+    monkeypatch.setattr(
+        anvil, "_bridge_command", lambda **_: [sys.executable, "-c", script]
+    )
+    with pytest.raises(anvil.EnrichmentUnavailable) as raised:
+        await anvil.generate_json("system", "user", "observation")
+    assert not isinstance(raised.value, anvil.EnrichmentOutage)
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_an_outage_that_still_charges(monkeypatch):
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=Process({}, delay=1))
+    )
+    monkeypatch.setattr(anvil.settings, "anvil_timeout_seconds", 0.01)
+    monkeypatch.setattr(anvil.os, "killpg", lambda pid, sig: None)
+    with pytest.raises(anvil.EnrichmentOutage) as raised:
+        await anvil.generate_json("system", "user", "observation")
+    assert raised.value.charge is True
+    assert anvil.snapshot()["status"] == "timeout"
