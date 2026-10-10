@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     anvil_fallback_enabled: bool = False
     anvil_root: str = "/opt/anvil"
     anvil_timeout_seconds: float = 60.0
+    # Keep the fallback's bridge (and its loaded model) alive this long after
+    # the last call; 0 = load per call. Per-call loads cost ~10s per queued
+    # observation, slower than captures arrive, so the backlog never drained.
+    anvil_keep_warm_seconds: float = 300.0
 
     # Lesson-rule condenser (app/lesson_condense.py). Uses the Anvil bridge
     # with the backend/model PINNED here, passed to the bridge subprocess as

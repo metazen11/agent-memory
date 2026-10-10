@@ -56,7 +56,9 @@ readiness, and remains visible separately in health.
 The Anthropic failure observed on this host is exhausted account credits.
 Software cannot replenish those credits. Set `ANVIL_FALLBACK_ENABLED=true` in the
 private runtime configuration to use the installed Anvil inference engine as a
-fallback. Defaults: `ANVIL_ROOT=/opt/anvil`, `ANVIL_TIMEOUT_SECONDS=60`.
+fallback. Defaults: `ANVIL_ROOT=/opt/anvil`, `ANVIL_TIMEOUT_SECONDS=60`,
+`ANVIL_KEEP_WARM_SECONDS=300` (keep the bridge and its loaded model alive between
+observations; `0` reloads the model per call, ~10s each).
 
 The bridge invokes Anvil's Python runtime and `chat_completion` directly, with
 **no tools**, agent runner, hooks, memory recursion or raw interaction logging.

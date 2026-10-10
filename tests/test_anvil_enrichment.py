@@ -10,6 +10,12 @@ from app import anvil_enrichment as anvil
 from app import observation_llm
 
 
+@pytest.fixture(autouse=True)
+def one_shot_bridge(monkeypatch):
+    """These tests pin the one-shot path; tests/test_anvil_warm_bridge.py covers warm."""
+    monkeypatch.setattr(anvil.settings, "anvil_keep_warm_seconds", 0)
+
+
 class Process:
     pid = 123456789
     returncode = None

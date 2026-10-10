@@ -482,6 +482,12 @@ Now a crashed/timed-out bridge raises `EnrichmentOutage`: the item returns to
 Malformed model output still consumes retries. The bridge stderr tail (2 KB) is
 logged through `redact_text`.
 
+Throughput: the one-shot bridge reloaded the 35B MLX model per observation
+(~10s), slower than captures arrive, so the requeued backlog grew (571 pending).
+`generate_json` now uses the `WarmBridge` (`ANVIL_KEEP_WARM_SECONDS`, default
+300) with the same outage mapping (process death = uncharged outage, timeout =
+charged outage, error line = charged item failure) and stderr capture.
+
 ## 2026-10-05 — CI/CD and Anvil fallback
 
 Branch `codex/cicd-anvil-fallback` adds a hosted quality gate, feature-to-dev PR

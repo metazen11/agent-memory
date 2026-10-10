@@ -123,6 +123,12 @@ def _parse_envelope(output: bytes) -> tuple[str, str]:
     return envelope["content"], provider
 
 
+def _log_stderr_tail(stderr, returncode) -> None:
+    stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - 2048))
+    tail = stderr.read().decode(errors="replace").strip()
+    logger.error("Anvil bridge exited %s: %s", returncode, redact_text(tail))
+
+
 def _kill(process) -> None:
     if process is not None and process.returncode is None:
         try:
@@ -171,11 +177,7 @@ async def _bridge(
                     _kill(process)
                     await process.wait()
             if process.returncode:
-                stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - 2048))
-                tail = stderr.read().decode(errors="replace").strip()
-                logger.error(
-                    "Anvil bridge exited %s: %s", process.returncode, redact_text(tail)
-                )
+                _log_stderr_tail(stderr, process.returncode)
                 raise EnrichmentOutage(f"Anvil bridge exited {process.returncode}")
         return _parse_envelope(output)
 
@@ -199,12 +201,15 @@ class WarmBridge:
 
     Any failure (timeout, EOF, malformed line) kills the process. The next
     request starts a fresh one, so a wedged model never stays cached.
+    Failures map like the one-shot bridge: process death or spawn failure is
+    an EnrichmentOutage, a timeout a charged one, an error line a ValueError.
     """
 
     def __init__(self, env_overrides: dict[str, str], idle_seconds: float):
         self.env_overrides = dict(env_overrides)
         self.idle_seconds = idle_seconds
         self.process = None
+        self._stderr = None
         self._lock = asyncio.Lock()
         self._idle_handle: asyncio.TimerHandle | None = None
 
@@ -215,11 +220,12 @@ class WarmBridge:
     async def _ensure_process(self):
         if self.process is not None and self.process.returncode is None:
             return self.process
+        self._stderr = tempfile.TemporaryFile()
         self.process = await asyncio.create_subprocess_exec(
             *_bridge_command(serve=True),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=self._stderr,
             start_new_session=True,
             env=_bridge_env(self.env_overrides),
             limit=_MAX_OUTPUT * 2,
@@ -232,6 +238,9 @@ class WarmBridge:
             self._idle_handle.cancel()
             self._idle_handle = None
         process, self.process = self.process, None
+        stderr, self._stderr = self._stderr, None
+        if stderr is not None:
+            stderr.close()
         if process is None:
             return
         _kill(process)
@@ -255,12 +264,19 @@ class WarmBridge:
                 self._idle_handle.cancel()
                 self._idle_handle = None
             try:
-                process = await self._ensure_process()
-                process.stdin.write((_request_line(system, user) + "\n").encode())
-                await process.stdin.drain()
-                line = await asyncio.wait_for(process.stdout.readline(), timeout)
+                try:
+                    process = await self._ensure_process()
+                    process.stdin.write((_request_line(system, user) + "\n").encode())
+                    await process.stdin.drain()
+                    line = await asyncio.wait_for(process.stdout.readline(), timeout)
+                except asyncio.TimeoutError as error:
+                    raise EnrichmentOutage("Anvil bridge timed out", charge=True) from error
+                except OSError as error:  # spawn failure or broken stdin pipe
+                    raise EnrichmentOutage("Anvil bridge did not start") from error
                 if not line:
-                    raise ValueError("Anvil bridge exited")
+                    returncode = await process.wait()
+                    _log_stderr_tail(self._stderr, returncode)
+                    raise EnrichmentOutage(f"Anvil bridge exited {returncode}")
                 result = _parse_envelope(line)
             except BaseException:
                 self.close()
@@ -300,6 +316,20 @@ def _record_failure(error: BaseException) -> None:
     _status["status"] = "timeout" if timed_out else "failed"
 
 
+async def _complete(
+    system: str,
+    user: str,
+    env_overrides: dict[str, str] | None,
+    timeout: float | None,
+    keep_warm_seconds: float,
+) -> tuple[str, str]:
+    if keep_warm_seconds > 0:
+        return await warm_bridge(env_overrides or {}, keep_warm_seconds).request(
+            system, user, timeout or settings.anvil_timeout_seconds
+        )
+    return await _bridge(system, user, env_overrides=env_overrides, timeout=timeout)
+
+
 async def generate_text(
     system: str,
     user: str,
@@ -318,14 +348,9 @@ async def generate_text(
     JSON with unescaped quotes, so text callers must not round-trip JSON.
     """
     try:
-        if keep_warm_seconds > 0:
-            content, provider = await warm_bridge(
-                env_overrides or {}, keep_warm_seconds
-            ).request(system, user, timeout or settings.anvil_timeout_seconds)
-        else:
-            content, provider = await _bridge(
-                system, user, env_overrides=env_overrides, timeout=timeout
-            )
+        content, provider = await _complete(
+            system, user, env_overrides, timeout, keep_warm_seconds
+        )
     except EnrichmentOutage as error:
         _record_failure(error)
         raise
@@ -338,7 +363,9 @@ async def generate_text(
 
 async def generate_json(system: str, user: str, kind: str) -> dict:
     try:
-        content, provider = await _bridge(system, user)
+        content, provider = await _complete(
+            system, user, None, None, settings.anvil_keep_warm_seconds
+        )
         text = content.strip()
         if text.startswith("```"):
             if "\n" not in text:
