@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # ── Observation types ─────────────────────────────────
 
@@ -154,7 +154,10 @@ LESSON_SEVERITIES = ("critical", "warning", "info")
 class LessonCreate(BaseModel):
     """Create a new lesson."""
     title: str
+    # Rules over 280 chars are condensed server-side (app/lesson_condense.py);
+    # the original text is kept in `detail`.
     rule: str
+    detail: str | None = None  # long-form context; never injected into prompts
     severity: str = "warning"
     project: str | None = None  # None = global
     trigger_tool: str | None = None
@@ -171,6 +174,7 @@ class LessonUpdate(BaseModel):
     """Update an existing lesson."""
     title: str | None = None
     rule: str | None = None
+    detail: str | None = None
     severity: str | None = None
     trigger_tool: str | None = None
     trigger_pattern: str | None = None
@@ -188,6 +192,7 @@ class LessonOut(BaseModel):
     project_name: str | None = None
     title: str
     rule: str
+    detail: str | None = None
     severity: str
     trigger_tool: str | None = None
     trigger_pattern: str | None = None

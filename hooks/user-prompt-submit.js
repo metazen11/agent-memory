@@ -74,6 +74,18 @@ const LESSON_INJECT_INTERVAL = Math.max(
   parseInt(process.env.AGENT_MEMORY_LESSON_INJECT_INTERVAL || '10', 10),
 );
 
+// Token budget for the injected lesson block. Some rules are multi-paragraph
+// (1-3KB); 20 of them measured ~19KB (~5k tokens) per injection. Each rule is
+// cut to its first LESSON_RULE_MAX_CHARS chars and the whole block is capped at
+// LESSON_BLOCK_MAX_BYTES; the full text stays one search_lessons call away.
+function envPositiveInt(name, defaultValue) {
+  const n = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : defaultValue;
+}
+const LESSON_RULE_MAX_CHARS = envPositiveInt('AGENT_MEMORY_LESSON_RULE_MAX_CHARS', 280);
+const LESSON_BLOCK_MAX_BYTES = envPositiveInt('AGENT_MEMORY_LESSON_BLOCK_MAX_BYTES', 6144);
+const TRUNCATION_SUFFIX = ' \u2026 (search_lessons for full text)';
+
 function envFlagEnabled(name, defaultValue = true) {
   const raw = process.env[name];
   if (raw == null || raw === '') return defaultValue;
@@ -243,20 +255,43 @@ function fetchLessons(project, severity, limit) {
 
 // ── Formatters ──────────────────────────────────────────────
 
-function formatLessons(lessons) {
+function truncateRule(rule, maxChars) {
+  const text = String(rule == null ? '' : rule).trim();
+  if (text.length <= maxChars) return text;
+  let cut = text.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > maxChars * 0.5) cut = cut.slice(0, lastSpace);   // word boundary
+  return cut.trimEnd() + TRUNCATION_SUFFIX;
+}
+
+function formatLessons(lessons, opts = {}) {
   if (!lessons || lessons.length === 0) return '';
+  const maxChars = opts.ruleMaxChars || LESSON_RULE_MAX_CHARS;
+  // Reserve room for the trailing newlines + "omitted" note so the cap is hard.
+  const maxBytes = (opts.blockMaxBytes || LESSON_BLOCK_MAX_BYTES) - 100;
   const severityIcon = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
-  const lines = lessons.map((l, i) => {
+  const head = '## Active Lessons\n\nLearned from past mistakes. Follow them.\n\n';
+  const lines = [];
+  let bytes = Buffer.byteLength(head);
+  for (let i = 0; i < lessons.length; i++) {
+    const l = lessons[i];
     const icon = severityIcon[l.severity] || 'LESSON';
     const scope = l.project_name ? `[${l.project_name}]` : '[global]';
-    return `  ${i + 1}. ${icon} ${scope}: ${l.rule}`;
-  });
-  return `## Active Lessons\n\nLearned from past mistakes. Follow them.\n\n${lines.join('\n')}\n\n`;
+    const line = `  ${i + 1}. ${icon} ${scope}: ${truncateRule(l.rule, maxChars)}`;
+    const lineBytes = Buffer.byteLength(line) + 1;
+    if (bytes + lineBytes > maxBytes) {
+      lines.push(`  \u2026 ${lessons.length - i} more lesson(s) omitted (search_lessons for all)`);
+      break;
+    }
+    lines.push(line);
+    bytes += lineBytes;
+  }
+  return `${head}${lines.join('\n')}\n\n`;
 }
 
 // ── Main ────────────────────────────────────────────────────
 
-(async () => {
+async function main() {
   const input = readStdin();
   if (!input || !input.prompt) {
     debug('no prompt in input — skipping');
@@ -346,4 +381,10 @@ function formatLessons(lessons) {
     notice(`unexpected error in main: ${e && e.message}`);
     allow();
   }
-})();
+}
+
+if (require.main === module) {
+  main();
+} else {
+  module.exports = { formatLessons, truncateRule };
+}

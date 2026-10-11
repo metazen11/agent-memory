@@ -296,10 +296,10 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
     from app import llm_provider_status as provider_status
     from app.config import settings
     from app.observation_llm import (
-        _ANTHROPIC_MIN_INTERVAL,
         _generate_local_sync,
         _get_anthropic_client,
         parse_llm_response,
+        wait_for_anthropic_slot,
     )
 
     user_prompt = build_synth_prompt(candidate)
@@ -318,16 +318,7 @@ async def synthesize_lesson(candidate: dict) -> dict | None:
     # low" — ~130 seconds of sleeping per 10-candidate run for calls that
     # could not succeed. The breaker collapses that to a single attempt.
     if provider_status.anthropic_available(settings.anthropic_api_key):
-        import asyncio as _asyncio
-        import time
-
-        import app.observation_llm as _ol
-
-        now = time.monotonic()
-        elapsed = now - _ol._last_anthropic_call
-        if elapsed < _ANTHROPIC_MIN_INTERVAL:
-            await _asyncio.sleep(_ANTHROPIC_MIN_INTERVAL - elapsed)
-        _ol._last_anthropic_call = time.monotonic()
+        await wait_for_anthropic_slot()
         try:
             client = _get_anthropic_client()
             msg = await client.messages.create(
@@ -634,6 +625,16 @@ async def distill_once(
             **trigger,
         }
 
+        # Validate the full rule, condense it, THEN dedup: the duplicate
+        # check must compare the rule that will actually be stored.
+        ok, reason = validate_lesson_payload(payload)
+        if ok:
+            reason = await condense_payload(payload)
+            ok = reason is None
+        if not ok:
+            rejected.append({"error": cand["normalized_error"][:80], "reason": reason})
+            continue
+
         duplicate = await find_duplicate_lesson(conn, payload["title"], payload["rule"])
         if duplicate:
             rejected.append({
@@ -643,11 +644,6 @@ async def distill_once(
                     f"({duplicate['similarity']:.2f} similar)"
                 ),
             })
-            continue
-
-        ok, reason = validate_lesson_payload(payload)
-        if not ok:
-            rejected.append({"error": cand["normalized_error"][:80], "reason": reason})
             continue
 
         payload["_evidence"] = {
@@ -694,6 +690,24 @@ async def distill_once(
     }
 
 
+async def condense_payload(payload: dict) -> str | None:
+    """Route a synthesized rule through the same condenser as the API/MCP.
+
+    Mutates ``payload`` (rule -> <= 280 chars, original -> ``detail``) and
+    returns None, or returns a rejection reason. Runs after
+    validate_lesson_payload so actionability is judged on the full rule.
+    """
+    from app.lesson_condense import CondenseRejected, prepare_rule
+
+    try:
+        prepared = await prepare_rule(payload["rule"], payload.get("detail"))
+    except CondenseRejected as error:
+        return f"rule too long and not condensable: {error}"
+    payload["rule"] = prepared.rule
+    payload["detail"] = prepared.detail
+    return None
+
+
 async def _insert_lesson(conn, payload: dict) -> int:
     """Insert a validated lesson, mirroring POST /api/lessons."""
     from app.embeddings import embed_text
@@ -703,7 +717,9 @@ async def _insert_lesson(conn, payload: dict) -> int:
     if payload.get("project"):
         project_id = await ensure_project(conn, payload["project"])
 
-    raw_text = f"{payload['title']}\n{payload['rule']}"
+    from app.lesson_condense import lesson_raw_text
+
+    raw_text = lesson_raw_text(payload["title"], payload["rule"], payload.get("detail"))
     embedding_str = None
     try:
         embedding = await embed_text(raw_text)
@@ -718,8 +734,8 @@ async def _insert_lesson(conn, payload: dict) -> int:
             trigger_tool, trigger_pattern,
             embedding, raw_text,
             trigger_on, trigger_output_pattern, trigger_phase, trigger_files,
-            synthesized_by
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,$9,$10,$11,$12,$13)
+            synthesized_by, detail
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::vector,$8,$9,$10,$11,$12,$13,$14)
         RETURNING id
         """,
         project_id,
@@ -735,5 +751,6 @@ async def _insert_lesson(conn, payload: dict) -> int:
         payload.get("trigger_phase"),
         payload.get("trigger_files"),
         payload.get("synthesized_by"),
+        payload.get("detail"),
     )
     return row["id"]

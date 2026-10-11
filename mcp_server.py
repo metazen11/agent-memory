@@ -22,11 +22,22 @@ from dotenv import load_dotenv
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_script_dir, ".env"))
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-from app.dataset_exports import fetch_tool_call_rows, build_dataset_records
-from app.training_export_guide import build_training_export_guide
+# E402: these imports read settings at import time, so they must follow
+# load_dotenv() above.
+from mcp.server import Server  # noqa: E402
+from mcp.server.stdio import stdio_server  # noqa: E402
+from mcp.types import TextContent, Tool  # noqa: E402
+
+from app.dataset_exports import (  # noqa: E402
+    build_dataset_records,
+    fetch_tool_call_rows,
+)
+from app.lesson_condense import (  # noqa: E402
+    CondenseRejected,
+    lesson_raw_text,
+    prepare_rule,
+)
+from app.training_export_guide import build_training_export_guide  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -332,7 +343,8 @@ async def list_tools():
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "rule": {"type": "string", "description": "The instruction/rule (e.g. 'ALWAYS diff dev vs prod config before deploying')"},
+                    "rule": {"type": "string", "description": "The instruction/rule, ideally <= 280 chars (e.g. 'ALWAYS diff dev vs prod config before deploying'). Longer rules are condensed automatically and the original is kept in detail; if condensing fails the create is rejected."},
+                    "detail": {"type": "string", "description": "Optional long-form context (incident story, rationale). Stored but never injected into prompts."},
                     "title": {"type": "string", "description": "Short title for the lesson"},
                     "severity": {"type": "string", "enum": ["critical", "warning", "info"], "description": "How important (default: warning)", "default": "warning"},
                     "project": {"type": "string", "description": "Project path (full cwd) to scope the lesson. Omit ONLY for truly global lessons."},
@@ -440,6 +452,9 @@ async def call_tool(name: str, arguments: dict):
             result = await _training_export_guide()
             return _annotate_success_content_with_hint(result)
         return [TextContent(type="text", text=_json_error_payload(f"Unknown tool: {name}", code="UNKNOWN_TOOL"))]
+    except CondenseRejected as e:
+        # Explicit, actionable refusal — not a crash (issue #75).
+        return [TextContent(type="text", text=_json_error_payload(str(e), code="RULE_TOO_LONG"))]
     except Exception as e:
         logger.error(f"Tool {name} failed: {e}")
         return [TextContent(type="text", text=_json_error_payload(str(e), code="TOOL_EXCEPTION"))]
@@ -838,7 +853,11 @@ async def _save_memory(pool, args):
 
 
 async def _create_lesson(pool, args):
-    rule = args["rule"]
+    # Condense an over-long rule BEFORE any DB work; CondenseRejected
+    # propagates to call_tool, which returns it as an explicit tool error.
+    prepared = await prepare_rule(args["rule"], args.get("detail"))
+    rule = prepared.rule
+    detail = prepared.detail
     title = args.get("title", rule[:80])
     severity = args.get("severity", "warning")
     if severity not in ("critical", "warning", "info"):
@@ -851,7 +870,7 @@ async def _create_lesson(pool, args):
     trigger_phase = args.get("trigger_phase")
     trigger_files = args.get("trigger_files")
 
-    raw_text = f"{title}\n{rule}"
+    raw_text = lesson_raw_text(title, rule, detail)
 
     embedding = await try_embed(raw_text)
     emb_str = "[" + ",".join(str(v) for v in embedding) + "]" if embedding else None
@@ -877,13 +896,15 @@ async def _create_lesson(pool, args):
                 project_id, title, rule, severity,
                 trigger_tool, trigger_pattern,
                 embedding, raw_text,
-                trigger_on, trigger_output_pattern, trigger_phase, trigger_files
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9, $10, $11, $12)
+                trigger_on, trigger_output_pattern, trigger_phase, trigger_files,
+                detail
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8, $9, $10, $11, $12, $13)
             RETURNING id
         """, project_id, title, rule, severity,
             trigger_tool, trigger_pattern,
             emb_str, raw_text,
-            trigger_on, trigger_output_pattern, trigger_phase, trigger_files)
+            trigger_on, trigger_output_pattern, trigger_phase, trigger_files,
+            detail)
 
         return [TextContent(type="text", text=json.dumps({
             "saved": True,
@@ -892,6 +913,8 @@ async def _create_lesson(pool, args):
             "severity": severity,
             "trigger_on": trigger_on,
             "project": project_name,
+            "rule": rule,
+            "condensed_by": prepared.provider,
         }))]
 
 

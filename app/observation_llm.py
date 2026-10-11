@@ -194,6 +194,21 @@ def _get_anthropic_client():
     return _anthropic_client
 
 
+async def wait_for_anthropic_slot() -> None:
+    """Block until the shared Anthropic rate limiter allows another call.
+
+    Single throttle for every Anthropic caller in the process (observation
+    capture, lesson distillation, lesson condensing).
+    """
+    import time
+    global _last_anthropic_call
+
+    elapsed = time.monotonic() - _last_anthropic_call
+    if elapsed < _ANTHROPIC_MIN_INTERVAL:
+        await asyncio.sleep(_ANTHROPIC_MIN_INTERVAL - elapsed)
+    _last_anthropic_call = time.monotonic()
+
+
 async def generate_observation_anthropic(
     tool_name: str,
     tool_input: dict | None,
@@ -202,9 +217,6 @@ async def generate_observation_anthropic(
     last_user_message: str | None,
 ) -> dict | None:
     """Generate observation using Anthropic API (Claude Haiku)."""
-    import time
-    global _last_anthropic_call
-
     # Bail out BEFORE the throttle sleep. Once the breaker is open the call
     # cannot succeed, and the 13s wait below would be pure waste — see
     # app/llm_provider_status.py for the failure that motivated this.
@@ -215,12 +227,7 @@ async def generate_observation_anthropic(
         tool_name, tool_input, tool_response_preview, cwd, last_user_message
     )
 
-    # Throttle: wait if we called too recently
-    now = time.monotonic()
-    elapsed = now - _last_anthropic_call
-    if elapsed < _ANTHROPIC_MIN_INTERVAL:
-        await asyncio.sleep(_ANTHROPIC_MIN_INTERVAL - elapsed)
-    _last_anthropic_call = time.monotonic()
+    await wait_for_anthropic_slot()
 
     client = _get_anthropic_client()
     try:

@@ -1,4 +1,4 @@
--- 019-lesson-broad-match-guard-trigger.sql
+-- 020-lesson-broad-match-guard-trigger.sql
 --
 -- Replace 016's NOT VALID CHECK with a trigger. NOT VALID only skips
 -- existing rows at ADD time; Postgres still checks every later UPDATE, so
