@@ -439,7 +439,12 @@ if (outputPreview && GLOBAL_HINTS_ENABLED && POST_TOOL_HINTS_ENABLED) {
         trackTrigger(lesson.id);
       }
 
-      console.log(JSON.stringify({ systemMessage: `## Output Lesson\n${lines.join('\n')}` }));
+      // systemMessage is user-only; additionalContext is what reaches the model.
+      const text = `## Output Lesson\n${lines.join('\n')}`;
+      console.log(JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text },
+        systemMessage: text,
+      }));
     } else {
       debug('No output lesson matches');
       console.log(JSON.stringify({}));
