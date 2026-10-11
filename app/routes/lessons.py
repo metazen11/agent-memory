@@ -81,8 +81,8 @@ def _validate_trigger_on(lesson: LessonCreate) -> None:
     if lesson.trigger_on == "input" and not lesson.trigger_tool and not lesson.trigger_pattern:
         # Refuses broad-match input lessons (no tool AND no pattern) — they
         # would fire on every Edit/Write/Bash/NotebookEdit call and dominate
-        # the systemMessage budget. DB CHECK constraint chk_input_trigger_has_filter
-        # (migration 016) is the belt; this is the suspenders that returns a
+        # the systemMessage budget. DB trigger trg_input_trigger_has_filter
+        # (migration 020, replacing 016's CHECK) is the belt; this is the suspenders that returns a
         # clean 400 instead of letting the DB error surface as a 500.
         raise HTTPException(
             status_code=400,

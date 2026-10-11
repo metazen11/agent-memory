@@ -1,5 +1,7 @@
-import asyncpg
+import asyncio
 import logging
+
+import asyncpg
 
 from app.config import settings
 
@@ -16,7 +18,17 @@ async def init_pool():
     dsn = settings.effective_database_url
     if dsn.startswith("postgresql://"):
         dsn = dsn.replace("postgresql://", "postgres://", 1)
-    pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+    # At login launchd starts Postgres and this API together; wait out the
+    # "starting up"/"connection refused" window instead of exiting.
+    for attempt in range(30):
+        try:
+            pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+            break
+        except (asyncpg.CannotConnectNowError, OSError) as e:
+            if attempt == 29:
+                raise
+            logger.info("Database not ready (%s), retrying...", e)
+            await asyncio.sleep(1)
     logger.info("Database pool initialized")
 
 
