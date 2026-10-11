@@ -5,10 +5,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.path_normalize import normalize_text
 from app.db import get_pool
 from app.embeddings import embed_text
-from app.models import LessonCreate, LessonUpdate, LessonOut, LessonMatch
+from app.models import LessonCreate, LessonMatch, LessonOut, LessonUpdate
+from app.path_normalize import normalize_text
 from app.project import ensure_project, project_path_filter, project_path_filter_strict
 
 MAX_PATTERN_LEN = 500

@@ -1,6 +1,7 @@
 import asyncio
-import asyncpg
 import logging
+
+import asyncpg
 
 from app.config import settings
 
