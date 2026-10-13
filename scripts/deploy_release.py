@@ -82,6 +82,30 @@ def activate(path, python, *, verify_identity=True):
     )
 
 
+def load_approvals(store=STORE):
+    path = store / "approved-migrations.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def approve_migrations(store=STORE):
+    """Operator step: back up the DB, then pin new checkout migrations by hash."""
+    state = json.loads((store / "deployment.json").read_text())
+    applied = {p.name for p in (Path(state["active"]) / "scripts/migrations").glob("*.sql")}
+    pending = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted((ROOT / "scripts/migrations").glob("*.sql"))
+        if p.name not in applied
+    }
+    if not pending:
+        print("No new migrations to approve")
+        return
+    # Rollback cannot undo a migration; the backup is the recovery path.
+    subprocess.run(["bash", str(ROOT / "scripts/backup.sh")], check=True, cwd=ROOT)
+    approvals = {**load_approvals(store), **pending}
+    (store / "approved-migrations.json").write_text(json.dumps(approvals, indent=2) + "\n")
+    print("Approved:", *pending, sep="\n  ")
+
+
 def deploy(artifact, sha, state, store=STORE):
     release = store / "releases" / f"{sha}-{time.time_ns()}"
     previous = Path(state["active"])
@@ -91,8 +115,19 @@ def deploy(artifact, sha, state, store=STORE):
     candidate = release / "scripts/migrations"
     old = {p.name: p.read_bytes() for p in baseline.glob("*.sql")}
     new = {p.name: p.read_bytes() for p in candidate.glob("*.sql")}
-    if old != new:
-        raise ValueError("Migration changes require explicit compatibility preparation")
+    altered = sorted(n for n in old if new.get(n) != old[n])
+    if altered:
+        raise ValueError(f"Applied migrations edited or removed: {altered}")
+    approved = load_approvals(store)
+    unapproved = sorted(
+        n for n in new.keys() - old.keys()
+        if approved.get(n) != hashlib.sha256(new[n]).hexdigest()
+    )
+    if unapproved:
+        raise ValueError(
+            f"Unapproved migrations {unapproved}; review them, then run "
+            "scripts/deploy_release.py --approve-migrations"
+        )
     (release / ".venv").symlink_to(python.parent.parent, target_is_directory=True)
     (release / ".env").symlink_to(store / "runtime.env")
     try:
@@ -112,8 +147,12 @@ def save(state, store=STORE):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--approve-migrations", action="store_true")
     args = parser.parse_args()
     STORE.mkdir(parents=True, exist_ok=True)
+    if args.approve_migrations:
+        approve_migrations()
+        return
     if args.prepare:
         # Explicit preparation pins the runtime and private configuration.
         if (STORE / "deployment.json").exists():
