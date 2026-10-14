@@ -95,10 +95,11 @@ SCHEMA_REQUIRED_PCT = 0.95  # field required if present in >= 95% of rows.
 
 # (name, compiled_pattern, replacement) — derived from the single source in
 # app/redact_patterns.py (#57). Do not add literals here.
+# Counter key is the replacement label ("[REDACTED:openai_key]" -> "openai_key")
+# so the manifest's pii_substitutions stays readable.
 SCRUB_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
-    (f"{kind}_{i}", pat, repl)
-    for kind, patterns in (("secret", SECRET_PATTERNS), ("path", PATH_PATTERNS), ("pii", PII_PATTERNS))
-    for i, (pat, repl) in enumerate(patterns)
+    (re.sub(r"[\[\]]|REDACTED:", "", repl) or "redacted", pat, repl)
+    for pat, repl in SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS
 ]
 
 

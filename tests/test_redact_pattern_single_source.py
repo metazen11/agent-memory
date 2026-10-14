@@ -108,6 +108,18 @@ def test_single_source_covers_retired_restructure_scrubber(raw, leak):
     assert leak not in redact_text(raw)
 
 
+@pytest.mark.parametrize("text", [
+    "task-description-of-things-long-enough-here",
+    "risk-assessment-framework-document",
+    "PRIMARY_KEY=id",
+    "SORT_KEY: name",
+    "Bearer tokens are used",
+])
+def test_ordinary_text_is_not_redacted(text):
+    from app.redact import redact_text
+    assert redact_text(text) == text
+
+
 @pytest.mark.parametrize("raw,must_not_contain", [
     ("/Users/mz/_CODING/agentMemory/x.py", "/Users/mz"),
     ("/home/someone/proj/y.py", "/home/someone"),

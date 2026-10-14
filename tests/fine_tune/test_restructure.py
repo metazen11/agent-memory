@@ -27,56 +27,63 @@ def test_scrub_sk_token():
     c = Counter()
     out = scrub_string("here is sk-AbcDefGhi1234567890_AbcDefGhi end", c)
     assert "sk-" not in out
-    assert "<REDACTED_TOKEN>" in out
-    assert c["sk_token"] == 1
+    assert "[REDACTED:openai_key]" in out
+    assert c["openai_key"] == 1
 
 
 def test_scrub_bearer():
     c = Counter()
     out = scrub_string("Authorization: Bearer abc123xyz", c)
-    assert "Bearer abc123xyz" not in out
-    assert c["bearer"] == 1
+    assert "abc123xyz" not in out
+    assert c["bearer_token"] == 1
 
 
 def test_scrub_agent_memory_token():
     c = Counter()
     out = scrub_string('AGENT_MEMORY_TOKEN="secret123"', c)
     assert "secret123" not in out
-    assert c["agent_memory_token"] == 1
+    assert c["env_secret"] == 1
 
 
 def test_scrub_home_path():
     c = Counter()
     out = scrub_string("Read /Users/mz/Dropbox/file.py", c)
     assert "/Users/mz/" not in out
-    assert "/Users/<user>/Dropbox/file.py" in out
-    assert c["user_path"] == 1
+    assert "[REDACTED:home]/Dropbox/file.py" in out
+    assert c["home"] == 1
 
 
 def test_scrub_multiple_in_one_string():
     c = Counter()
-    out = scrub_string("call /Users/mz/x with Bearer xyz and sk-A1B2C3D4E5F6G7H8I9J0K1L2", c)
-    assert c["user_path"] == 1
-    assert c["bearer"] == 1
-    assert c["sk_token"] == 1
+    scrub_string("call /Users/mz/x with Bearer tok3n-xyz and sk-A1B2C3D4E5F6G7H8I9J0K1L2", c)
+    assert c["home"] == 1
+    assert c["bearer_token"] == 1
+    assert c["openai_key"] == 1
 
 
 def test_scrub_no_false_positive_on_short_sk():
     c = Counter()
     out = scrub_string("sk-short", c)  # < 20 chars, should NOT match
     assert out == "sk-short"
-    assert c["sk_token"] == 0
+    assert c["openai_key"] == 0
+
+
+def test_scrub_no_false_positive_on_kebab_words_ending_in_sk():
+    c = Counter()
+    s = "task-description-of-things-long-enough-here disk-usage-report-generator-v2"
+    assert scrub_string(s, c) == s
+    assert c["openai_key"] == 0
 
 
 def test_scrub_value_recurses_dicts_and_lists():
     c = Counter()
-    nested = {"a": ["Bearer xyz", {"b": "/Users/mz/x"}], "c": 42}
+    nested = {"a": ["Bearer tok3n-xyz", {"b": "/Users/mz/x"}], "c": 42}
     out = scrub_value(nested, c)
-    assert "Bearer xyz" not in str(out)
+    assert "tok3n-xyz" not in str(out)
     assert "/Users/mz/" not in str(out)
     assert out["c"] == 42  # non-string preserved
-    assert c["bearer"] == 1
-    assert c["user_path"] == 1
+    assert c["bearer_token"] == 1
+    assert c["home"] == 1
 
 
 # ---- Tool-call parsing -----------------------------------------------------

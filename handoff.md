@@ -34,6 +34,11 @@ the builder imports the same lists and on fallback applies every pattern
 ungated. Two copies became one — drift is now unrepresentable, not
 remembered. Swept repo-wide: exactly one definition of each list remains.
 
+SCOPE CHANGE: `fine-tune/restructure_to_qwen_tools.py` now applies every
+single-source pattern (secrets, paths, PII incl. email/SSN), not its old six;
+manifest `pii_substitutions` keys are now the redaction labels (`openai_key`,
+`home`, …). Re-generated datasets will differ from v5's.
+
 GUARDS: `tests/test_redact_pattern_single_source.py`, 9 tests, **seen RED
 first** (the fallback leaked `/Users/mz` verbatim). Covers config-free
 import, single-definition assertion, fallback scrubbing, and that
