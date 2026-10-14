@@ -4,43 +4,46 @@ The branching contract for this repo. It lives here — versioned, in the
 repo — so it reaches every machine and every agent that clones it, rather
 than living in one developer's `~/.claude/`.
 
-## Trunks
+## One trunk
 
-| Branch | Role | How it receives commits |
-|---|---|---|
-| `main` | production | **only** a reviewed PR from `dev` |
-| `dev` | integration | a feature PR with green `quality` and `integrity` checks |
+`main` is the only long-lived branch and is production. Every change lands
+as a **squash-merged pull request from a feature branch**. There is no `dev`,
+no promotion step, and no drift rule.
+
+This repo is not human-gated: a PR merges once CI, independent review and the
+auditor pass. A repo opts into a human gate by requiring approving reviews on
+`main`.
 
 ## Rules
 
-1. **Use a feature branch and PR to `dev`.** Never push directly to either trunk. `dev` reaches
-   `main` through a pull request. Review and green checks precede promotion.
-2. **Never let `dev` fall behind `main`.** If something reaches production
-   without passing through `dev`, the next `dev -> main` PR renders those
-   commits as **deletions** and silently reverts shipped work. Fix it the
-   moment you notice:
-   ```
-   git fetch origin
-   git switch -c codex/sync-trunks origin/dev
-   git merge origin/main
-   git push -u origin codex/sync-trunks
-   gh pr create --base dev --head codex/sync-trunks
-   ```
-3. **Don't promote red work.** A `dev -> main` PR merges only with CI green.
-4. **Verify the end state, not the action.** "I pushed it" is not "it landed".
-   Check the branch, the PR, the check.
+1. **Feature branch → squash PR to `main`.** Name it `work/issue-<n>-<slug>`
+   (or `codex/<slug>`); every change is anchored to a GitHub issue with
+   acceptance criteria. Never push directly to `main`.
+2. **The merge gate is all three of:**
+   - an **independent code review** (a separate context from the author),
+   - an **`aa_auditor` PASS** against the originating issue's acceptance
+     criteria, with evidence,
+   - the **`quality` and `integrity`** checks green.
+3. **Squash-only merges.** One commit per PR on `main`; checkpoint commits are
+   squashed away.
+4. **Every change to `main` auto-deploys** to the live checkout
+   (`scripts/deploy_live.sh`, see [docs/DELIVERY.md](docs/DELIVERY.md)). Don't
+   merge red or unreviewed work — it ships within minutes.
+5. **Verify the end state, not the action.** "I merged it" is not "it landed".
+   Check the PR, the checks, and the live `/api/health`.
 
-## Enforcement — four layers, by strength
+## Enforcement — layers, by strength
 
 | Layer | Where it runs | Bypassable? |
 |---|---|---|
-| **Branch protection** on `dev` and `main` | GitHub (server) | No — `enforce_admins` is on |
-| **`trunk-drift` workflow** | GitHub Actions | No — fails the check |
+| **Branch protection** on `main` | GitHub (server) | No — `enforce_admins` is on |
 | **`.githooks/pre-push`** | your machine | Yes: `ALLOW_PROTECTED_PUSH=1` (audited) |
 | **This document** | your eyes | Entirely |
 
-Only the top two travel automatically. The hook needs one command per clone
-(below); this file needs someone to read it.
+Only the top layer travels automatically. The hook needs one command per
+clone (below); this file needs someone to read it. `.reconcile-gate.json`
+tells the agent-side `reconcile-gate` hook that feature → `main` PRs are
+allowed in this repo.
 
 ## Setup — once per MACHINE
 
@@ -76,7 +79,7 @@ Git deliberately refuses to let a cloned repo activate its own hooks — that
 would execute a stranger's code the moment you clone. The template inverts
 that safely: *you* install it once, locally, and it then applies your choice
 to your own clones. There is no way to remove the step entirely, which is
-exactly why the two server-side layers above carry the real weight.
+exactly why the server-side layer above carries the real weight.
 
 ## Emergencies
 
@@ -89,4 +92,4 @@ regularly, the contract is wrong; fix the contract, not the push.
 
 See [docs/DELIVERY.md](docs/DELIVERY.md) for the required CI checks, disposable
 integration stage, exact-commit release artifacts, local production CD, and
-rollback contract. Main promotion requires `quality`, `integrity`, and `drift`.
+rollback contract. Merging to `main` requires `quality` and `integrity`.

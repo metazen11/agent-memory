@@ -6,10 +6,7 @@
 # server-side half and the one that actually cannot be bypassed. This hook
 # exists to fail FAST with a useful message, before a push round-trips.
 #
-# Refuses:
-#   1. any direct push to the production trunk (main/master)
-#   2. a push to the integration trunk while it is BEHIND production
-#      (the drift that makes the next dev->main PR read as deletions)
+# Refuses: any direct push to the production trunk (main/master).
 #
 # Override (audited, for genuine emergencies):
 #   ALLOW_PROTECTED_PUSH=1 git push ...
@@ -21,11 +18,6 @@ for b in main master; do
     if git show-ref --verify --quiet "refs/remotes/origin/$b"; then remote_ref_prod="$b"; break; fi
 done
 [ -z "$remote_ref_prod" ] && exit 0   # no production trunk; nothing to protect
-
-integration=""
-for b in dev develop; do
-    if git show-ref --verify --quiet "refs/remotes/origin/$b"; then integration="$b"; break; fi
-done
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha>
 while read -r _lref _lsha rref _rsha; do
@@ -41,39 +33,20 @@ while read -r _lref _lsha rref _rsha; do
 
   ✗ pre-push REFUSED: direct push to '$target'.
 
-    '$target' is the production trunk. It receives commits ONLY through a
-    reviewed pull request from the integration trunk ('${integration:-dev}').
+    '$target' is the only trunk. It receives commits ONLY through a squash
+    pull request from a feature branch (independent review + auditor PASS +
+    green CI).
 
     Instead:
-      git push origin ${integration:-dev}
-      gh pr create --base $target --head ${integration:-dev}
+      git switch -c work/<topic>
+      git push -u origin work/<topic>
+      gh pr create --base $target --head work/<topic>
 
     GitHub branch protection will refuse this push too — this hook just
     tells you sooner. Genuine emergency: ALLOW_PROTECTED_PUSH=1 git push ...
 
 MSG
         exit 1
-    fi
-
-    # Pushing the integration trunk while it is behind production => drift.
-    if [ -n "$integration" ] && [ "$target" = "$integration" ]; then
-        behind=$(git rev-list --count "origin/$integration..origin/$remote_ref_prod" 2>/dev/null || echo 0)
-        if [ "${behind:-0}" -gt 0 ]; then
-            cat >&2 <<MSG
-
-  ⚠ pre-push WARNING: '$integration' is $behind commit(s) BEHIND '$remote_ref_prod'.
-
-    Work reached production without passing through the integration trunk.
-    Your next $integration -> $remote_ref_prod PR will show those commits as
-    DELETIONS, silently reverting them.
-
-    Fix before promoting:
-      git fetch origin && git merge origin/$remote_ref_prod
-
-    (Not blocking this push.)
-
-MSG
-        fi
     fi
 done
 

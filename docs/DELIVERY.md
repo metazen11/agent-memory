@@ -1,9 +1,10 @@
 # CI/CD and enrichment contract
 
-Delivery follows `codex/* -> dev -> main`. Both PRs require `quality` and
-`integrity`; promotion to main also requires `drift`. GitHub protection enforces
+Delivery follows `feature branch -> main` (single trunk, squash-only). The PR
+requires `quality` and `integrity`, an independent code review, and an
+`aa_auditor` PASS against the originating issue. GitHub protection enforces the
 named checks with up-to-date branches and applies to administrators. Review
-happens before testing; authorization to promote is recorded in the task.
+happens before testing.
 
 `ci-quality.yml` uses a disposable PostgreSQL/pgvector service and an isolated
 API. It runs changed-file Ruff with versioned explicit rules, Python/Node syntax checks, and the complete test
@@ -12,6 +13,18 @@ remote Python execution and proprietary model credentials. Anvil and Anthropic
 are disabled in CI; subprocess failure tests exercise their adapter boundary.
 Successful push runs package the exact tested commit with SHA/checksum manifest.
 PR runs cannot publish releases or access host credentials.
+
+## Live checkout auto-deploy
+
+Every change to `main` also reaches the live checkout (`~/_CODING/agentMemory-live`,
+override with `LIVE_DIR`). `scripts/deploy_live.sh` runs every 300 s under launchd
+(`com.metazen.agent-memory-deploy`, installed by
+`python scripts/install_deploy_schedule.py`; `--uninstall` removes it). When
+`origin/main` differs from the live HEAD it detach-checks-out the new SHA, restarts
+`com.metazen.agent-memory-server`, and waits up to 60 s for `scripts/wait_for_health.py`
+(database + embeddings ok). On failure it restores the previous SHA, restarts, and
+exits 1. Before/after SHAs and rollbacks are logged with UTC timestamps to
+`~/.agent-memory/logs/deploy.log`. It is a no-op when already up to date.
 
 ## Local production delivery
 
