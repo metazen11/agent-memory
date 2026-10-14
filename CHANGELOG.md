@@ -8,8 +8,10 @@
   gated by independent review + auditor PASS + `quality`/`integrity`.
   `.reconcile-gate.json` allows feature->main PRs; `.githooks/pre-push` still
   refuses direct pushes to `main`.
-- Auto-deploy: `scripts/deploy_live.sh` (health-checked, rolls back on failure)
-  scheduled every 5 min by `scripts/install_deploy_schedule.py`.
+- New `agent-gate.yml` (PR needs `review: APPROVE <sha>` + `audit: PASS <sha>`
+  comments for the current head) and `protection-drift.yml` (daily assert of
+  `main` protection). DELIVERY/CONTRIBUTING: the live service must run from
+  the `deploy_release.py` releases dir; one-time bootstrap documented.
 
 ### Security
 - Lesson text injected into model context is now sanitized and delimited (#89).

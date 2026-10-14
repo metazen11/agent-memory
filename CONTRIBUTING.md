@@ -24,11 +24,22 @@ auditor pass. A repo opts into a human gate by requiring approving reviews on
    - an **`aa_auditor` PASS** against the originating issue's acceptance
      criteria, with evidence,
    - the **`quality` and `integrity`** checks green.
+
+   The reviewer and auditor steps post their evidence as PR comments, one
+   literal line each, naming the CURRENT head SHA (the `agent-gate` check
+   verifies them; evidence for an older SHA does not count):
+
+   ```
+   review: APPROVE <head_sha>
+   audit: PASS <head_sha>
+   ```
 3. **Squash-only merges.** One commit per PR on `main`; checkpoint commits are
    squashed away.
-4. **Every change to `main` auto-deploys** to the live checkout
-   (`scripts/deploy_live.sh`, see [docs/DELIVERY.md](docs/DELIVERY.md)). Don't
-   merge red or unreviewed work — it ships within minutes.
+4. **Every change to `main` auto-deploys** through the artifact deployer
+   (`scripts/deploy_release.py`: green push CI, checksum, rollback). The live
+   service MUST run from the releases dir it produces, never from a git
+   checkout — see [docs/DELIVERY.md](docs/DELIVERY.md) for the one-time
+   bootstrap. Don't merge red or unreviewed work.
 5. **Verify the end state, not the action.** "I merged it" is not "it landed".
    Check the PR, the checks, and the live `/api/health`.
 
@@ -42,8 +53,10 @@ auditor pass. A repo opts into a human gate by requiring approving reviews on
 
 Only the top layer travels automatically. The hook needs one command per
 clone (below); this file needs someone to read it. `.reconcile-gate.json`
-tells the agent-side `reconcile-gate` hook that feature → `main` PRs are
-allowed in this repo.
+is the positive opt-in the agent-side `reconcile-gate` hook reads from
+`origin/main`; it is **required, not optional** — without it feature → `main`
+PRs are refused for agents. The `protection-drift` workflow checks daily that
+the server-side layer has not been loosened.
 
 ## Setup — once per MACHINE
 

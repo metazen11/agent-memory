@@ -42,8 +42,8 @@ chat datasets.
 ## Branching contract
 
 This repo has one trunk, `main`. Feature branches land via squash PR once CI,
-independent review and the auditor pass; every merge auto-deploys to the live
-checkout. Direct pushes to `main` are refused.
+independent review and the auditor pass; every merge auto-deploys via the
+artifact deployer (docs/DELIVERY.md). Direct pushes to `main` are refused.
 
 **One-time setup, per machine** (not per clone):
 

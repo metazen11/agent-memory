@@ -14,19 +14,22 @@ are disabled in CI; subprocess failure tests exercise their adapter boundary.
 Successful push runs package the exact tested commit with SHA/checksum manifest.
 PR runs cannot publish releases or access host credentials.
 
-## Live checkout auto-deploy
+Two extra gates support the single trunk:
 
-Every change to `main` also reaches the live checkout (`~/_CODING/agentMemory-live`,
-override with `LIVE_DIR`). `scripts/deploy_live.sh` runs every 300 s under launchd
-(`com.metazen.agent-memory-deploy`, installed by
-`python scripts/install_deploy_schedule.py`; `--uninstall` removes it). When
-`origin/main` differs from the live HEAD it detach-checks-out the new SHA, restarts
-`com.metazen.agent-memory-server`, and waits up to 60 s for `scripts/wait_for_health.py`
-(database + embeddings ok). On failure it restores the previous SHA, restarts, and
-exits 1. Before/after SHAs and rollbacks are logged with UTC timestamps to
-`~/.agent-memory/logs/deploy.log`. It is a no-op when already up to date.
+- `agent-gate.yml` (job `agent-gate`) passes only when the PR carries comments
+  `review: APPROVE <head_sha>` and `audit: PASS <head_sha>` for the CURRENT head
+  SHA; evidence for an older SHA does not count. Whether it is a *required* check
+  is a branch-protection setting, not set by the workflow.
+- `protection-drift.yml` runs daily and fails if `main` protection loses
+  `enforce_admins`, linear history, force-push denial, or the required checks
+  `quality` + `integrity`.
 
 ## Local production delivery
+
+**The live service MUST run from the releases directory produced by
+`deploy_release.py`, never from a git checkout.** A checkout-backed service has
+unpinned dependencies and bypasses the green-CI, checksum, lock, migration-approval
+and rollback checks below.
 
 This public repo has no self-hosted Actions runner. A trusted macOS login service
 polls every 120 seconds for a successful **push** run of `ci-quality.yml` on the
@@ -36,12 +39,19 @@ never runs the editable coding checkout after first promotion. Python dependenci
 are reused from the prepared host virtualenv; credentials live in private
 `runtime.env` (mode 0600), outside Git and artifacts.
 
-Preparation and installation, from the coding checkout:
+One-time bootstrap, from a coding checkout at current `main` (use a working
+Python 3.12 venv; `.venv-finetune` on this Mac):
 
 ```sh
-.venv/bin/python scripts/deploy_release.py --prepare
-.venv/bin/python scripts/install_delivery_service.py
+.venv-finetune/bin/python scripts/deploy_release.py --prepare
+.venv-finetune/bin/python scripts/install_delivery_service.py
 ```
+
+Then verify the end state: `launchctl list | grep agent-memory`, the service's
+program path is under `~/.local/share/agent-memory/releases/`, and
+`curl -s http://127.0.0.1:3377/api/health` reports the `release_sha` of `main`.
+Retire any older checkout-backed job (e.g. one running `~/_CODING/agentMemory-live`)
+so only the release-backed API owns the port.
 
 The controller is copied outside the checkout so later source edits cannot change
 its behavior. Reinstall it after an intentional controller update. The GitHub CLI
