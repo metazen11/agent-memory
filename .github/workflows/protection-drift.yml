@@ -33,6 +33,14 @@ jobs:
           check "enforce_admins on"             '.enforce_admins.enabled == true'
           check "required_linear_history on"    '.required_linear_history.enabled == true'
           check "allow_force_pushes off"        '.allow_force_pushes.enabled == false'
-          check "required checks == [quality, integrity]" \
-                '([.required_status_checks.checks[]?.context] + (.required_status_checks.contexts // []) | unique | sort) == ["integrity","quality"]'
+          check "allow_deletions off"           '.allow_deletions.enabled == false'
+          check "required checks strict (up to date)" '.required_status_checks.strict == true'
+          check "required checks == [agent-gate, integrity, quality]" \
+                '([.required_status_checks.checks[]?.context] + (.required_status_checks.contexts // []) | unique | sort) == ["agent-gate","integrity","quality"]'
+          r=$(gh api "repos/$REPO")
+          rcheck() {
+            if [ "$(echo "$r" | jq -r "$2")" = false ]; then echo "OK: $1"; else echo "::error::DRIFT: $1"; fail=1; fi
+          }
+          rcheck "merge commits disallowed" '.allow_merge_commit'
+          rcheck "rebase merge disallowed"  '.allow_rebase_merge'
           exit $fail

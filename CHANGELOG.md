@@ -8,8 +8,10 @@
   gated by independent review + auditor PASS + `quality`/`integrity`.
   `.reconcile-gate.json` allows feature->main PRs; `.githooks/pre-push` still
   refuses direct pushes to `main`.
-- New `agent-gate.yml` (PR needs `review: APPROVE <sha>` + `audit: PASS <sha>`
-  comments for the current head) and `protection-drift.yml` (daily assert of
+- `install_delivery_service.py` runs the controller under `sys.executable`
+  instead of a hard-coded `ROOT/.venv`.
+- New `agent-gate.yml` (commit status from `scripts/agent_gate.js`; needs
+  `review: APPROVE <sha>` + `audit: PASS <sha>` comments for the current head) and `protection-drift.yml` (daily assert of
   `main` protection). DELIVERY/CONTRIBUTING: the live service must run from
   the `deploy_release.py` releases dir; one-time bootstrap documented.
 

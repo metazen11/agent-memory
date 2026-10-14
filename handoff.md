@@ -104,7 +104,7 @@ proven-working personal WFCAMZ.
 ## Contract reminder
 
 Single trunk: feature branch → squash PR to `main` (CI + independent review +
-auditor PASS; auto-deploys to the live checkout, #94). Never push `main`
+auditor PASS; auto-deploys to the releases dir via deploy_release.py, #94). Never push `main`
 directly (`enforce_admins=true`, so admin pushes are rejected, not
 silently allowed). No `Co-Authored-By` / "Generated with" / robot emoji in
 commits — a pre-push hook blocks them (§6).

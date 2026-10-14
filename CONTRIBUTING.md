@@ -25,14 +25,26 @@ auditor pass. A repo opts into a human gate by requiring approving reviews on
      criteria, with evidence,
    - the **`quality` and `integrity`** checks green.
 
-   The reviewer and auditor steps post their evidence as PR comments, one
-   literal line each, naming the CURRENT head SHA (the `agent-gate` check
-   verifies them; evidence for an older SHA does not count):
+   The reviewer and auditor steps post their evidence as PR **issue comments**,
+   one literal line each, naming the CURRENT head SHA:
 
    ```
    review: APPROVE <head_sha>
    audit: PASS <head_sha>
    ```
+
+   The `agent-gate` workflow (runs from `main` via `pull_request_target`, so a PR
+   cannot edit its own gate; logic in `scripts/agent_gate.js`) posts the commit
+   status `agent-gate`. Matching is an exact trimmed-line match; quoted lines and
+   lines inside fenced code blocks are ignored; only OWNER/MEMBER/COLLABORATOR
+   comments count; a new push changes the SHA and so invalidates old evidence.
+   PR review bodies are **not** read — only issue comments.
+
+   **Accepted risk (self-certification):** the owner identity and the agent token
+   are the same, so `agent-gate` verifies the evidence lines are *present*, not
+   who or what wrote them. The orchestrating agent posts the two lines quoting
+   both verdict reports (reviewer and auditor) verbatim in the same comment.
+   This is a deliberate trade-off for a non-human-gated repo.
 3. **Squash-only merges.** One commit per PR on `main`; checkpoint commits are
    squashed away.
 4. **Every change to `main` auto-deploys** through the artifact deployer
@@ -55,7 +67,9 @@ Only the top layer travels automatically. The hook needs one command per
 clone (below); this file needs someone to read it. `.reconcile-gate.json`
 is the positive opt-in the agent-side `reconcile-gate` hook reads from
 `origin/main`; it is **required, not optional** — without it feature → `main`
-PRs are refused for agents. The `protection-drift` workflow checks daily that
+PRs are refused for agents. It keeps the legacy `allowed` form for now and
+switches to `{"model":"single-trunk"}` once agent-hooks PR #24 ships (the hook
+treats both as equivalent). The `protection-drift` workflow checks daily that
 the server-side layer has not been loosened.
 
 ## Setup — once per MACHINE

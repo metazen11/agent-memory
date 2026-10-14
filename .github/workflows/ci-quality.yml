@@ -56,6 +56,8 @@ jobs:
           BASE: ${{ github.base_ref }}
         run: |
           python scripts/ci_gate.py
+      - name: Agent-gate verdict logic
+        run: node --test tests/agent_gate.test.js
       - name: Start disposable integration stage
         run: |
           printf 'DATABASE_URL=%s\nALLOW_TRUST_AUTH=true\n' "$DATABASE_URL" > .env

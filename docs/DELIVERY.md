@@ -16,13 +16,15 @@ PR runs cannot publish releases or access host credentials.
 
 Two extra gates support the single trunk:
 
-- `agent-gate.yml` (job `agent-gate`) passes only when the PR carries comments
+- `agent-gate.yml` (`pull_request_target` + `issue_comment`, no PR checkout) posts
+  the commit status `agent-gate`: success only when issue comments carry
   `review: APPROVE <head_sha>` and `audit: PASS <head_sha>` for the CURRENT head
-  SHA; evidence for an older SHA does not count. Whether it is a *required* check
-  is a branch-protection setting, not set by the workflow.
+  SHA (`scripts/agent_gate.js`, unit-tested in CI). It becomes a required check
+  via branch protection after this workflow is on `main`.
 - `protection-drift.yml` runs daily and fails if `main` protection loses
-  `enforce_admins`, linear history, force-push denial, or the required checks
-  `quality` + `integrity`.
+  `enforce_admins`, linear history, strict checks, force-push/deletion denial, or
+  required checks `agent-gate`, `integrity`, `quality`, or if the repo allows
+  merge commits or rebase merges.
 
 ## Local production delivery
 
@@ -39,19 +41,29 @@ never runs the editable coding checkout after first promotion. Python dependenci
 are reused from the prepared host virtualenv; credentials live in private
 `runtime.env` (mode 0600), outside Git and artifacts.
 
-One-time bootstrap, from a coding checkout at current `main` (use a working
-Python 3.12 venv; `.venv-finetune` on this Mac):
+One-time bootstrap, from a coding checkout at current `main`. The delivery
+controller runs under whichever interpreter runs the installer
+(`sys.executable`), so use a working Python 3.12 venv (`.venv-finetune` on this Mac):
 
 ```sh
 .venv-finetune/bin/python scripts/deploy_release.py --prepare
 .venv-finetune/bin/python scripts/install_delivery_service.py
 ```
 
-Then verify the end state: `launchctl list | grep agent-memory`, the service's
-program path is under `~/.local/share/agent-memory/releases/`, and
-`curl -s http://127.0.0.1:3377/api/health` reports the `release_sha` of `main`.
-Retire any older checkout-backed job (e.g. one running `~/_CODING/agentMemory-live`)
-so only the release-backed API owns the port.
+**Replacing the checkout-backed API on :3377.** The release-backed API is launchd
+job `com.metazen.agent-memory-api` (installed by the first deploy); the old
+checkout-backed job is `com.metazen.agent-memory-server` (runs
+`~/_CODING/agentMemory-live`). Both bind :3377, so retire the old one first:
+
+1. `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.metazen.agent-memory-server.plist`
+2. Move that plist out of `~/Library/LaunchAgents/` (so it cannot reload at login).
+3. Let the delivery controller deploy (next 120 s poll, or run
+   `.venv-finetune/bin/python scripts/deploy_release.py` once), which loads
+   `com.metazen.agent-memory-api` from the release.
+4. Verify: `launchctl list | grep agent-memory` shows `-api`, not `-server`; its
+   program path is under `~/.local/share/agent-memory/releases/`; and
+   `curl -s http://127.0.0.1:3377/api/health` reports `release_sha` equal to
+   `git rev-parse origin/main`.
 
 The controller is copied outside the checkout so later source edits cannot change
 its behavior. Reinstall it after an intentional controller update. The GitHub CLI
