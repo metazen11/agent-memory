@@ -55,6 +55,13 @@ def test_exactly_one_definition_of_each_pattern_list():
         assert len(hits) == 1, f"{name} defined {len(hits)}x (must be 1):\n" + "\n".join(hits)
 
 
+def test_redaction_labels_are_unique():
+    """fine-tune/restructure_to_qwen_tools.py keys its counters on the label."""
+    from app.redact_patterns import SECRET_PATTERNS, PATH_PATTERNS, PII_PATTERNS
+    labels = [repl for _, repl in SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS]
+    assert len(labels) == len(set(labels)), sorted(l for l in labels if labels.count(l) > 1)
+
+
 def test_no_stray_home_path_regex_outside_pattern_module():
     """A renamed or reshaped copy evades the name check; the regex literal can't.
 
@@ -100,9 +107,10 @@ def test_dataset_builder_fallback_scrubs_home_paths(monkeypatch):
     ("Authorization: Bearer eyJabc.def.ghi", "eyJabc"),
     ("AGENT_MEMORY_TOKEN=abc123def456", "abc123def456"),
     ("export FOO_API_KEY: zzz-top", "zzz-top"),
+    ("SECRET_KEY=django-insecure-abc", "django-insecure"),
     ("xoxb-123-456-abc", "xoxb-123"),
     ("ghp_" + "A" * 36, "ghp_"),
-], ids=["sk_short", "bearer_short", "agent_memory_token", "env_api_key", "slack", "github"])
+], ids=["sk_short", "bearer_short", "agent_memory_token", "env_api_key", "bare_secret_key", "slack", "github"])
 def test_single_source_covers_retired_restructure_scrubber(raw, leak):
     from app.redact import redact_text
     assert leak not in redact_text(raw)

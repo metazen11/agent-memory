@@ -18,6 +18,7 @@ SECRET_PATTERNS = [
     # 20+ (not 48+): project keys, short legacy keys and the fine-tune
     # restructure scrubber's old copy all used the shorter floor (#57 sweep).
     # Left boundary: without it "task-…"/"risk-…" kebab slugs of 20+ chars match.
+    # Tradeoff: a key glued on with - or _ ("foo_sk-…") is skipped too.
     (re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}"), "[REDACTED:openai_key]"),
     (re.compile(r"hf_[A-Za-z0-9]{30,}"), "[REDACTED:hf_token]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws_key]"),
@@ -41,7 +42,8 @@ SECRET_PATTERNS = [
     # Value shape is unknown, so key the match on the NAME, like password=.
     (
         # Bare _KEY is excluded: PRIMARY_KEY=id / SORT_KEY: name are not secrets.
-        re.compile(r"\b[A-Z][A-Z0-9_]*(?:_TOKEN|_SECRET|_API_KEY|_SECRET_KEY|_ACCESS_KEY|_PASSWORD)\s*[=:]\s*\S+"),
+        # Prefix optional so bare SECRET_KEY= (Django/Flask) / API_KEY= are caught.
+        re.compile(r"\b(?:[A-Z][A-Z0-9_]*_)?(?:TOKEN|SECRET|API_KEY|SECRET_KEY|ACCESS_KEY|PASSWORD)\s*[=:]\s*\S+"),
         "[REDACTED:env_secret]",
     ),
     (
