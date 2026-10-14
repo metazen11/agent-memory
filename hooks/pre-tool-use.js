@@ -3,10 +3,14 @@
  * agent-memory PreToolUse hook — Lessons system
  *
  * Checks active lessons before Edit|Write|Bash|NotebookEdit operations.
- * If matching lessons are found, injects them as a systemMessage warning.
+ * If matching lessons are found, injects them into the model's context.
  *
  * stdin: JSON { tool_name, tool_input, session_id, cwd }
- * stdout: JSON { systemMessage?: string } or {}
+ * stdout: JSON { hookSpecificOutput?: { hookEventName, additionalContext }, systemMessage? } or {}
+ *
+ * Claude Code shows `systemMessage` to the USER only — it never reaches the
+ * model. Lessons must ride `hookSpecificOutput.additionalContext`;
+ * `systemMessage` is kept alongside purely so the user sees the hint too.
  *
  * Timeout: 2s (must be fast — no embeddings, just regex + index lookup)
  * Set AGENT_MEMORY_DEBUG=1 for verbose stderr logging.
@@ -46,6 +50,12 @@ function readStdin() {
     debug('Failed to parse stdin');
     return null;
   }
+}
+
+function modelContext(text, userVisible = false) {
+  const out = { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } };
+  if (userVisible) out.systemMessage = text;
+  return out;
 }
 
 function output(obj) {
@@ -262,9 +272,9 @@ const sessionId = input.session_id || '';
   if (!Array.isArray(matches) || matches.length === 0) {
     debug('No lesson matches');
     if (shouldEmitEmptyReminder(sessionId)) {
-      output({
-        systemMessage: 'agent-memory: no active lessons match this tool call. For recent project context, call the `search` skill (semantic+text search of past observations) or `timeline` (context window around an anchor). Pass `project="<cwd>"`.',
-      });
+      output(modelContext(
+        'agent-memory: no active lessons match this tool call. For recent project context, call the `search` skill (semantic+text search of past observations) or `timeline` (context window around an anchor). Pass `project="<cwd>"`.'
+      ));
     } else {
       output({});
     }
@@ -288,5 +298,5 @@ const sessionId = input.session_id || '';
     trackTrigger(lesson.id);
   }
 
-  output({ systemMessage });
+  output(modelContext(systemMessage, true));
 })();

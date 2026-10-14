@@ -44,8 +44,17 @@ A process lock prevents concurrent deployments. Failed deployments are retried
 on the next poll, while the previous release remains the recorded active one.
 
 Dependency or SQL migration changes fail closed before production activation:
-a matching prepared runtime and an explicit migration compatibility plan are
-required. Rollback cannot undo an irreversible database migration. The initial
+a matching prepared runtime is required, and editing or removing an applied
+migration is always refused. A release that adds migrations deploys only after
+the operator reviews them and runs, from a checkout at the target `main`:
+
+```sh
+.venv/bin/python scripts/deploy_release.py --approve-migrations
+```
+
+This takes a `scripts/backup.sh` dump, then pins each new migration's SHA-256 in
+`approved-migrations.json`; changed content needs re-approval. Rollback cannot
+undo an irreversible database migration; the dump is the recovery path. The initial
 bootstrap release is a committed snapshot, preserving a stable rollback target.
 Application startup now fails if migrations fail, rather than serving a partially
 migrated database. Anthropic billing degradation does not block durable capture

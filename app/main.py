@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.anvil_enrichment import close_warm_bridges
 from app.config import settings
 from app.db import close_pool, get_pool, init_pool
 from app.migrate import run_migrations_with_pool
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("agent-memory shutting down")
     stop_worker()
+    await close_warm_bridges()
     await close_pool()
 
 

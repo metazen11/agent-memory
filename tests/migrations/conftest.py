@@ -31,7 +31,6 @@ Environment knobs
   default).
 """
 
-import asyncio
 import os
 import secrets
 from typing import AsyncIterator
@@ -102,3 +101,28 @@ async def throwaway_db(request) -> AsyncIterator[str]:
             )
         finally:
             await admin.close()
+
+
+async def apply_migrations_before(dsn: str, version: int) -> None:
+    """Apply only migrations numbered below ``version`` (e.g. 19 -> 001..018).
+
+    Lets a test seed rows that pre-date a migration, then run the rest with
+    ``app.migrate.run_migrations``.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    import app.migrate as migrate
+
+    staging = Path(tempfile.mkdtemp(prefix=f"pre{version:03d}-"))
+    original = migrate.MIGRATIONS_DIR
+    try:
+        for f in original.glob("*.sql"):
+            if int(f.name.split("-", 1)[0]) < version:
+                (staging / f.name).write_text(f.read_text())
+        migrate.MIGRATIONS_DIR = staging
+        await migrate.run_migrations(dsn)
+    finally:
+        migrate.MIGRATIONS_DIR = original
+        shutil.rmtree(staging)

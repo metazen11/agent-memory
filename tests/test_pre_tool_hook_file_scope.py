@@ -41,6 +41,12 @@ def _run_hook(payload: dict) -> dict:
     return json.loads(proc.stdout or "{}")
 
 
+def _model_context(out: dict) -> str:
+    """Text that reaches the MODEL. Claude Code shows ``systemMessage`` only to
+    the user; lessons must ride ``hookSpecificOutput.additionalContext``."""
+    return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
+
+
 def _fresh_session() -> str:
     # The hook emits its "no lessons matched" reminder only once per
     # session_id, so every case needs its own id to stay deterministic.
@@ -129,7 +135,7 @@ def test_edit_absolute_path_delivers_file_scope_lesson(file_scope_lesson):
             "new_string": "b",
         },
     })
-    assert file_scope_lesson["marker"] in out.get("systemMessage", ""), (
+    assert file_scope_lesson["marker"] in _model_context(out), (
         "file_scope lesson did not reach the hook — pre-tool-use.js is "
         "probably querying only trigger_on='input' again"
     )
@@ -148,7 +154,7 @@ def test_bash_command_delivers_file_scope_lesson(file_scope_lesson):
         "tool_name": "Bash",
         "tool_input": {"command": f"sed -i s/a/b/ {file_scope_lesson['filename']}"},
     })
-    assert file_scope_lesson["marker"] in out.get("systemMessage", "")
+    assert file_scope_lesson["marker"] in _model_context(out)
 
 
 @pytest.mark.parametrize("file_scope_lesson", [".mcp.json"], indirect=True)
@@ -160,7 +166,7 @@ def test_dotfile_keeps_leading_dot_in_bash_extraction(file_scope_lesson):
         "tool_name": "Bash",
         "tool_input": {"command": "sed -i s/a/b/ .mcp.json"},
     })
-    msg = out.get("systemMessage", "")
+    msg = _model_context(out)
     # Use an owned fixture; a fresh CI database has no operator lesson 48.
     assert file_scope_lesson["marker"] in msg
     assert "CLAUDE_PLUGIN_ROOT" in msg, (
@@ -180,4 +186,4 @@ def test_unrelated_file_does_not_match(file_scope_lesson):
             "new_string": "b",
         },
     })
-    assert file_scope_lesson["marker"] not in out.get("systemMessage", "")
+    assert file_scope_lesson["marker"] not in _model_context(out)
