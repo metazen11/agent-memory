@@ -3,13 +3,16 @@
 // so a PR cannot edit its own gate. Fails closed on any malformed input.
 const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
-// Lines of a comment that are not inside a fenced code block, trimmed.
+// Lines that render as plain text: HTML comments stripped (an unclosed one hides
+// the rest), fenced blocks skipped (an unclosed fence swallows the rest). Only
+// trailing whitespace is trimmed — an indented line renders as code, so it fails.
 function liveLines(body) {
   const out = [];
   let fenced = false;
-  for (const raw of body.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (/^(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+  const visible = body.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--[\s\S]*$/, '');
+  for (const raw of visible.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (/^(```|~~~)/.test(line.trimStart())) { fenced = !fenced; continue; }
     if (!fenced) out.push(line);
   }
   return out;

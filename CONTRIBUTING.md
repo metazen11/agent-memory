@@ -40,6 +40,10 @@ auditor pass. A repo opts into a human gate by requiring approving reviews on
    comments count; a new push changes the SHA and so invalidates old evidence.
    PR review bodies are **not** read — only issue comments.
 
+   **Bootstrap:** `agent-gate` runs from `main`, so it is added to the required
+   checks only AFTER the PR that introduces it merges; `protection-drift` reads
+   red until then.
+
    **Accepted risk (self-certification):** the owner identity and the agent token
    are the same, so `agent-gate` verifies the evidence lines are *present*, not
    who or what wrote them. The orchestrating agent posts the two lines quoting

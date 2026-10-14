@@ -47,3 +47,21 @@ test('fails closed on bad input', () => {
   assert.strictEqual(evaluate([both(SHA)], '').pass, false);
   assert.strictEqual(evaluate([{ body: null }], SHA).pass, false);
 });
+
+test('indented line does not count (renders as code)', () => {
+  assert.strictEqual(evaluate([c(`    review: APPROVE ${SHA}\n  audit: PASS ${SHA}`)], SHA).pass, false);
+});
+
+test('line inside an HTML comment does not count', () => {
+  const body = `<!--\nreview: APPROVE ${SHA}\n-->\naudit: PASS ${SHA}`;
+  assert.strictEqual(evaluate([c(body)], SHA).pass, false);
+  assert.strictEqual(evaluate([c(`<!-- review: APPROVE ${SHA}\naudit: PASS ${SHA}`)], SHA).pass, false);
+});
+
+test('CRLF and trailing whitespace pass', () => {
+  assert.strictEqual(evaluate([c(`review: APPROVE ${SHA}  \r\naudit: PASS ${SHA}\t\r\n`)], SHA).pass, true);
+});
+
+test('unclosed fence swallows the rest', () => {
+  assert.strictEqual(evaluate([c(`\`\`\`\nreview: APPROVE ${SHA}\naudit: PASS ${SHA}`)], SHA).pass, false);
+});
