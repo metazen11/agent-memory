@@ -2,9 +2,9 @@
 
 from app.config import settings
 from app.redact_patterns import (
-    SECRET_PATTERNS,
     PATH_PATTERNS,
     PII_PATTERNS,
+    SECRET_PATTERNS,
 )
 
 __all__ = [

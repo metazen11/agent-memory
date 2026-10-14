@@ -20,7 +20,6 @@ from restructure_to_qwen_tools import (  # noqa: E402
     scrub_value,
 )
 
-
 # ---- PII scrub -------------------------------------------------------------
 
 def test_scrub_sk_token():

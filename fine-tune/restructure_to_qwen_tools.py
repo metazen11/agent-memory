@@ -45,7 +45,6 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
-import os
 import random
 import re
 import subprocess
@@ -71,7 +70,12 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-from app.redact_patterns import PATH_PATTERNS, PII_PATTERNS, SECRET_PATTERNS  # noqa: E402
+from app.redact_patterns import (  # noqa: E402
+    PATH_PATTERNS,
+    PII_PATTERNS,
+    SECRET_PATTERNS,
+)
+
 INPUT_DIR = REPO_ROOT / "data" / "processed" / "fine_tune_blend"
 OUTPUT_DIR = REPO_ROOT / "data" / "processed" / "qwen25_tools" / "v1"
 
@@ -366,7 +370,7 @@ def restructure_row(
             # Validate against schema
             try:
                 validators[tool_name].validate(scrubbed_args)
-            except jsonschema.ValidationError as e:
+            except jsonschema.ValidationError:
                 return None, f"schema_validation_failed:{tool_name}"
 
             messages.append(
@@ -485,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     pii_counts: Counter = Counter()
     rejection_counts: Counter = Counter()
 
-    print(f"[2/4] Restructuring rows...")
+    print("[2/4] Restructuring rows...")
     train_in_n, train_kept_n, train_rows = process_split(
         train_in, output_dir / "train.chat.jsonl",
         validators, tool_schemas, pii_counts, rejection_counts,
@@ -532,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(tool_schemas, f, sort_keys=True, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    print(f"[4/4] Writing manifest")
+    print("[4/4] Writing manifest")
     manifest = {
         "script": "fine-tune/restructure_to_qwen_tools.py",
         "git_commit": get_git_commit(),

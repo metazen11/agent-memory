@@ -40,9 +40,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "fine_tune"))
 
 from v5_schema import (  # noqa: E402
-    V5Row, ToolTurn, render_jsonl_line,
-    normalize_path_string, normalize_json_paths,
-    UNKNOWN_PROJECT, TRUSTED_ROOT_TOKEN, LOCAL_WORKSPACE_PREFIXES,
+    LOCAL_WORKSPACE_PREFIXES,
+    TRUSTED_ROOT_TOKEN,
+    UNKNOWN_PROJECT,
+    ToolTurn,
+    V5Row,
+    normalize_json_paths,
+    normalize_path_string,
+    render_jsonl_line,
 )
 
 # Defense-in-depth redaction. The ingest path is supposed to redact, but
@@ -57,13 +62,13 @@ from v5_schema import (  # noqa: E402
 # was added to app.redact but not to a hand-copied stub here, silently
 # emitting unscrubbed home paths into the v5 training set.
 from app.redact_patterns import (  # noqa: E402
-    SECRET_PATTERNS,
     PATH_PATTERNS,
     PII_PATTERNS,
+    SECRET_PATTERNS,
 )
 
 try:
-    from app.redact import redact_text, redact_json  # noqa: E402
+    from app.redact import redact_json, redact_text  # noqa: E402
 except Exception:  # pragma: no cover — no .env; apply every pattern, ungated.
     _ALL_PATTERNS = SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS
 
@@ -432,8 +437,8 @@ def write_audit(stats: BuildStats, sample_rows: list[V5Row], cfg: dict, out_path
         "",
         "## Funnel",
         "",
-        f"| stage | count |",
-        f"|---|---|",
+        "| stage | count |",
+        "|---|---|",
         f"| db rows pulled | {stats.db_rows_pulled} |",
         f"| dropped: excluded project | {stats.dropped_excluded_project} |",
         f"| dropped: unknown project | {stats.dropped_unknown_project} |",

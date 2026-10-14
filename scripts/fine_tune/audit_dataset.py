@@ -46,7 +46,6 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-
 # Category 1: path bias — deterministic
 DROPBOX_RE = re.compile(r"/Dropbox/_CODING/")
 # Operator identity comes from the environment, never a literal (#57 drift class).

@@ -57,7 +57,7 @@ def test_exactly_one_definition_of_each_pattern_list():
 
 def test_redaction_labels_are_unique():
     """fine-tune/restructure_to_qwen_tools.py keys its counters on the label."""
-    from app.redact_patterns import SECRET_PATTERNS, PATH_PATTERNS, PII_PATTERNS
+    from app.redact_patterns import PATH_PATTERNS, PII_PATTERNS, SECRET_PATTERNS
     labels = [repl for _, repl in SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS]
     assert len(labels) == len(set(labels)), sorted(x for x in labels if labels.count(x) > 1)
 
