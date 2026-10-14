@@ -1,9 +1,10 @@
 # CI/CD and enrichment contract
 
-Delivery follows `codex/* -> dev -> main`. Both PRs require `quality` and
-`integrity`; promotion to main also requires `drift`. GitHub protection enforces
+Delivery follows `feature branch -> main` (single trunk, squash-only). The PR
+requires `quality` and `integrity`, an independent code review, and an
+`aa_auditor` PASS against the originating issue. GitHub protection enforces the
 named checks with up-to-date branches and applies to administrators. Review
-happens before testing; authorization to promote is recorded in the task.
+happens before testing.
 
 `ci-quality.yml` uses a disposable PostgreSQL/pgvector service and an isolated
 API. It runs changed-file Ruff with versioned explicit rules, Python/Node syntax checks, and the complete test
@@ -13,7 +14,24 @@ are disabled in CI; subprocess failure tests exercise their adapter boundary.
 Successful push runs package the exact tested commit with SHA/checksum manifest.
 PR runs cannot publish releases or access host credentials.
 
+Two extra gates support the single trunk:
+
+- `agent-gate.yml` (`pull_request_target` + `issue_comment`, no PR checkout) posts
+  the commit status `agent-gate`: success only when issue comments carry
+  `review: APPROVE <head_sha>` and `audit: PASS <head_sha>` for the CURRENT head
+  SHA (`scripts/agent_gate.js`, unit-tested in CI). It becomes a required check
+  via branch protection after this workflow is on `main`.
+- `protection-drift.yml` runs daily and fails if `main` protection loses
+  `enforce_admins`, linear history, strict checks, force-push/deletion denial, or
+  required checks `agent-gate`, `integrity`, `quality`, or if the repo allows
+  merge commits or rebase merges.
+
 ## Local production delivery
+
+**The live service MUST run from the releases directory produced by
+`deploy_release.py`, never from a git checkout.** A checkout-backed service has
+unpinned dependencies and bypasses the green-CI, checksum, lock, migration-approval
+and rollback checks below.
 
 This public repo has no self-hosted Actions runner. A trusted macOS login service
 polls every 120 seconds for a successful **push** run of `ci-quality.yml` on the
@@ -23,12 +41,29 @@ never runs the editable coding checkout after first promotion. Python dependenci
 are reused from the prepared host virtualenv; credentials live in private
 `runtime.env` (mode 0600), outside Git and artifacts.
 
-Preparation and installation, from the coding checkout:
+One-time bootstrap, from a coding checkout at current `main`. The delivery
+controller runs under whichever interpreter runs the installer
+(`sys.executable`), so use a working Python 3.12 venv (`.venv-finetune` on this Mac):
 
 ```sh
-.venv/bin/python scripts/deploy_release.py --prepare
-.venv/bin/python scripts/install_delivery_service.py
+.venv-finetune/bin/python scripts/deploy_release.py --prepare
+.venv-finetune/bin/python scripts/install_delivery_service.py
 ```
+
+**Replacing the checkout-backed API on :3377.** The release-backed API is launchd
+job `com.metazen.agent-memory-api` (installed by the first deploy); the old
+checkout-backed job is `com.metazen.agent-memory-server` (runs
+`~/_CODING/agentMemory-live`). Both bind :3377, so retire the old one first:
+
+1. `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.metazen.agent-memory-server.plist`
+2. Move that plist out of `~/Library/LaunchAgents/` (so it cannot reload at login).
+3. Let the delivery controller deploy (next 120 s poll, or run
+   `.venv-finetune/bin/python scripts/deploy_release.py` once), which loads
+   `com.metazen.agent-memory-api` from the release.
+4. Verify: `launchctl list | grep agent-memory` shows `-api`, not `-server`; its
+   program path is under `~/.local/share/agent-memory/releases/`; and
+   `curl -s http://127.0.0.1:3377/api/health` reports `release_sha` equal to
+   `git rev-parse origin/main`.
 
 The controller is copied outside the checkout so later source edits cannot change
 its behavior. Reinstall it after an intentional controller update. The GitHub CLI

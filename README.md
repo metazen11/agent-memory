@@ -41,9 +41,9 @@ chat datasets.
 
 ## Branching contract
 
-This repo enforces a branching contract: feature PRs land on `dev`, and `dev`
-reaches `main` only through a reviewed pull request. Direct pushes to `main`
-are refused.
+This repo has one trunk, `main`. Feature branches land via squash PR once CI,
+independent review and the auditor pass; every merge auto-deploys via the
+artifact deployer (docs/DELIVERY.md). Direct pushes to `main` are refused.
 
 **One-time setup, per machine** (not per clone):
 
@@ -60,8 +60,7 @@ git config core.hooksPath .githooks
 
 Without this step the local pre-push hook is inert — git will not let a clone
 activate its own hooks, since that would run a stranger's code on clone.
-Server-side branch protection and the `trunk-drift` check still apply
-regardless of local setup.
+Server-side branch protection still applies regardless of local setup.
 
 Full contract, including the emergency override: [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -4,11 +4,29 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).absolute().parents[1]
 STORE = Path.home() / ".local/share/agent-memory"
 LABEL = "com.metazen.agent-memory-delivery"
+
+
+def build_config():
+    return {
+        "Label": LABEL,
+        # The interpreter running this installer (not a checkout's .venv).
+        "ProgramArguments": [sys.executable, str(STORE / "controller.py")],
+        "WorkingDirectory": str(STORE),
+        "EnvironmentVariables": {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        },
+        "RunAtLoad": True,
+        "StartInterval": 120,
+        "ThrottleInterval": 60,
+        "StandardOutPath": str(STORE / "delivery.log"),
+        "StandardErrorPath": str(STORE / "delivery.log"),
+    }
 
 
 def main():
@@ -20,23 +38,7 @@ def main():
     plist = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     domain = f"gui/{os.getuid()}"
     subprocess.run(["launchctl", "bootout", domain, str(plist)], capture_output=True)
-    config = {
-        "Label": LABEL,
-        "ProgramArguments": [
-            str(ROOT / ".venv/bin/python"),
-            str(STORE / "controller.py"),
-        ],
-        "WorkingDirectory": str(STORE),
-        "EnvironmentVariables": {
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        },
-        "RunAtLoad": True,
-        "StartInterval": 120,
-        "ThrottleInterval": 60,
-        "StandardOutPath": str(STORE / "delivery.log"),
-        "StandardErrorPath": str(STORE / "delivery.log"),
-    }
-    plist.write_bytes(plistlib.dumps(config))
+    plist.write_bytes(plistlib.dumps(build_config()))
     plist.chmod(0o600)
     subprocess.run(["plutil", "-lint", str(plist)], check=True)
     subprocess.run(["launchctl", "bootstrap", domain, str(plist)], check=True)

@@ -1,0 +1,46 @@
+name: protection-drift
+
+# Daily assertion that main's branch protection still matches the contract in
+# CONTRIBUTING.md. Fails the job (visible in Actions) if any setting drifts.
+#
+# Reading protection needs repo-admin rights; GITHUB_TOKEN cannot. Provide a
+# fine-grained PAT (Administration: read) as the PROTECTION_READ_TOKEN secret.
+# A missing token FAILS the job — an unverifiable state is not a safe state.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protection-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert main protection
+        env:
+          GH_TOKEN: ${{ secrets.PROTECTION_READ_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::PROTECTION_READ_TOKEN secret is not set; cannot verify protection."; exit 1; }
+          p=$(gh api "repos/$REPO/branches/main/protection")
+          fail=0
+          check() { # description, jq filter that must print "true"
+            if [ "$(echo "$p" | jq -r "$2")" = true ]; then echo "OK: $1"; else echo "::error::DRIFT: $1"; fail=1; fi
+          }
+          check "enforce_admins on"             '.enforce_admins.enabled == true'
+          check "required_linear_history on"    '.required_linear_history.enabled == true'
+          check "allow_force_pushes off"        '.allow_force_pushes.enabled == false'
+          check "allow_deletions off"           '.allow_deletions.enabled == false'
+          check "required checks strict (up to date)" '.required_status_checks.strict == true'
+          check "required checks == [agent-gate, integrity, quality]" \
+                '([.required_status_checks.checks[]?.context] + (.required_status_checks.contexts // []) | unique | sort) == ["agent-gate","integrity","quality"]'
+          r=$(gh api "repos/$REPO")
+          rcheck() {
+            if [ "$(echo "$r" | jq -r "$2")" = false ]; then echo "OK: $1"; else echo "::error::DRIFT: $1"; fail=1; fi
+          }
+          rcheck "merge commits disallowed" '.allow_merge_commit'
+          rcheck "rebase merge disallowed"  '.allow_rebase_merge'
+          exit $fail

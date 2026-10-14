@@ -1,10 +1,10 @@
 # Handoff — agentMemory
 
-Updated 2026-10-14 (PR #90 to dev).
+Updated 2026-10-14 (PR #90, now single-trunk main).
 
 ## State
 
-Branch `codex/fix-hf-namespace-comment` is PR #90 → dev (review: approve-with-nits,
+Branch `codex/fix-hf-namespace-comment` is PR #90 → main (review: approve-with-nits,
 applied; audit: PR scope PASS, #57 AC3/AC4 remain open — see #57).
 
 - `4a7ecc2` — `run_hf_job.sh:220` comment had the 402 **backwards**. It
@@ -52,9 +52,9 @@ failing/skipped at baseline with my changes stashed.
 
 ## Next — in order
 
-1. **Push and PR `codex/fix-hf-namespace-comment` → `dev`.** It is 12
-   behind; rebase on `origin/dev` BEFORE `gh pr create`. Contract forbids
-   pushing to either trunk directly.
+1. **Push and PR `codex/fix-hf-namespace-comment` → `main`.** It is 12
+   behind; rebase on `origin/main` BEFORE `gh pr create`. Contract forbids
+   pushing to `main` directly.
 2. **Then decide the retrain.** The free verification is now done and it
    says the run is worth paying for: the fix reaches the training file,
    measured. Two hazards remain, both must be settled before launch:
@@ -103,7 +103,8 @@ proven-working personal WFCAMZ.
 
 ## Contract reminder
 
-Feature branch → PR to `dev`; `dev` → PR to `main`. Never push a trunk
+Single trunk: feature branch → squash PR to `main` (CI + independent review +
+auditor PASS; auto-deploys to the releases dir via deploy_release.py, #94). Never push `main`
 directly (`enforce_admins=true`, so admin pushes are rejected, not
 silently allowed). No `Co-Authored-By` / "Generated with" / robot emoji in
 commits — a pre-push hook blocks them (§6).
