@@ -60,10 +60,13 @@ HTTP surface (FastAPI app on `:3377`):
   embedding agent-memory into other hosts. Also rendered at
   `docs/INTEGRATION.md`.
 
-Redaction patterns live in `app/redact.py` (`SECRET_PATTERNS` + optional
-`PII_PATTERNS`). When adding a new secret pattern, no other change is
-required — the export pipeline picks it up automatically because
-`_base_record` in `app/dataset_exports.py` is the single bottleneck.
+Redaction patterns live in `app/redact_patterns.py` (`SECRET_PATTERNS`,
+`PATH_PATTERNS`, `PII_PATTERNS`; no config dependency). `app/redact.py`
+imports them and applies the settings gates; the fine-tune dataset builders
+import the same lists (never a copy — `tests/test_redact_pattern_single_source.py`
+fails on a second definition, #57). When adding a pattern, no other change
+is required: the export pipeline picks it up because `_base_record` in
+`app/dataset_exports.py` is the single bottleneck.
 
 Migrations live in `scripts/migrations/` (numeric prefix). Migration 015
 quarantined super-project rows (e.g. `/`, `/Users/mz`) that were leaking

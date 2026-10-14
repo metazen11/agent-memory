@@ -45,7 +45,6 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
-import os
 import random
 import re
 import subprocess
@@ -70,6 +69,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+from app.redact_patterns import (  # noqa: E402
+    PATH_PATTERNS,
+    PII_PATTERNS,
+    SECRET_PATTERNS,
+)
+
 INPUT_DIR = REPO_ROOT / "data" / "processed" / "fine_tune_blend"
 OUTPUT_DIR = REPO_ROOT / "data" / "processed" / "qwen25_tools" / "v1"
 
@@ -91,23 +97,19 @@ SCHEMA_REQUIRED_PCT = 0.95  # field required if present in >= 95% of rows.
 # PII scrubbing
 # ---------------------------------------------------------------------------
 
-PII_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
-    ("sk_token", re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "<REDACTED_TOKEN>"),
-    ("bearer", re.compile(r"Bearer\s+\S+"), "<REDACTED_TOKEN>"),
-    (
-        "agent_memory_token",
-        re.compile(r"AGENT_MEMORY_TOKEN[=:\s]*\S+"),
-        "<REDACTED_TOKEN>",
-    ),
-    ("slack_xoxb", re.compile(r"xoxb-\S+"), "<REDACTED_TOKEN>"),
-    ("github_pat", re.compile(r"ghp_[A-Za-z0-9]{36,}"), "<REDACTED_TOKEN>"),
-    ("user_path", re.compile(r"/Users/mz/"), "/Users/<user>/"),
+# (name, compiled_pattern, replacement) — derived from the single source in
+# app/redact_patterns.py (#57). Do not add literals here.
+# Counter key is the replacement label ("[REDACTED:openai_key]" -> "openai_key")
+# so the manifest's pii_substitutions stays readable.
+SCRUB_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+    (re.sub(r"[\[\]]|REDACTED:", "", repl) or "redacted", pat, repl)
+    for pat, repl in SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS
 ]
 
 
 def scrub_string(s: str, counts: Counter) -> str:
     """Apply PII regex substitutions, incrementing per-pattern counts."""
-    for name, pat, repl in PII_PATTERNS:
+    for name, pat, repl in SCRUB_PATTERNS:
         new_s, n = pat.subn(repl, s)
         if n:
             counts[name] += n
@@ -368,7 +370,7 @@ def restructure_row(
             # Validate against schema
             try:
                 validators[tool_name].validate(scrubbed_args)
-            except jsonschema.ValidationError as e:
+            except jsonschema.ValidationError:
                 return None, f"schema_validation_failed:{tool_name}"
 
             messages.append(
@@ -487,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     pii_counts: Counter = Counter()
     rejection_counts: Counter = Counter()
 
-    print(f"[2/4] Restructuring rows...")
+    print("[2/4] Restructuring rows...")
     train_in_n, train_kept_n, train_rows = process_split(
         train_in, output_dir / "train.chat.jsonl",
         validators, tool_schemas, pii_counts, rejection_counts,
@@ -534,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(tool_schemas, f, sort_keys=True, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    print(f"[4/4] Writing manifest")
+    print("[4/4] Writing manifest")
     manifest = {
         "script": "fine-tune/restructure_to_qwen_tools.py",
         "git_commit": get_git_commit(),
