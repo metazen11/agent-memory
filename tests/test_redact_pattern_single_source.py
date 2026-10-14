@@ -93,6 +93,21 @@ def test_dataset_builder_fallback_scrubs_home_paths(monkeypatch):
         sys.modules.pop(modname, None)
 
 
+@pytest.mark.parametrize("raw,leak", [
+    # Everything the deleted copy in fine-tune/restructure_to_qwen_tools.py
+    # caught must still be caught by the single source (scanner finding, #57).
+    ("key sk-" + "a" * 24 + " here", "sk-" + "a" * 24),
+    ("Authorization: Bearer eyJabc.def.ghi", "eyJabc"),
+    ("AGENT_MEMORY_TOKEN=abc123def456", "abc123def456"),
+    ("export FOO_API_KEY: zzz-top", "zzz-top"),
+    ("xoxb-123-456-abc", "xoxb-123"),
+    ("ghp_" + "A" * 36, "ghp_"),
+], ids=["sk_short", "bearer_short", "agent_memory_token", "env_api_key", "slack", "github"])
+def test_single_source_covers_retired_restructure_scrubber(raw, leak):
+    from app.redact import redact_text
+    assert leak not in redact_text(raw)
+
+
 @pytest.mark.parametrize("raw,must_not_contain", [
     ("/Users/mz/_CODING/agentMemory/x.py", "/Users/mz"),
     ("/home/someone/proj/y.py", "/home/someone"),
