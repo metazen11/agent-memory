@@ -57,23 +57,28 @@ def _complete(settings, chat_completion, request: dict) -> dict:
     return {"content": result.get("content", ""), "provider": _provider(settings)}
 
 
+def _respond(settings, chat_completion, raw: str) -> dict:
+    try:
+        return _complete(settings, chat_completion, json.loads(raw))
+    except Exception as error:  # reported to the caller, process survives
+        return {"error": f"{type(error).__name__}: {error}"}
+
+
 def main():
     out = sys.stdout
     # Import/inference chatter must not corrupt the JSON protocol on stdout.
     with contextlib.redirect_stdout(sys.stderr):
+        # An engine that cannot load exits non-zero: the caller treats that as
+        # an outage. Per-request failures come back as {"error": ...} so the
+        # caller charges that one item instead of pausing the whole queue.
         settings, chat_completion = _load_engine()
         if "--serve" not in sys.argv[1:]:
-            response = _complete(settings, chat_completion, json.load(sys.stdin))
-            json.dump(response, out)
+            json.dump(_respond(settings, chat_completion, sys.stdin.read()), out)
             return
         for line in sys.stdin:
             if not line.strip():
                 continue
-            try:
-                response = _complete(settings, chat_completion, json.loads(line))
-            except Exception as error:  # reported to the caller, loop survives
-                response = {"error": f"{type(error).__name__}: {error}"}
-            out.write(json.dumps(response) + "\n")
+            out.write(json.dumps(_respond(settings, chat_completion, line)) + "\n")
             out.flush()
 
 
