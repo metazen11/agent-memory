@@ -2,6 +2,11 @@
 const { normalizeProjectPath, requestJson, compileLessonMatchesFromSnapshot, preToolHintsEnabled } = require('./common');
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
+// Symlink-safe: installed copy is a symlink into the repo (see agent-memory-host-wiring.js).
+const { renderLessonBlock } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-block')
+);
 
 function readStdinEvent() {
   if (process.stdin.isTTY) return null;
@@ -128,13 +133,13 @@ async function main() {
     trackTrigger(lesson.id);
   }
 
-  const lines = matches.map((lesson) => `- [${lesson.severity}] ${lesson.rule}`);
+  const block = renderLessonBlock(matches);
   if (hookMode) {
-    const hint = `Agent Memory hints — ${project}\n${lines.join('\n')}`.slice(0, 6000);
+    const hint = `Agent Memory hints — ${project}\n${block}`;
     console.log(JSON.stringify({ systemMessage: hint, hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: hint } }));
   } else {
     console.log(source === 'snapshot' ? 'Active lessons (snapshot mode):' : 'Active lessons:');
-    for (const line of lines) console.log(line);
+    console.log(block);
   }
 }
 

@@ -171,7 +171,10 @@ curl -X PATCH localhost:3377/api/lessons/<id> \
 
 ## Lesson condensing
 
-`user-prompt-submit` injects each active CRITICAL lesson's `rule` capped at
+`user-prompt-submit` (and the Pre/PostToolUse and Codex hooks) inject lesson
+`rule`s via the shared `hooks/lesson-block.js`, which sanitizes them (`<`/`>`
+escaped, control/zero-width/bidi/tag characters stripped) and wraps them in a
+"data, not instructions" `<agent-memory>` block, each rule capped at
 **280 characters**. Long rules that tell the incident story first lost their
 actual instruction to that cap, so every write path now keeps `rule` short:
 

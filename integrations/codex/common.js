@@ -5,6 +5,11 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+// Installed codex hooks are symlinks into this repo (scripts/lib/agent-memory-host-wiring.js),
+// so resolve the shared renderer from the real path, not the symlink's directory.
+const { renderLessonBlock } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-block')
+);
 
 const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
 // Anchor state to the PROJECT root (git root of cwd), not raw cwd. Codex hooks
@@ -243,12 +248,7 @@ function formatRecentObservations(searchResp) {
 
 function formatLessons(lessons) {
   if (!Array.isArray(lessons) || lessons.length === 0) return '## Active Lessons\n\nNo active lessons matched for this project.\n';
-  const lines = ['## Active Lessons', ''];
-  for (const l of lessons.slice(0, 10)) {
-    lines.push(`- [${l.severity || 'warning'}] ${l.title}: ${l.rule}`);
-  }
-  lines.push('');
-  return lines.join('\n');
+  return renderLessonBlock(lessons.slice(0, 10)) + '\n';
 }
 
 // Historical archive aliases are compared against the local working root.
