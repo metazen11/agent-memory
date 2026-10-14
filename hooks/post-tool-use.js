@@ -34,6 +34,9 @@ const { authHeaders } = require(
 const { normalizeText, normalizeJson } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), '_path-normalize')
 );
+const { renderLessonBlock } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), 'lesson-block')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const SERVER_URL = `${SERVER_BASE}/api/queue`;
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
@@ -427,20 +430,13 @@ if (outputPreview && GLOBAL_HINTS_ENABLED && POST_TOOL_HINTS_ENABLED) {
 
     if (Array.isArray(matches) && matches.length > 0) {
       debug(`${matches.length} output lesson(s) matched`);
-      const severity_icons = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
-      const lines = matches.map((lesson) => {
-        const icon = severity_icons[lesson.severity] || 'LESSON';
-        const scope = lesson.project_name ? `[${lesson.project_name}]` : '[global]';
-        return `${icon} ${scope}: ${lesson.rule}`;
-      });
-
       // Fire-and-forget trigger tracking
       for (const lesson of matches) {
         trackTrigger(lesson.id);
       }
 
       // systemMessage is user-only; additionalContext is what reaches the model.
-      const text = `## Output Lesson\n${lines.join('\n')}`;
+      const text = renderLessonBlock(matches, { heading: 'Output Lesson' });
       console.log(JSON.stringify({
         hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text },
         systemMessage: text,

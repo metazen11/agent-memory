@@ -21,7 +21,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Resolve siblings via the real path so a symlinked hook still finds them.
 const { authHeaders } = require('./auth-header');
+const { renderLessonBlock } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), 'lesson-block')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -283,15 +287,7 @@ const sessionId = input.session_id || '';
 
   debug(`${matches.length} lesson(s) matched`);
 
-  // Build warning message
-  const severity_icons = { critical: 'CRITICAL', warning: 'WARNING', info: 'INFO' };
-  const lines = matches.map((lesson) => {
-    const icon = severity_icons[lesson.severity] || 'LESSON';
-    const scope = lesson.project_name ? `[${lesson.project_name}]` : '[global]';
-    return `${icon} ${scope}: ${lesson.rule}`;
-  });
-
-  const systemMessage = `## Active Lessons\n${lines.join('\n')}`;
+  const systemMessage = renderLessonBlock(matches);
 
   // Fire-and-forget trigger tracking
   for (const lesson of matches) {
