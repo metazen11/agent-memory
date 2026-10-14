@@ -37,10 +37,13 @@ jobs:
           check "required checks strict (up to date)" '.required_status_checks.strict == true'
           check "required checks == [agent-gate, integrity, quality]" \
                 '([.required_status_checks.checks[]?.context] + (.required_status_checks.contexts // []) | unique | sort) == ["agent-gate","integrity","quality"]'
-          r=$(gh api "repos/$REPO")
+          # Merge-method flags: the REST repo object returns these as null to a
+          # fine-grained PAT (Administration: read); GraphQL returns them.
+          r=$(gh api graphql -f query="{repository(owner:\"${REPO%/*}\",name:\"${REPO#*/}\"){mergeCommitAllowed rebaseMergeAllowed squashMergeAllowed}}" --jq '.data.repository')
           rcheck() {
-            if [ "$(echo "$r" | jq -r "$2")" = false ]; then echo "OK: $1"; else echo "::error::DRIFT: $1"; fail=1; fi
+            if [ "$(echo "$r" | jq -r "$2")" = "$3" ]; then echo "OK: $1"; else echo "::error::DRIFT: $1"; fail=1; fi
           }
-          rcheck "merge commits disallowed" '.allow_merge_commit'
-          rcheck "rebase merge disallowed"  '.allow_rebase_merge'
+          rcheck "merge commits disallowed" '.mergeCommitAllowed'  false
+          rcheck "rebase merge disallowed"  '.rebaseMergeAllowed'  false
+          rcheck "squash merge allowed"     '.squashMergeAllowed'  true
           exit $fail
