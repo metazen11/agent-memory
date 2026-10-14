@@ -59,7 +59,7 @@ def test_redaction_labels_are_unique():
     """fine-tune/restructure_to_qwen_tools.py keys its counters on the label."""
     from app.redact_patterns import SECRET_PATTERNS, PATH_PATTERNS, PII_PATTERNS
     labels = [repl for _, repl in SECRET_PATTERNS + PATH_PATTERNS + PII_PATTERNS]
-    assert len(labels) == len(set(labels)), sorted(l for l in labels if labels.count(l) > 1)
+    assert len(labels) == len(set(labels)), sorted(x for x in labels if labels.count(x) > 1)
 
 
 def test_no_stray_home_path_regex_outside_pattern_module():
