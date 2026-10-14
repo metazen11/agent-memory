@@ -34,11 +34,16 @@ def test_patterns_import_without_config():
 
 def test_exactly_one_definition_of_each_pattern_list():
     """A second definition anywhere is the drift that caused #57."""
+    # Tracked files only: rglob also walks .venv*, nested agent worktrees under
+    # .claude/worktrees/, and other untracked copies that are not this repo's code.
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.py"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.split("\0")
     for name in ("SECRET_PATTERNS", "PATH_PATTERNS", "PII_PATTERNS"):
         hits = []
-        for path in REPO_ROOT.rglob("*.py"):
-            if "__pycache__" in path.parts or ".venv" in str(path):
-                continue
+        for rel in filter(None, tracked):
+            path = REPO_ROOT / rel
             for i, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
                 if re.match(rf"\s*{name}\s*=\s*\[", line):
                     hits.append(f"{path.relative_to(REPO_ROOT)}:{i}")
