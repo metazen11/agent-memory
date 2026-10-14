@@ -3,7 +3,7 @@
 Why this exists (issue #75)
 ---------------------------
 user-prompt-submit injects each active CRITICAL lesson's ``rule`` capped at
-280 chars. Most long rules lead with the incident story and put the actual
+280 chars (sanitized and delimited by hooks/lesson-block.js, issue #89). Most long rules lead with the incident story and put the actual
 instruction last, so the cap cut off the "what to do". Every lesson writer
 (POST/PATCH /api/lessons, MCP ``create_lesson``, the distiller) now routes a
 long rule through :func:`prepare_rule`: the condensed instruction goes into

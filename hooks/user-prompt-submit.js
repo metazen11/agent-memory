@@ -244,12 +244,6 @@ function fetchLessons(project, severity, limit) {
     .then(r => Array.isArray(r) ? r : []);
 }
 
-// ── Formatters ──────────────────────────────────────────────
-
-// Sanitising, bounding and <agent-memory> wrapping live in lesson-block.js,
-// shared with the Pre/PostToolUse hooks (issue #89).
-const formatLessons = renderLessonBlock;
-
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -315,7 +309,7 @@ async function main() {
     clearTimeout(budgetTimer);
 
     const allLessons = projectLessons.filter(l => l && l.id);
-    const ctx = formatLessons(allLessons);
+    const ctx = renderLessonBlock(allLessons);   // sanitise/bound/wrap: lesson-block.js (#89)
 
     if (!ctx) {
       debug('nothing to inject');
@@ -347,5 +341,5 @@ async function main() {
 if (require.main === module) {
   main();
 } else {
-  module.exports = { formatLessons };
+  module.exports = { formatLessons: renderLessonBlock };   // alias kept for tests
 }

@@ -439,7 +439,7 @@ if (outputPreview && GLOBAL_HINTS_ENABLED && POST_TOOL_HINTS_ENABLED) {
       const text = renderLessonBlock(matches, { heading: 'Output Lesson' });
       console.log(JSON.stringify({
         hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text },
-        systemMessage: text,
+        systemMessage: `agent-memory: ${matches.length} output lesson(s) matched`,
       }));
     } else {
       debug('No output lesson matches');
