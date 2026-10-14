@@ -20,6 +20,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _tracked_py():
+    """Tracked .py files only: rglob also walks .venv*, nested agent worktrees
+    under .claude/worktrees/, and other untracked copies that are not this repo."""
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.py"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    return [rel for rel in out.split("\0") if rel]
+
+
 def test_patterns_import_without_config():
     """The pattern module must not depend on app.config (no .env in CI)."""
     out = subprocess.run(
@@ -34,20 +44,29 @@ def test_patterns_import_without_config():
 
 def test_exactly_one_definition_of_each_pattern_list():
     """A second definition anywhere is the drift that caused #57."""
-    # Tracked files only: rglob also walks .venv*, nested agent worktrees under
-    # .claude/worktrees/, and other untracked copies that are not this repo's code.
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*.py"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.split("\0")
+    tracked = _tracked_py()
     for name in ("SECRET_PATTERNS", "PATH_PATTERNS", "PII_PATTERNS"):
         hits = []
-        for rel in filter(None, tracked):
+        for rel in tracked:
             path = REPO_ROOT / rel
             for i, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
-                if re.match(rf"\s*{name}\s*=\s*\[", line):
+                if re.match(rf"\s*{name}\s*(?::[^=]+)?=\s*\[", line):
                     hits.append(f"{path.relative_to(REPO_ROOT)}:{i}")
         assert len(hits) == 1, f"{name} defined {len(hits)}x (must be 1):\n" + "\n".join(hits)
+
+
+def test_no_stray_home_path_regex_outside_pattern_module():
+    """A renamed or reshaped copy evades the name check; the regex literal can't.
+
+    Only string-literal patterns are flagged. Patterns built with rf-strings from
+    app.redact_patterns or Path.home() carry no hardcoded username and are fine.
+    """
+    offenders = [
+        rel for rel in _tracked_py()
+        if rel != "app/redact_patterns.py"
+        and re.search(r"re\.compile\(\s*r?[\"']/\(?\??:?Users", (REPO_ROOT / rel).read_text(errors="ignore"))
+    ]
+    assert not offenders, "home-path regex defined outside app/redact_patterns.py:\n" + "\n".join(offenders)
 
 
 def test_dataset_builder_fallback_scrubs_home_paths(monkeypatch):
@@ -60,14 +79,18 @@ def test_dataset_builder_fallback_scrubs_home_paths(monkeypatch):
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", boom)
-    sys.path.insert(0, str(REPO_ROOT / "scripts" / "fine_tune"))
-    for m in [m for m in list(sys.modules) if "build_v5_pilot_dataset" in m]:
-        del sys.modules[m]
-    mod = importlib.import_module("scripts.fine_tune.build_v5_pilot_dataset")
-
-    assert "/Users/mz" not in mod.redact_text("/Users/mz/_CODING/x.py")
-    nested = mod.redact_json({"file_path": "/Users/mz/.claude/projects/a/.env"})
-    assert "/Users/mz" not in str(nested)
+    monkeypatch.syspath_prepend(str(REPO_ROOT))
+    modname = "scripts.fine_tune.build_v5_pilot_dataset"
+    for m in [m for m in list(sys.modules) if m.startswith(modname)]:
+        monkeypatch.delitem(sys.modules, m, raising=False)
+    mod = importlib.import_module(modname)
+    try:
+        assert "/Users/mz" not in mod.redact_text("/Users/mz/_CODING/x.py")
+        nested = mod.redact_json({"file_path": "/Users/mz/.claude/projects/a/.env"})
+        assert "/Users/mz" not in str(nested)
+    finally:
+        # the fallback-flavoured module must not leak into later tests
+        sys.modules.pop(modname, None)
 
 
 @pytest.mark.parametrize("raw,must_not_contain", [

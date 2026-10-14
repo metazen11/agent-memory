@@ -16,7 +16,6 @@ __all__ = [
 ]
 
 
-
 def redact_text(text: str | None) -> str | None:
     """Redact secrets and optionally PII from text."""
     if not text:

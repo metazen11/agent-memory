@@ -70,6 +70,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+from app.redact_patterns import PATH_PATTERNS, PII_PATTERNS, SECRET_PATTERNS  # noqa: E402
 INPUT_DIR = REPO_ROOT / "data" / "processed" / "fine_tune_blend"
 OUTPUT_DIR = REPO_ROOT / "data" / "processed" / "qwen25_tools" / "v1"
 
@@ -91,23 +93,18 @@ SCHEMA_REQUIRED_PCT = 0.95  # field required if present in >= 95% of rows.
 # PII scrubbing
 # ---------------------------------------------------------------------------
 
-PII_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
-    ("sk_token", re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "<REDACTED_TOKEN>"),
-    ("bearer", re.compile(r"Bearer\s+\S+"), "<REDACTED_TOKEN>"),
-    (
-        "agent_memory_token",
-        re.compile(r"AGENT_MEMORY_TOKEN[=:\s]*\S+"),
-        "<REDACTED_TOKEN>",
-    ),
-    ("slack_xoxb", re.compile(r"xoxb-\S+"), "<REDACTED_TOKEN>"),
-    ("github_pat", re.compile(r"ghp_[A-Za-z0-9]{36,}"), "<REDACTED_TOKEN>"),
-    ("user_path", re.compile(r"/Users/mz/"), "/Users/<user>/"),
+# (name, compiled_pattern, replacement) — derived from the single source in
+# app/redact_patterns.py (#57). Do not add literals here.
+SCRUB_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+    (f"{kind}_{i}", pat, repl)
+    for kind, patterns in (("secret", SECRET_PATTERNS), ("path", PATH_PATTERNS), ("pii", PII_PATTERNS))
+    for i, (pat, repl) in enumerate(patterns)
 ]
 
 
 def scrub_string(s: str, counts: Counter) -> str:
     """Apply PII regex substitutions, incrementing per-pattern counts."""
-    for name, pat, repl in PII_PATTERNS:
+    for name, pat, repl in SCRUB_PATTERNS:
         new_s, n = pat.subn(repl, s)
         if n:
             counts[name] += n

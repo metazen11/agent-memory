@@ -49,10 +49,12 @@ from pathlib import Path
 
 # Category 1: path bias — deterministic
 DROPBOX_RE = re.compile(r"/Dropbox/_CODING/")
-FOREIGN_USER_RE = re.compile(r"/Users/(?!mz/|<user>/)[a-z_-]+/")
+# Operator identity comes from the environment, never a literal (#57 drift class).
+_HOME = Path.home()
+FOREIGN_USER_RE = re.compile(rf"/Users/(?!{re.escape(_HOME.name)}/|<user>/)[a-z_-]+/")
 
 # Category 8a deterministic: find absolute paths and verify they exist
-ABS_PATH_RE = re.compile(r"(?:^|[\s\"'(=,>])(/Users/mz/[\w./\-_]+|~/[\w./\-_]+)")
+ABS_PATH_RE = re.compile(rf"(?:^|[\s\"'(=,>])({re.escape(str(_HOME))}/[\w./\-_]+|~/[\w./\-_]+)")
 # Git commit references: only a hash introduced by a commit-context word
 # (commit/sha/rev/HEAD@ etc.). We deliberately do NOT match bare hex runs —
 # a 7+ hex string appears in plenty of non-commit content (checksums, ids)

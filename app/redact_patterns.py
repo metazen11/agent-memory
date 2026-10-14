@@ -69,8 +69,8 @@ SECRET_PATTERNS = [
 # emitted them as tool-call arguments — including dotenv files under
 # /Users/<name>/.claude/projects/... in response to unrelated prompts. A model
 # that reflexively reaches for secret files is a live risk once wired into an
-# agent that EXECUTES tool calls. Measured: 545/5000 rows (10.9%) of the v5
-# training set carried at least one of these.
+# agent that EXECUTES tool calls. Measured on the v5 training set: 581/5000
+# rows (11.6%) carried at least one of these, 0 after (see #57).
 #
 # Deliberately NOT redacted: relative paths (config/settings.py) and system
 # paths (/usr, /opt, /tmp). They carry no identity and are the useful signal —
