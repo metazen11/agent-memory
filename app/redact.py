@@ -1,86 +1,18 @@
 """Secret and PII redaction for the observation pipeline."""
 
-import re
-
 from app.config import settings
+from app.redact_patterns import (
+    PATH_PATTERNS,
+    PII_PATTERNS,
+    SECRET_PATTERNS,
+)
 
-SECRET_PATTERNS = [
-    (re.compile(r"sk-ant-api\d{2}-[A-Za-z0-9_-]{80,}", re.I), "[REDACTED:anthropic_key]"),
-    (re.compile(r"sk-[A-Za-z0-9]{48,}"), "[REDACTED:openai_key]"),
-    (re.compile(r"hf_[A-Za-z0-9]{30,}"), "[REDACTED:hf_token]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws_key]"),
-    (re.compile(r"ghp_[A-Za-z0-9]{36,}"), "[REDACTED:github_token]"),
-    (re.compile(r"gho_[A-Za-z0-9]{36,}"), "[REDACTED:github_oauth]"),
-    (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED:gitlab_token]"),
-    (re.compile(r"xox[bpors]-[A-Za-z0-9-]{10,}"), "[REDACTED:slack_token]"),
-    (
-        re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+"),
-        "[REDACTED:slack_webhook]",
-    ),
-    (
-        re.compile(r"https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+"),
-        "[REDACTED:discord_webhook]",
-    ),
-    (re.compile(r"mem_[A-Za-z0-9_-]{32,}"), "[REDACTED:agent_memory_token]"),
-    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", re.I), "[REDACTED:bearer_token]"),
-    (
-        re.compile(
-            r"-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
-            r"-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
-        ),
-        "[REDACTED:private_key]",
-    ),
-    (re.compile(r"(?:password|passwd|pwd)\s*[=:]\s*\S+", re.I), "[REDACTED:password]"),
-    (re.compile(r"(?:postgresql|mysql|mongodb)://[^\s]+@[^\s]+", re.I), "[REDACTED:connection_string]"),
-    # JWT (HS256/RS256/etc): three url-safe-base64 segments joined by dots.
-    # Caught a real expired RMS bearer leaking into datasets/v5_pilot/train.jsonl
-    # at PR #51 audit. The header segment always starts with "eyJ" because the
-    # JSON {"alg": ...} prefix is fixed. Min 10 chars per segment to avoid
-    # false-positives on short dotted identifiers.
-    (
-        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-        "[REDACTED:jwt]",
-    ),
-    # Session cookie patterns — generic 32+ char hex value bound to a
-    # session-ish key. Catches the kind of `session: <hex>` literal the
-    # auditor flagged at train.jsonl:1986 without being aggressive enough to
-    # eat git SHAs etc. (those don't have the "session" tag in front).
-    (
-        re.compile(
-            r"\b(?:session|sessionid|sess|jsessionid|sid)\b\s*[=:]\s*[a-fA-F0-9]{32,}",
-            re.I,
-        ),
-        "[REDACTED:session_cookie]",
-    ),
-]
-
-# Filesystem paths that identify a machine or point at secret files (#57).
-#
-# The v5 pilot model memorized absolute paths from its training corpus and
-# emitted them as tool-call arguments — including dotenv files under
-# /Users/<name>/.claude/projects/... in response to unrelated prompts. A model
-# that reflexively reaches for secret files is a live risk once wired into an
-# agent that EXECUTES tool calls. Measured: 545/5000 rows (10.9%) of the v5
-# training set carried at least one of these.
-#
-# Deliberately NOT redacted: relative paths (config/settings.py) and system
-# paths (/usr, /opt, /tmp). They carry no identity and are the useful signal —
-# scrubbing them would gut the training data to no benefit.
-PATH_PATTERNS = [
-    # Home directories — the username is the identifying part. Keep the tail
-    # so "…/proj/config.py" still teaches path structure.
-    (re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+"), "[REDACTED:home]"),
-    # Unexpanded shell substitutions memorized verbatim from captured sessions.
-    (re.compile(r"\$\((?:HOSTNAME|hostname|date|pwd|whoami|USER|id)[^)]*\)"), "[REDACTED:shell_subst]"),
-    # References to dotenv-style secret files. Word-boundary anchored so
-    # "environment" and "docs/environment.md" are NOT false positives.
-    (re.compile(r"(?<![\w.])\.env(?:\.[A-Za-z0-9_-]+)?(?![\w])"), "[REDACTED:secret_file]"),
-]
-
-
-PII_PATTERNS = [
-    (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"), "[REDACTED:email]"),
-    (re.compile(r"\b\d{3}[-.]?\d{2}[-.]?\d{4}\b"), "[REDACTED:ssn]"),
+__all__ = [
+    "SECRET_PATTERNS",
+    "PATH_PATTERNS",
+    "PII_PATTERNS",
+    "redact_text",
+    "redact_json",
 ]
 
 
