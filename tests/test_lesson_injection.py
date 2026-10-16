@@ -38,13 +38,13 @@ http.request = () => { const r = new EventEmitter(); r.write = r.end = r.destroy
 """
 
 
-def _run_full(hook: str, payload: dict, tmp_path: Path, lessons: list[dict]) -> dict:
+def _run_full(hook: str, payload: dict, tmp_path: Path, lessons: list[dict], home: Path | None = None) -> dict:
     stub = tmp_path / "stub.js"
     stub.write_text(STUB)
     proc = subprocess.run(
         ["node", "-r", str(stub), str(ROOT / "hooks" / hook)],
         input=json.dumps(payload), text=True, capture_output=True, cwd=str(ROOT),
-        env={**os.environ, "STUB_LESSONS": json.dumps(lessons)},
+        env={**os.environ, "STUB_LESSONS": json.dumps(lessons), **({"HOME": str(home)} if home else {})},
         timeout=20,
     )
     return json.loads(proc.stdout.strip().splitlines()[0] or "{}")
@@ -145,3 +145,24 @@ def test_every_lesson_rule_renderer_uses_lesson_block():
         if re.search(r"\.rule\b", src) and "lesson-block" not in src:
             offenders.append(f)
     assert not offenders, f"render lessons via hooks/lesson-block.js: {offenders}"
+
+
+def test_user_prompt_lessons_are_once_per_session_and_project_scoped(tmp_path):
+    home = tmp_path / "home"
+    project = "/work/agent-memory"
+    payload = {"session_id": "session-once", "cwd": project, "prompt": "hello"}
+    lessons = [
+        _lesson("project rule", 1, title="same-title", project_name=project),
+        _lesson("sibling rule", 2, title="sibling", project_name="/work/other"),
+        _lesson("global fallback", 3, title="global"),
+        _lesson("global duplicate", 4, title="same-title"),
+    ]
+
+    first = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home)
+    second = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home)
+    ctx = first["hookSpecificOutput"]["additionalContext"]
+    assert "project rule" in ctx
+    assert "global fallback" in ctx
+    assert "sibling rule" not in ctx
+    assert "global duplicate" not in ctx
+    assert second == {}

@@ -7,7 +7,7 @@
  *   1. POST the prompt to /api/prompts so live capture writes a
  *      mem_user_prompts row (unchanged behavior — pre-existing).
  *
- *   2. Inject active CRITICAL lessons BEFORE the model reads the prompt,
+ *   2. Inject active, project-relevant lessons BEFORE the model reads the prompt,
  *      via hookSpecificOutput.additionalContext. This is the splice path
  *      that actually reaches the model — SessionStart's systemMessage
  *      does not survive session resume in some Claude Code builds.
@@ -38,6 +38,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 // Resolve sibling modules against the script's real path, not the path node
 // was invoked with. Without this, NODE_PRESERVE_SYMLINKS=1 (or
@@ -57,25 +58,14 @@ const { normalizeText } = require(
 const { renderLessonBlock } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), 'lesson-block')
 );
-const SERVER_BASE = 'http://localhost:3377';
+const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
 const PROMPT_POST_TIMEOUT_MS = 300;
 const FETCH_TIMEOUT_MS = 3000;
 const TOTAL_BUDGET_MS = 4000;
 
-// Sentinel directory is agent-scoped so codex/gemini/anvil get their own
-// first-prompt tracking under the same agent-agnostic memory root.
-const PRIMED_DIR = path.join(os.homedir(), '.agent-memory', 'primed', 'claude-code');
-
-// Per-session turn counter for lesson-inject throttling. We re-inject the
-// lesson block every Nth prompt (default 10) to keep CRITICAL rules in the
-// model's recent window without burning tokens on every turn.
-const TURN_DIR = path.join(os.homedir(), '.agent-memory', 'turns', 'claude-code');
-const LESSON_INJECT_INTERVAL = Math.max(
-  1,
-  parseInt(process.env.AGENT_MEMORY_LESSON_INJECT_INTERVAL || '10', 10),
-);
+const DELIVERY_DIR = path.join(os.homedir(), '.agent-memory', 'delivery', 'claude-code');
 
 function envFlagEnabled(name, defaultValue = true) {
   const raw = process.env[name];
@@ -87,8 +77,6 @@ function envFlagEnabled(name, defaultValue = true) {
 }
 
 const INJECT_ENABLED = envFlagEnabled('AGENT_MEMORY_PROMPT_INJECT_ENABLED', true);
-const INJECT_GLOBAL_LESSONS = envFlagEnabled('AGENT_MEMORY_INJECT_GLOBAL_LESSONS', true);
-const GLOBAL_LESSONS_CAP = parseInt(process.env.AGENT_MEMORY_GLOBAL_LESSONS_CAP || '5', 10);
 
 function debug(msg) {
   if (DEBUG) console.error(`[agent-memory:user-prompt-submit] ${msg}`);
@@ -129,49 +117,37 @@ function readStdin() {
   }
 }
 
-// ── Sentinel: track which sessions have received the heavy first-prompt block ──
-
-function sessionPrimed(sessionId) {
-  if (!sessionId) return false;
+// Reserve the one lesson delivery for this session/project pair atomically.
+// Pending markers prevent concurrent duplicate injections; stale markers are
+// reclaimed after a crashed hook. Successful delivery is durable.
+function deliveryReservation(sessionId, project) {
+  if (!sessionId) return null;
+  const key = crypto.createHash('sha256').update(`${sessionId}\0${project}`).digest('hex');
+  const pending = path.join(DELIVERY_DIR, `${key}.pending`);
+  const done = path.join(DELIVERY_DIR, `${key}.done`);
   try {
-    return fs.existsSync(path.join(PRIMED_DIR, sessionId));
-  } catch {
-    return false;
-  }
+    fs.mkdirSync(DELIVERY_DIR, { recursive: true });
+    if (fs.existsSync(done)) return null;
+    try {
+      const fd = fs.openSync(pending, 'wx', 0o600);
+      fs.closeSync(fd);
+      return { pending, done };
+    } catch (e) {
+      if (e.code === 'EEXIST') {
+        const age = Date.now() - fs.statSync(pending).mtimeMs;
+        if (age > 10000) { fs.unlinkSync(pending); return deliveryReservation(sessionId, project); }
+      }
+      return null;
+    }
+  } catch (e) { debug(`delivery reservation failed: ${e.message}`); return null; }
 }
 
-function markSessionPrimed(sessionId) {
-  if (!sessionId) return;
+function finishDelivery(reservation, success) {
+  if (!reservation) return;
   try {
-    fs.mkdirSync(PRIMED_DIR, { recursive: true });
-    fs.writeFileSync(path.join(PRIMED_DIR, sessionId), String(Date.now()));
-  } catch (e) {
-    debug(`failed to write sentinel: ${e.message}`);
-  }
-}
-
-// Increment + return this session's turn count. Falls back to 1 (always
-// inject) if filesystem access fails — losing the throttle is preferable to
-// silently dropping CRITICAL lessons.
-function bumpTurn(sessionId) {
-  if (!sessionId) return 1;
-  const file = path.join(TURN_DIR, sessionId);
-  let prev = 0;
-  try {
-    prev = parseInt(fs.readFileSync(file, 'utf8'), 10);
-    if (!Number.isFinite(prev) || prev < 0) prev = 0;
-  } catch {
-    prev = 0;
-  }
-  const next = prev + 1;
-  try {
-    fs.mkdirSync(TURN_DIR, { recursive: true });
-    fs.writeFileSync(file, String(next));
-  } catch (e) {
-    debug(`failed to write turn counter: ${e.message}`);
-    return 1; // safe fallback: always inject
-  }
-  return next;
+    if (success) fs.renameSync(reservation.pending, reservation.done);
+    else fs.unlinkSync(reservation.pending);
+  } catch {}
 }
 
 // ── HTTP helpers ────────────────────────────────────────────
@@ -238,10 +214,25 @@ function logPrompt(input) {
 
 function fetchLessons(project, severity, limit) {
   const params = new URLSearchParams({ active: 'true', limit: String(limit) });
-  if (project) params.set('project', project);
+  if (project) {
+    params.set('project', project);
+    params.set('strict_scope', 'true');
+  }
   if (severity) params.set('severity', severity);
   return httpGet(`/api/lessons?${params}`, FETCH_TIMEOUT_MS)
     .then(r => Array.isArray(r) ? r : []);
+}
+
+function appliesToProject(lesson, project) {
+  const owner = normalizeText(lesson.project_name || lesson.project || '').replace(/\/$/, '');
+  return !owner || project === owner || project.startsWith(`${owner}/`);
+}
+
+function lessonRank(lesson, project) {
+  const owner = normalizeText(lesson.project_name || lesson.project || '').replace(/\/$/, '');
+  const specificity = !owner ? 0 : project === owner ? 3 : project.startsWith(`${owner}/`) ? 2 : -1;
+  const severity = { critical: 3, warning: 2, info: 1 }[String(lesson.severity || '').toLowerCase()] || 0;
+  return [specificity, severity];
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -266,19 +257,10 @@ async function main() {
   const sessionId = input.session_id || '';
   const cwd = input.cwd || process.cwd();
   const project = cwd;
-  const projectName = path.basename(cwd);
-  const isFirstPrompt = !sessionPrimed(sessionId);
+  const reservation = deliveryReservation(sessionId, project);
+  debug(`session=${sessionId} reserved=${!!reservation} project=${project}`);
 
-  // Throttle: inject the lesson block on turn 1 and every Nth turn after
-  // (default N=10). Other turns skip the DB roundtrip entirely. Lessons
-  // stay enforced by the PreToolUse hook regardless of injection.
-  const turn = bumpTurn(sessionId);
-  const shouldInject = (turn === 1) || (turn % LESSON_INJECT_INTERVAL === 1);
-
-  debug(`session=${sessionId} firstPrompt=${isFirstPrompt} turn=${turn} shouldInject=${shouldInject} project=${project}`);
-
-  if (!shouldInject) {
-    if (isFirstPrompt) markSessionPrimed(sessionId);
+  if (!reservation) {
     allow();
     return;
   }
@@ -294,45 +276,43 @@ async function main() {
     // from the inject: they're low-signal as a push and the model can pull
     // them on demand via search()/get_observations() when actually needed.
     //
-    // The /api/lessons endpoint now returns project-scoped + truly-global
-    // lessons in one call when a project is passed (see app/routes/lessons.py:
-    // project=None → only project_id IS NULL; project=<path> → that path's
-    // bidirectional-prefix/name-match OR project_id IS NULL). A second fetch
-    // for globals would just duplicate what's already in projectLessons, so
-    // we skip it. GLOBAL_LESSONS_CAP/INJECT_GLOBAL_LESSONS are kept for
-    // backwards compatibility but no longer drive a separate request.
-    // Cap 20: covers project + parent-folder + global lessons in one fetch.
-    // Combined with the every-Nth-turn throttle, the larger payload is only
-    // injected on turn 1 / 11 / 21 ... so net per-session token cost is still
-    // far below the old "10 lessons every turn" behavior.
-    const projectLessons = (await fetchLessons(project, 'critical', 20)) || [];
+    // Fetch scoped and global lessons separately so the client can apply the
+    // same boundary and precedence rules even against older servers.
+    const projectLessons = (await fetchLessons(project, null, 100)) || [];
+    const globalLessons = (await fetchLessons(null, null, 100)) || [];
     clearTimeout(budgetTimer);
 
-    const allLessons = projectLessons.filter(l => l && l.id);
+    const allLessons = [...projectLessons, ...globalLessons]
+      .filter(l => l && l.id && l.active !== false && appliesToProject(l, project))
+      .sort((a, b) => {
+        const ar = lessonRank(a, project), br = lessonRank(b, project);
+        return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
+      })
+      .filter((lesson, index, list) => list.findIndex(other => String(other.title || other.rule) === String(lesson.title || lesson.rule)) === index)
+      .slice(0, 20);
     const ctx = renderLessonBlock(allLessons);   // sanitise/bound/wrap: lesson-block.js (#89)
 
     if (!ctx) {
+      finishDelivery(reservation, true);
       debug('nothing to inject');
       allow();
       return;
     }
 
-    // Sentinel still written so future first-prompt-only blocks remain
-    // possible without re-priming the session.
-    if (isFirstPrompt) {
-      markSessionPrimed(sessionId);
-    }
-
     debug(`injecting ${ctx.length} chars (lessons=${allLessons.length})`);
 
-    output({
+    const payload = {
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext: ctx,
       },
-    });
+    };
+    const serialized = JSON.stringify(payload) + '\n';
+    process.stdout.once('error', () => { finishDelivery(reservation, false); });
+    process.stdout.write(serialized, () => finishDelivery(reservation, true));
   } catch (e) {
     clearTimeout(budgetTimer);
+    finishDelivery(reservation, false);
     notice(`unexpected error in main: ${e && e.message}`);
     allow();
   }
