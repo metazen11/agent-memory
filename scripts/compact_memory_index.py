@@ -90,6 +90,11 @@ def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:
             os.fsync(archive_dir_fd)
         finally:
             os.close(archive_dir_fd)
+        parent_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         if path.read_bytes() != original:
             raise RuntimeError(f"source changed while archiving: {path}")
         compacted = compact_markdown(original.decode("utf-8"), max_chars).encode("utf-8")
