@@ -6,6 +6,7 @@ from app.config import settings
 from app.db import get_pool
 from app.embeddings import embed_text
 from app.models import normalize_observation_type
+from app.observation_identity import observation_dedupe_key
 from app.observation_llm import SKIP_TOOLS, generate_observation
 from app.path_normalize import normalize_json, normalize_text
 
@@ -108,8 +109,39 @@ async def process_one(pool) -> bool:
             if embedding:
                 embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
-            # Insert observation
-            obs_row = await conn.fetchrow("""
+            title = obs_data.get("title", "Untitled")
+            subtitle = obs_data.get("subtitle")
+            obs_type = normalize_observation_type(obs_data.get("type", "discovery"))
+            narrative = obs_data.get("narrative")
+            facts = json.dumps(obs_data.get("facts", []))
+            concepts = json.dumps(obs_data.get("concepts", []))
+            files_read = json.dumps(obs_data.get("files_read", []))
+            files_modified = json.dumps(obs_data.get("files_modified", []))
+            dedupe_key = observation_dedupe_key(
+                project_id, title, subtitle, obs_type, narrative,
+                obs_data.get("facts", []), obs_data.get("concepts", []),
+                obs_data.get("files_read", []), obs_data.get("files_modified", []), raw_text,
+            )
+
+            # Serialize retries and compare the full structured observation;
+            # raw_text alone is lossy and can collapse distinct memories.
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
+                existing = await conn.fetchval("""
+                    SELECT id FROM mem_observations
+                    WHERE project_id = $1 AND title = $2
+                      AND subtitle IS NOT DISTINCT FROM $3
+                      AND type = $4
+                      AND narrative IS NOT DISTINCT FROM $5
+                      AND facts = $6::jsonb AND concepts = $7::jsonb
+                      AND files_read = $8::jsonb AND files_modified = $9::jsonb
+                    ORDER BY created_at ASC, id ASC LIMIT 1
+                """, project_id, title, subtitle, obs_type, narrative,
+                    facts, concepts, files_read, files_modified)
+                if existing:
+                    obs_id = existing
+                else:
+                    obs_row = await conn.fetchrow("""
                 INSERT INTO mem_observations (
                     session_id, project_id, title, subtitle, type,
                     narrative, facts, concepts, files_read, files_modified,
@@ -122,26 +154,14 @@ async def process_one(pool) -> bool:
                     $14, now(), $15, $16, $17
                 )
                 RETURNING id
-            """,
-                row["session_id"],
-                project_id,
-                obs_data.get("title", "Untitled"),
-                obs_data.get("subtitle"),
-                normalize_observation_type(obs_data.get("type", "discovery")),
-                obs_data.get("narrative"),
-                json.dumps(obs_data.get("facts", [])),
-                json.dumps(obs_data.get("concepts", [])),
-                json.dumps(obs_data.get("files_read", [])),
-                json.dumps(obs_data.get("files_modified", [])),
-                raw_text,
-                embedding_str,
-                embedding_model_id,
-                tool_name,
-                row["source_system"] or session_row["agent_type"],
-                row["source_mode"],
-                row["source_agent"],
-            )
-            obs_id = obs_row["id"]
+                """,
+                    row["session_id"], project_id, title, subtitle, obs_type,
+                    narrative, facts, concepts, files_read, files_modified,
+                    raw_text, embedding_str, embedding_model_id, tool_name,
+                    row["source_system"] or session_row["agent_type"],
+                    row["source_mode"], row["source_agent"],
+                )
+                    obs_id = obs_row["id"]
 
             # Backlink tool_call to observation for export/training datasets.
             # Path normalization (migration 014): the queue row's

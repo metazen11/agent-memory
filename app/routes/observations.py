@@ -1,4 +1,3 @@
-from app.ingest_receipts import claim_receipt, finish_receipt
 import json
 import logging
 import re
@@ -7,12 +6,20 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db import get_pool
-from app.models import QueueItem, ObservationCreate, ObservationOut, SearchRequest, SearchResult, normalize_observation_type
 from app.embeddings import embed_text
 from app.git_context import resolve_git_context
+from app.ingest_receipts import claim_receipt, finish_receipt
+from app.models import (
+    ObservationCreate,
+    ObservationOut,
+    QueueItem,
+    SearchRequest,
+    SearchResult,
+    normalize_observation_type,
+)
+from app.observation_identity import observation_dedupe_key
 from app.path_normalize import normalize_json, normalize_text
-from app.project import ensure_project, project_path_filter
-
+from app.project import ensure_project, project_path_filter_strict
 
 # ── Tool success inference ────────────────────────────
 # Applied server-side when saving to mem_tool_calls so the hook stays thin.
@@ -216,7 +223,45 @@ async def create_observation(obs: ObservationCreate):
         except Exception as e:
             logger.warning(f"Embedding failed: {e}")
 
-        row = await conn.fetchrow("""
+        dedupe_key = observation_dedupe_key(
+            project_id, obs.title, obs.subtitle, obs.type, obs.narrative,
+            obs.facts, obs.concepts, obs.files_read, obs.files_modified, raw_text,
+        )
+        async with conn.transaction():
+            # Serialize identical retries without treating distinct structured
+            # observations that happen to share raw_text as duplicates.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
+            existing = await conn.fetchrow(
+                """
+                SELECT o.id, o.session_id, o.project_id, p.name as project_name,
+                       o.title, o.subtitle, o.type, o.narrative,
+                       o.facts, o.concepts, o.files_read, o.files_modified,
+                       o.tool_name, o.prompt_number,
+                       o.source_system, o.source_mode, o.source_agent,
+                       o.embedding IS NOT NULL as has_embedding,
+                       o.created_at
+                FROM mem_observations o
+                JOIN mem_projects p ON p.id = o.project_id
+                WHERE o.project_id = $1
+                  AND o.title = $2
+                  AND o.subtitle IS NOT DISTINCT FROM $3
+                  AND o.type = $4
+                  AND o.narrative IS NOT DISTINCT FROM $5
+                  AND o.facts = $6::jsonb
+                  AND o.concepts = $7::jsonb
+                  AND o.files_read = $8::jsonb
+                  AND o.files_modified = $9::jsonb
+                ORDER BY o.created_at ASC, o.id ASC
+                LIMIT 1
+                """,
+                project_id, obs.title, obs.subtitle, obs.type, obs.narrative,
+                json.dumps(obs.facts), json.dumps(obs.concepts),
+                json.dumps(obs.files_read), json.dumps(obs.files_modified),
+            )
+            if existing:
+                return _row_to_obs(existing)
+
+            row = await conn.fetchrow("""
             INSERT INTO mem_observations (
                 session_id, project_id, title, subtitle, type,
                 narrative, facts, concepts, files_read, files_modified,
@@ -228,15 +273,15 @@ async def create_observation(obs: ObservationCreate):
                 $11, $12::vector, $13,
                 $14, $15, $16, $17, $18
             ) RETURNING id, created_at
-        """,
-            session_db_id, project_id, obs.title, obs.subtitle, obs.type,
-            obs.narrative,
-            json.dumps(obs.facts), json.dumps(obs.concepts),
-            json.dumps(obs.files_read), json.dumps(obs.files_modified),
-            raw_text, embedding_str, embedding_model_id,
-            obs.tool_name, obs.prompt_number,
-            source_system, obs.source_mode, obs.source_agent,
-        )
+            """,
+                session_db_id, project_id, obs.title, obs.subtitle, obs.type,
+                obs.narrative,
+                json.dumps(obs.facts), json.dumps(obs.concepts),
+                json.dumps(obs.files_read), json.dumps(obs.files_modified),
+                raw_text, embedding_str, embedding_model_id,
+                obs.tool_name, obs.prompt_number,
+                source_system, obs.source_mode, obs.source_agent,
+            )
 
         return ObservationOut(
             id=row["id"],
@@ -271,6 +316,7 @@ async def list_observations(
     offset: int = 0,
 ):
     """List observations with optional filters."""
+    project = normalize_text(project) if project else project
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -278,17 +324,13 @@ async def list_observations(
         param_idx = 1
 
         if project:
-            # Support both full paths and short project names. For paths, also
-            # match on basename so a moved checkout (e.g. ~/Dropbox/_CODING/X
-            # → ~/_CODING/X) still surfaces its observations without a data
-            # migration on mem_projects.full_path.
+            # Full paths are strict: the caller or a nested cwd may read its
+            # owning project, but never a child or sibling. Short names remain
+            # supported for legacy API clients.
             if '/' in project:
-                from pathlib import Path
-                basename = Path(project).name or project
-                clause, param_idx = project_path_filter(param_idx)
-                conditions.append(f"({clause} OR p.name = ${param_idx})")
-                params.extend([project, project, project, basename])
-                param_idx += 1
+                clause, param_idx = project_path_filter_strict(param_idx)
+                conditions.append(clause)
+                params.extend([project, project])
             else:
                 conditions.append(f"p.name = ${param_idx}")
                 params.append(project)
@@ -383,6 +425,7 @@ async def recall(req: RecallRequest):
 @router.post("/api/observations/search", response_model=SearchResult)
 async def search_observations(req: SearchRequest):
     """Hybrid search: vector similarity + full-text search with RRF fusion."""
+    req.project = normalize_text(req.project) if req.project else req.project
     pool = await get_pool()
     async with pool.acquire() as conn:
         results = []
@@ -400,9 +443,9 @@ async def search_observations(req: SearchRequest):
                 pidx = 3
 
                 if req.project and not req.cross_project:
-                    clause, pidx = project_path_filter(pidx)
+                    clause, pidx = project_path_filter_strict(pidx)
                     filters.append(clause)
-                    params.extend([req.project, req.project, req.project])
+                    params.extend([req.project, req.project])
 
                 if req.type:
                     placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
@@ -450,9 +493,9 @@ async def search_observations(req: SearchRequest):
             pidx = 3
 
             if req.project and not req.cross_project:
-                clause, pidx = project_path_filter(pidx)
+                clause, pidx = project_path_filter_strict(pidx)
                 filters.append(clause)
-                params.extend([req.project, req.project, req.project])
+                params.extend([req.project, req.project])
 
             if req.type:
                 placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
@@ -496,9 +539,9 @@ async def search_observations(req: SearchRequest):
                 pidx = 3
 
                 if req.project and not req.cross_project:
-                    clause, pidx = project_path_filter(pidx)
+                    clause, pidx = project_path_filter_strict(pidx)
                     lit_filters.append(clause)
-                    lit_params.extend([req.project, req.project, req.project])
+                    lit_params.extend([req.project, req.project])
 
                 if req.type:
                     placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))
@@ -542,9 +585,9 @@ async def search_observations(req: SearchRequest):
                 like_filters = [f"({' OR '.join(like_conditions)})"]
 
                 if req.project and not req.cross_project:
-                    clause, pidx = project_path_filter(pidx)
+                    clause, pidx = project_path_filter_strict(pidx)
                     like_filters.append(clause)
-                    like_params.extend([req.project, req.project, req.project])
+                    like_params.extend([req.project, req.project])
 
                 if req.type:
                     placeholders = ", ".join(f"${pidx + i}" for i in range(len(req.type)))

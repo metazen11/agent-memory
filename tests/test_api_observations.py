@@ -181,3 +181,60 @@ async def test_recall_clamps_k(client, test_project):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["observations"]) <= 20
+
+
+@pytest.mark.asyncio
+async def test_observation_reads_exclude_same_basename_siblings(client, test_prefix):
+    left = f"/tmp/{test_prefix}/left/api"
+    right = f"/tmp/{test_prefix}/right/api"
+    for project, marker in ((left, "left-only"), (right, "right-only")):
+        response = await client.post("/api/observations", json={
+            "session_id": f"{test_prefix}-{marker}",
+            "project": project,
+            "title": f"scope-{marker}",
+            "type": "discovery",
+            "narrative": marker,
+        })
+        assert response.status_code == 200
+    response = await client.get("/api/observations", params={"project": left, "limit": 100})
+    assert response.status_code == 200
+    rows = response.json()
+    assert any(row["title"] == "scope-left-only" for row in rows)
+    assert all(row["title"] != "scope-right-only" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_observation_retry_deduplicates_exact_structured_payload(client, test_project, test_prefix):
+    payload = {
+        "session_id": f"{test_prefix}-dedupe",
+        "project": test_project,
+        "title": f"dedupe-{test_prefix}",
+        "type": "discovery",
+        "narrative": "same structured observation",
+        "facts": ["fact"],
+        "concepts": ["concept"],
+    }
+    first = await client.post("/api/observations", json=payload)
+    second = await client.post(
+        "/api/observations",
+        json={**payload, "session_id": f"{test_prefix}-dedupe-2"},
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_observation_reads_normalize_dropbox_alias(client, test_prefix):
+    local = f"/Users/mz/_CODING/{test_prefix}/alias-repo"
+    alias = f"/Users/mz/Dropbox/_CODING/{test_prefix}/alias-repo"
+    created = await client.post("/api/observations", json={
+        "session_id": f"{test_prefix}-alias",
+        "project": local,
+        "title": f"alias-{test_prefix}",
+        "type": "discovery",
+        "narrative": "canonical path",
+    })
+    assert created.status_code == 200
+    response = await client.get("/api/observations", params={"project": alias, "limit": 100})
+    assert response.status_code == 200
+    assert any(row["title"] == f"alias-{test_prefix}" for row in response.json())
