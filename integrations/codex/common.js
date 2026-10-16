@@ -351,6 +351,29 @@ function lessonIsGlobal(lesson) {
   return Boolean(lesson && !lesson.project_name && lesson.project_id == null);
 }
 
+function selectScopedLessons(lessons, project, limit = 5) {
+  const severity = { critical: 3, warning: 2, info: 1 };
+  const scoped = lessons
+    .filter(l => l && l.active !== false && (lessonIsGlobal(l) || lessonAppliesToProject(l, project)))
+    .sort((a, b) => {
+      const owner = l => normalizeProjectPath(l.project_name || l.project || '').replace(/\/$/, '');
+      const rank = l => [owner(l) ? (project === owner(l) ? 3 : project.startsWith(`${owner(l)}/`) ? 2 : -1) : 0, severity[String(l.severity || '').toLowerCase()] || 0];
+      const ar = rank(a), br = rank(b);
+      return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
+    });
+  const seen = new Set();
+  const topics = new Set();
+  return scoped.filter(lesson => {
+    const key = String(lesson.title || lesson.rule || '');
+    const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
+    const topic = /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'rebase-force-push' : null;
+    if (seen.has(key) || (topic && topics.has(topic))) return false;
+    seen.add(key);
+    if (topic) topics.add(topic);
+    return true;
+  }).slice(0, limit);
+}
+
 // Match Python fnmatch: wildcards cross slashes, ? matches one character,
 // [abc], [a-z], [!abc] are sets, and unmatched [ is literal. Backslashes
 // are ordinary characters, rather than escape prefixes.
@@ -492,6 +515,7 @@ module.exports = {
   compileLessonMatchesFromSnapshot,
   lessonAppliesToProject,
   lessonIsGlobal,
+  selectScopedLessons,
   formatRecentObservations,
   formatLessons,
   hintsEnabled,

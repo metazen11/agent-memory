@@ -25,6 +25,21 @@ def hook_host(tmp_path):
         "active": True,
         "project_name": str(tmp_path),
     }
+    local_policy = {
+        "id": 1000,
+        "title": "Repository push policy",
+        "rule": "Never force-push this repository.",
+        "severity": "critical",
+        "active": True,
+        "project_name": str(tmp_path),
+    }
+    global_policy = {
+        "id": 1001,
+        "title": "Global push policy",
+        "rule": "Always force-push after rebasing.",
+        "severity": "critical",
+        "active": True,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def handle_request(self):
@@ -43,7 +58,7 @@ def hook_host(tmp_path):
                 )
             elif parsed.path == "/api/lessons":
                 query = parse_qs(parsed.query)
-                data = [lesson] if query.get("project") else []
+                data = [lesson, local_policy] if query.get("project") else [global_policy]
             elif parsed.path.endswith("search"):
                 data = {"observations": []}
             else:
@@ -145,6 +160,17 @@ def test_native_prompt_overview_is_once_per_session(hook_host):
     assert len([p for m, p, b in requests if urlparse(p).path == "/api/lessons"]) == 2
     lesson_queries = [parse_qs(urlparse(p).query) for m, p, b in requests if urlparse(p).path == "/api/lessons"]
     assert any(q.get("strict_scope") == ["true"] for q in lesson_queries)
+
+
+def test_native_prompt_project_policy_precedes_conflicting_global_policy(hook_host):
+    run, requests, tmp = hook_host
+    out = run(
+        "user-prompt-submit.js",
+        {"session_id": "policy", "cwd": str(tmp), "prompt": "first"},
+    )
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert "Never force-push this repository" in context
+    assert "Always force-push after rebasing" not in context
 
 
 def test_native_prompt_overview_is_keyed_by_session_not_current_state(hook_host):

@@ -2,7 +2,7 @@
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, lessonIsGlobal, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, selectScopedLessons, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -33,11 +33,7 @@ async function main() {
     const snapshot = readJsonFile(LESSONS_FILE, {});
     lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
   }
-  const scoped = lessons.filter(l => l.active !== false && (lessonIsGlobal(l) || lessonAppliesToProject(l, project)));
-  const severity = { critical: 0, warning: 1, info: 2 };
-  const overview = scoped
-    .sort((a, b) => (severity[a.severity] ?? 3) - (severity[b.severity] ?? 3))
-    .slice(0, 5);
+  const overview = selectScopedLessons(lessons, project, 5);
   const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
   if (!overview.length) return {};
   const deliveryToken = reserveLessonContextDelivery(event.session_id);
