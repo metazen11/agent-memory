@@ -156,6 +156,8 @@ def test_user_prompt_lessons_are_once_per_session_and_project_scoped(tmp_path):
         _lesson("sibling rule", 2, title="sibling", project_name="/work/other"),
         _lesson("global fallback", 3, title="global"),
         _lesson("global duplicate", 4, title="same-title"),
+        _lesson("Never force-push this repository", 5, title="local push policy", project_name=project),
+        _lesson("Always force-push after rebasing", 6, title="global push policy"),
     ]
 
     first = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home)
@@ -165,4 +167,6 @@ def test_user_prompt_lessons_are_once_per_session_and_project_scoped(tmp_path):
     assert "global fallback" in ctx
     assert "sibling rule" not in ctx
     assert "global duplicate" not in ctx
+    assert "Never force-push this repository" in ctx
+    assert "Always force-push after rebasing" not in ctx
     assert second == {}

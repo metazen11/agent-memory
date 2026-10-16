@@ -235,6 +235,11 @@ function lessonRank(lesson, project) {
   return [specificity, severity];
 }
 
+function lessonTopic(lesson) {
+  const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
+  return /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'rebase-force-push' : null;
+}
+
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -289,6 +294,10 @@ async function main() {
         return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
       })
       .filter((lesson, index, list) => list.findIndex(other => String(other.title || other.rule) === String(lesson.title || lesson.rule)) === index)
+      .filter((lesson, index, list) => {
+        const topic = lessonTopic(lesson);
+        return !topic || list.findIndex(other => lessonTopic(other) === topic) === index;
+      })
       .slice(0, 20);
     const ctx = renderLessonBlock(allLessons);   // sanitise/bound/wrap: lesson-block.js (#89)
 
