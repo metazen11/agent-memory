@@ -277,6 +277,7 @@ async function main() {
   // Wall-clock budget so we never blow the 5s hook timeout.
   const budgetTimer = setTimeout(() => {
     debug('total budget exceeded — falling through');
+    finishDelivery(reservation, false);
     allow();
   }, TOTAL_BUDGET_MS);
 
