@@ -58,6 +58,7 @@ const { normalizeText } = require(
 const { renderLessonBlock } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), 'lesson-block')
 );
+const { selectScopedLessons } = require('./lesson-selection');
 const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -117,12 +118,12 @@ function readStdin() {
   }
 }
 
-// Reserve the one lesson delivery for this session/project pair atomically.
+// Reserve the one lesson delivery for this session atomically.
 // Pending markers prevent concurrent duplicate injections; stale markers are
 // reclaimed after a crashed hook. Successful delivery is durable.
-function deliveryReservation(sessionId, project) {
+function deliveryReservation(sessionId) {
   if (!sessionId) return null;
-  const key = crypto.createHash('sha256').update(`${sessionId}\0${project}`).digest('hex');
+  const key = crypto.createHash('sha256').update(sessionId).digest('hex');
   const pending = path.join(DELIVERY_DIR, `${key}.pending`);
   const done = path.join(DELIVERY_DIR, `${key}.done`);
   try {
@@ -231,28 +232,6 @@ function fetchLessons(project, severity, limit) {
     .then(r => ({ ok: Array.isArray(r), lessons: Array.isArray(r) ? r : [] }));
 }
 
-function appliesToProject(lesson, project) {
-  const owner = normalizeText(lesson.project_name || lesson.project || '').replace(/\/$/, '');
-  return !owner || project === owner || project.startsWith(`${owner}/`);
-}
-
-function lessonRank(lesson, project) {
-  const owner = normalizeText(lesson.project_name || lesson.project || '').replace(/\/$/, '');
-  const specificity = !owner ? 0 : project === owner ? 3 : project.startsWith(`${owner}/`) ? 2 : -1;
-  const severity = { critical: 3, warning: 2, info: 1 }[String(lesson.severity || '').toLowerCase()] || 0;
-  return [specificity, severity];
-}
-
-function lessonTopic(lesson) {
-  const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
-  return /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'force-push' : null;
-}
-
-function lessonPolicy(lesson) {
-  const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
-  return /\b(?:never|do not|avoid|without)\b/.test(text) ? 'avoid' : /\b(?:always|must|use)\b/.test(text) ? 'require' : null;
-}
-
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -275,7 +254,7 @@ async function main() {
   const sessionId = input.session_id || '';
   const cwd = input.cwd || process.cwd();
   const project = normalizeText(cwd) || cwd;
-  const reservation = deliveryReservation(sessionId, project);
+  const reservation = deliveryReservation(sessionId);
   debug(`session=${sessionId} reserved=${!!reservation} project=${project}`);
 
   if (!reservation) {
@@ -309,19 +288,8 @@ async function main() {
     const projectLessons = projectResult.lessons;
     const globalLessons = globalResult.lessons;
 
-    const allLessons = [...projectLessons, ...globalLessons]
-      .filter(l => l && l.id && l.active !== false && appliesToProject(l, project))
-      .sort((a, b) => {
-        const ar = lessonRank(a, project), br = lessonRank(b, project);
-        return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
-      })
-      .filter((lesson, index, list) => list.findIndex(other => String(other.rule || other.title) === String(lesson.rule || lesson.title)) === index)
-      .filter((lesson, index, list) => {
-        const topic = lessonTopic(lesson);
-        const policy = lessonPolicy(lesson);
-        return !topic || !policy || !list.slice(0, index).some(other => lessonTopic(other) === topic && lessonPolicy(other) && lessonPolicy(other) !== policy);
-      })
-      .slice(0, 20);
+    const allLessons = selectScopedLessons([...projectLessons, ...globalLessons], project, 20)
+      .filter(l => l && l.id);
     const ctx = renderLessonBlock(allLessons);   // sanitise/bound/wrap: lesson-block.js (#89)
 
     if (!ctx) {

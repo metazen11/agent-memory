@@ -29,6 +29,7 @@ const { renderLessonBlock } = require(
 const { normalizeText } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), '_path-normalize')
 );
+const { selectScopedLessons } = require('./lesson-selection');
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -222,26 +223,6 @@ const toolInput = input.tool_input || {};
 const cwd = input.cwd || process.cwd();
 const project = normalizeText(cwd) || cwd;
 
-function selectScopedMatches(lessons) {
-  const severity = { critical: 3, warning: 2, info: 1 };
-  const ownerOf = l => String(l.project_name || l.project || '').replace(/\/$/, '');
-  const topicOf = l => /never force-push this repository|always force-push after rebasing/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'force-push' : null;
-  const policyOf = l => /never force-push this repository/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'never-repository' : /always force-push after rebasing/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'always-rebase' : null;
-  const seen = new Set(), policies = new Map();
-  return lessons.filter(l => {
-    const o = ownerOf(l);
-    return l && (!o || project === o || project.startsWith(`${o}/`));
-  }).sort((a, b) => {
-    const rank = l => { const o = ownerOf(l); return [o ? (project === o ? 3 : project.startsWith(`${o}/`) ? 2 : -1) : 0, severity[String(l.severity || '').toLowerCase()] || 0]; };
-    const ar = rank(a), br = rank(b);
-    return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
-  }).filter(l => {
-    const key = String(l.rule || l.title || ''), topic = topicOf(l), policy = policyOf(l);
-    if (seen.has(key) || (topic && policy && policies.get(topic) && policies.get(topic) !== policy)) return false;
-    seen.add(key); if (topic && policy) policies.set(topic, policy); return true;
-  });
-}
-
 debug(`tool=${toolName} project=${project}`);
 
 const toolInputPreview = extractToolInputPreview(toolName, toolInput);
@@ -281,6 +262,10 @@ const sessionId = input.session_id || '';
       fetchLessonMatches(toolName, toolInputPreview, project, {
         triggerOn: 'file_scope',
         modifiedFiles,
+      }),
+      fetchLessonMatches(toolName, toolInputPreview, null, {
+        triggerOn: 'file_scope',
+        modifiedFiles,
       })
     );
   }
@@ -297,7 +282,7 @@ const sessionId = input.session_id || '';
     seen.add(lesson.id);
     matches.push(lesson);
   }
-  matches = selectScopedMatches(matches);
+  matches = selectScopedLessons(matches, project, 5);
   matches.sort((a, b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
   matches.splice(5);
 

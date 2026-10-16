@@ -11,6 +11,9 @@ const { randomUUID } = require('crypto');
 const { renderLessonBlock } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-block')
 );
+const { selectScopedLessons } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-selection')
+);
 
 const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
 // Anchor state to the PROJECT root (git root of cwd), not raw cwd. Codex hooks
@@ -349,31 +352,6 @@ function lessonAppliesToProject(lesson, projectPath) {
 
 function lessonIsGlobal(lesson) {
   return Boolean(lesson && !lesson.project_name && lesson.project_id == null);
-}
-
-function selectScopedLessons(lessons, project, limit = 5) {
-  const severity = { critical: 3, warning: 2, info: 1 };
-  const scoped = lessons
-    .filter(l => l && l.active !== false && (lessonIsGlobal(l) || lessonAppliesToProject(l, project)))
-    .sort((a, b) => {
-      const owner = l => normalizeProjectPath(l.project_name || l.project || '').replace(/\/$/, '');
-      const rank = l => [owner(l) ? (project === owner(l) ? 3 : project.startsWith(`${owner(l)}/`) ? 2 : -1) : 0, severity[String(l.severity || '').toLowerCase()] || 0];
-      const ar = rank(a), br = rank(b);
-      return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
-    });
-  const seen = new Set();
-  const policies = new Map();
-  return scoped.filter(lesson => {
-    const key = String(lesson.rule || lesson.title || '');
-    const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
-    const topic = /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'force-push' : null;
-    const policy = topic && (/\b(?:never|do not|avoid|without)\b/.test(text) ? 'avoid' : /\b(?:always|must|use)\b/.test(text) ? 'require' : null);
-    if (seen.has(key)) return false;
-    if (topic && policy && policies.get(topic) && policies.get(topic) !== policy) return false;
-    seen.add(key);
-    if (topic && policy) policies.set(topic, policy);
-    return true;
-  }).slice(0, limit);
 }
 
 // Match Python fnmatch: wildcards cross slashes, ? matches one character,
