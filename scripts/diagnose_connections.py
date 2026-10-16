@@ -12,11 +12,21 @@ import urllib.request
 from urllib.parse import urlsplit
 
 
+def safe_endpoint(url: str) -> str:
+    """Return only the non-sensitive shape of a diagnostic endpoint."""
+    parsed = urlsplit(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path if parsed.path == "/api/health" else "/[redacted]"
+    return f"{parsed.scheme}://{parsed.hostname}:{port}{path}"
+
+
 def http_probe(url: str, timeout: float) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         service_status = body.get("status") if isinstance(body, dict) else None
+        if service_status not in {"ok", "degraded", "error"}:
+            service_status = "unknown"
         return {"status": "ok", "http_status": response.status, "service_status": service_status}
     except urllib.error.HTTPError as error:
         return {"status": "error", "http_status": error.code, "error": "http_error"}
@@ -42,7 +52,7 @@ def main() -> None:
     parsed = urlsplit(args.http)
     default_port = 443 if parsed.scheme == "https" else 80
     print(json.dumps({
-        "http": {"endpoint": f"{parsed.scheme}://{parsed.hostname}:{parsed.port or default_port}{parsed.path}",
+        "http": {"endpoint": safe_endpoint(args.http),
                  **http_probe(args.http, args.timeout)},
         "postgres_tcp": postgres_probe(args.pg_host, args.pg_port, args.timeout),
         "interpretation": "HTTP and PostgreSQL are independent transports; an HTTP refusal does not prove stdio MCP or PostgreSQL is down.",

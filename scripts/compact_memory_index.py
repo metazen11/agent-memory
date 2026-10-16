@@ -39,7 +39,7 @@ def compact_markdown(text: str, max_chars: int = 4000) -> str:
             out.append(line)
             pending_summary = None
         elif stripped and pending_summary is None:
-            pending_summary = " ".join(stripped.split())
+            pending_summary = " ".join(stripped[2:].split()) if stripped.startswith("> ") else " ".join(stripped.split())
             out.append(f"> {pending_summary[:240]}")
         if sum(len(item.encode("utf-8")) + 1 for item in out) >= max_chars:
             break

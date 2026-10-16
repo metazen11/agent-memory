@@ -124,6 +124,16 @@ def test_http_probe_handles_json_arrays_without_hiding_result(monkeypatch):
     assert diagnose_connections.http_probe("http://127.0.0.1:1", 0.1)["http_status"] == 200
 
 
+def test_diagnostics_redact_endpoint_path_and_validate_status():
+    assert diagnose_connections.safe_endpoint("http://u:secret@127.0.0.1:3377/api/health?token=secret") == "http://127.0.0.1:3377/api/health"
+    assert diagnose_connections.safe_endpoint("http://127.0.0.1:3377/api/health/token") == "http://127.0.0.1:3377/[redacted]"
+
+
+def test_compact_is_idempotent_for_existing_index_summaries():
+    source = "# Heading\n\n> existing summary\n"
+    assert compact_markdown(compact_markdown(source, 256), 256) == compact_markdown(source, 256)
+
+
 def test_direct_and_queue_identity_ignores_provenance_text():
     args = (1, "title", None, "discovery", "narrative", ["f"], [], [], [])
     assert observation_dedupe_key(*args, "direct") == observation_dedupe_key(*args, "queue provider=local")
