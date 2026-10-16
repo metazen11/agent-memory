@@ -140,7 +140,7 @@ function deliveryReservation(sessionId) {
     } catch (e) {
       if (e.code === 'EEXIST') {
         const age = Date.now() - fs.statSync(pending).mtimeMs;
-        if (age > 10000) { fs.unlinkSync(pending); return deliveryReservation(sessionId, project); }
+        if (age > 10000) { fs.unlinkSync(pending); return deliveryReservation(sessionId); }
       }
       return null;
     }

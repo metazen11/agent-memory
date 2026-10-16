@@ -6,9 +6,11 @@ lesson, and asserts on what would reach the model (additionalContext).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -183,3 +185,40 @@ def test_user_prompt_retries_after_fetch_failure_and_normalizes_scope(tmp_path):
     assert failed == {}
     recovered = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home)
     assert "canonical project rule" in recovered["hookSpecificOutput"]["additionalContext"]
+
+
+def test_stale_pending_delivery_marker_is_reclaimed(tmp_path):
+    home = tmp_path / "home"
+    session = "stale-pending"
+    delivery = home / ".agent-memory" / "delivery" / "claude-code"
+    delivery.mkdir(parents=True)
+    key = hashlib.sha256(session.encode()).hexdigest()
+    pending = delivery / f"{key}.pending"
+    pending.touch()
+    old = time.time() - 20
+    os.utime(pending, (old, old))
+
+    out = _run_full(
+        "user-prompt-submit.js",
+        {"session_id": session, "cwd": str(tmp_path), "prompt": "recover"},
+        tmp_path,
+        [_lesson("Recovered after stale marker")],
+        home,
+    )
+    assert "Recovered after stale marker" in out["hookSpecificOutput"]["additionalContext"]
+    assert not pending.exists()
+    assert (delivery / f"{key}.done").exists()
+
+
+def test_qualified_force_push_rules_are_not_treated_as_conflicts():
+    for blocked in ("Never force-push this repository.", "Do not force-push this repository."):
+        lessons = [
+            {"id": 1, "rule": blocked, "project_name": "/repo", "severity": "critical"},
+            {"id": 2, "rule": "Always force-push after rebasing with --force-with-lease.", "severity": "critical"},
+            {"id": 3, "rule": "Never force-push this repository without reviewing the remote branch tip.", "severity": "critical"},
+        ]
+        out = _node(
+            "const m=require(process.argv[1]); const ls=JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify(m.selectScopedLessons(ls, '/repo', 5)))",
+            str(ROOT / "hooks" / "lesson-selection.js"), json.dumps(lessons),
+        )
+        assert [lesson["id"] for lesson in json.loads(out)] == [1, 2, 3]

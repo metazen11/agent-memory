@@ -28,9 +28,17 @@ function appliesToProject(lesson, project) {
 }
 
 function policyOf(lesson) {
-  const text = `${lesson.title || ''} ${lesson['rule'] || ''}`.toLowerCase();
-  if (text.includes('never force-push this repository')) return 'never-repository';
-  if (text.includes('always force-push after rebasing')) return 'always-rebase';
+  // Only the two known, unqualified statements conflict. Qualified rules
+  // carry additional safeguards and must remain visible rather than being
+  // classified by a substring match.
+  const rule = normalizeText(String(lesson['rule'] || ''))
+    .toLowerCase()
+    .replace(/[.!?]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (rule === 'never force-push this repository'
+      || rule === 'do not force-push this repository') return 'never-repository';
+  if (rule === 'always force-push after rebasing') return 'always-rebase';
   return null;
 }
 
