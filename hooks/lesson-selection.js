@@ -12,7 +12,7 @@ function normalizeProject(value) {
 }
 
 function ownerOf(lesson) {
-  return normalizeProject(lesson.project_name || lesson.project || '');
+  return normalizeProject(lesson['project_name'] || lesson.project || '');
 }
 
 function isGlobal(lesson) {
@@ -28,7 +28,7 @@ function appliesToProject(lesson, project) {
 }
 
 function policyOf(lesson) {
-  const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
+  const text = `${lesson.title || ''} ${lesson['rule'] || ''}`.toLowerCase();
   if (text.includes('never force-push this repository')) return 'never-repository';
   if (text.includes('always force-push after rebasing')) return 'always-rebase';
   return null;
@@ -53,7 +53,7 @@ function selectScopedLessons(lessons, project, limit = 5) {
   const selected = [];
   for (const lesson of scoped) {
     // Same rule is a duplicate; same title with different rules is not.
-    const key = String(lesson.rule || lesson.title || '');
+    const key = String(lesson['rule'] || lesson.title || '');
     if (seen.has(key)) continue;
     const policy = policyOf(lesson);
     if (policy && policies.has('force-push') && policies.get('force-push') !== policy) continue;

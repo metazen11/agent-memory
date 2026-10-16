@@ -321,13 +321,16 @@ console.log(fs.readFileSync(w.settingsFile,'utf8'));
 def test_prompt_hints_exclude_child_and_sibling_projects(hook_host):
     run, requests, tmp = hook_host
     # Mock service returns the fixture project regardless of the query: the
-    # hook must still reject it when cwd is its parent or a sibling prefix.
-    for cwd in [tmp.parent, Path(str(tmp) + "-sibling")]:
+    # hook must still reject that foreign lesson. Explicit global lessons are
+    # allowed, so the result is not expected to be empty.
+    for index, cwd in enumerate([tmp.parent, Path(str(tmp) + "-sibling")]):
         out = run(
             "user-prompt-submit.js",
-            {"session_id": "native", "cwd": str(cwd), "prompt": "scope check"},
+            {"session_id": f"scope-{index}", "cwd": str(cwd), "prompt": "scope check"},
         )
-        assert out == {}
+        context = out["hookSpecificOutput"]["additionalContext"]
+        assert "plugin contract" not in context
+        assert "Never force-push this repository" not in context
 
 
 def test_offline_snapshot_rejects_foreign_project(hook_host):
