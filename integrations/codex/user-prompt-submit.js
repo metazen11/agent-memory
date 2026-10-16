@@ -52,11 +52,16 @@ main().then(out => {
   const delivery = out?.__lessonDelivery;
   if (delivery) delete out.__lessonDelivery;
   const serialized = JSON.stringify(out) + '\n';
-  process.stdout.write(serialized, (error) => {
+  let settled = false;
+  const finish = (error) => {
+    if (settled) return;
+    settled = true;
     if (!delivery) return;
     if (error) releaseLessonContextDelivery(delivery.sessionId, delivery.token);
     else completeLessonContextDelivery(delivery.sessionId, delivery.token);
-  });
+  };
+  process.stdout.once('error', finish);
+  process.stdout.write(serialized, finish);
 }).catch(error => {
   console.error(`[agent-memory:prompt] ${error.message}`);
   console.log('{}');
