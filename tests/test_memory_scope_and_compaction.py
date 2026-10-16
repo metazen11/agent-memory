@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -6,7 +8,11 @@ from pathlib import Path
 from app.observation_identity import observation_dedupe_key
 from app.project import project_path_filter_strict
 from scripts import diagnose_connections
-from scripts.compact_memory_index import _source_lock, archive_and_compact, compact_markdown
+from scripts.compact_memory_index import (
+    _source_lock,
+    archive_and_compact,
+    compact_markdown,
+)
 
 
 def test_strict_project_filter_never_matches_child_from_parent():
@@ -132,6 +138,19 @@ def test_diagnostics_redact_endpoint_path_and_validate_status():
 def test_compact_is_idempotent_for_existing_index_summaries():
     source = "# Heading\n\n> existing summary\n"
     assert compact_markdown(compact_markdown(source, 256), 256) == compact_markdown(source, 256)
+
+
+def test_compaction_cli_requires_explicit_coordination_for_apply(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Heading\n\nold detail\n")
+    result = subprocess.run(
+        [sys.executable, "scripts/compact_memory_index.py", str(source), "--apply"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "requires --coordinated" in result.stderr
+    assert source.read_text() == "# Heading\n\nold detail\n"
 
 
 def test_direct_and_queue_identity_ignores_provenance_text():

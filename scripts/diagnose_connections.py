@@ -49,8 +49,6 @@ def main() -> None:
     parser.add_argument("--pg-port", type=int, default=int(os.getenv("POSTGRES_PORT", "5432")))
     parser.add_argument("--timeout", type=float, default=2.0)
     args = parser.parse_args()
-    parsed = urlsplit(args.http)
-    default_port = 443 if parsed.scheme == "https" else 80
     print(json.dumps({
         "http": {"endpoint": safe_endpoint(args.http),
                  **http_probe(args.http, args.timeout)},

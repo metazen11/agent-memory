@@ -3,7 +3,9 @@
 
 The compacted file is an index only: headings and one short summary line per
 section remain, while the complete original is copied to an adjacent archive
-directory before ``--apply`` writes anything.
+directory before ``--apply --coordinated`` writes anything. Without that
+explicit opt-in, the CLI only emits a candidate and never replaces the active
+index.
 """
 
 from __future__ import annotations
@@ -111,10 +113,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", type=Path)
     parser.add_argument("--max-chars", type=int, default=4000)
-    parser.add_argument("--apply", action="store_true", help="archive and replace the file")
+    parser.add_argument("--apply", action="store_true", help="replace only with explicit --coordinated")
+    parser.add_argument("--coordinated", action="store_true", help="confirm all writers honor the adjacent lock and the index is quiescent")
     args = parser.parse_args()
     if args.max_chars < 256:
         parser.error("--max-chars must be at least 256")
+    if args.apply and not args.coordinated:
+        parser.error("--apply requires --coordinated; default candidate output is safer")
 
     source = args.path.read_text(encoding="utf-8")
     compacted = compact_markdown(source, args.max_chars)
