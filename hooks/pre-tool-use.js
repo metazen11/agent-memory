@@ -216,6 +216,25 @@ const toolInput = input.tool_input || {};
 const cwd = input.cwd || process.cwd();
 const project = cwd;
 
+function selectScopedMatches(lessons) {
+  const severity = { critical: 3, warning: 2, info: 1 };
+  const ownerOf = l => String(l.project_name || l.project || '').replace(/\/$/, '');
+  const topicOf = l => /force[- ]push|push after rebasing|rebase.*push/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'rebase-force-push' : null;
+  const seen = new Set(), topics = new Set();
+  return lessons.filter(l => {
+    const o = ownerOf(l);
+    return l && (!o || project === o || project.startsWith(`${o}/`));
+  }).sort((a, b) => {
+    const rank = l => { const o = ownerOf(l); return [o ? (project === o ? 3 : project.startsWith(`${o}/`) ? 2 : -1) : 0, severity[String(l.severity || '').toLowerCase()] || 0]; };
+    const ar = rank(a), br = rank(b);
+    return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
+  }).filter(l => {
+    const key = String(l.title || l.rule || ''), topic = topicOf(l);
+    if (seen.has(key) || (topic && topics.has(topic))) return false;
+    seen.add(key); if (topic) topics.add(topic); return true;
+  });
+}
+
 debug(`tool=${toolName} project=${project}`);
 
 const toolInputPreview = extractToolInputPreview(toolName, toolInput);
@@ -270,6 +289,7 @@ const sessionId = input.session_id || '';
     seen.add(lesson.id);
     matches.push(lesson);
   }
+  matches = selectScopedMatches(matches);
   matches.sort((a, b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
   matches.splice(5);
 

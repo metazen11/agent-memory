@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { normalizeProjectPath, requestJson, compileLessonMatchesFromSnapshot, preToolHintsEnabled } = require('./common');
+const { normalizeProjectPath, requestJson, compileLessonMatchesFromSnapshot, selectScopedLessons, preToolHintsEnabled } = require('./common');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -127,8 +127,7 @@ async function main() {
     return;
   }
 
-  matches.sort((a, b) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1));
-  matches = matches.slice(0, 5);
+  matches = selectScopedLessons(matches, project, 5);
   for (const lesson of matches) {
     trackTrigger(lesson.id);
   }
