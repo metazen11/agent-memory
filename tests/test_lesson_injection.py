@@ -29,7 +29,7 @@ http.get = (opts, cb) => {
   setImmediate(() => {
     const res = new EventEmitter();
     cb(res);
-    res.emit('data', JSON.stringify(lessons));
+    res.emit('data', process.env.STUB_HTTP_BODY || JSON.stringify(lessons));
     res.emit('end');
   });
   return req;
@@ -38,13 +38,13 @@ http.request = () => { const r = new EventEmitter(); r.write = r.end = r.destroy
 """
 
 
-def _run_full(hook: str, payload: dict, tmp_path: Path, lessons: list[dict], home: Path | None = None) -> dict:
+def _run_full(hook: str, payload: dict, tmp_path: Path, lessons: list[dict], home: Path | None = None, http_body: str | None = None) -> dict:
     stub = tmp_path / "stub.js"
     stub.write_text(STUB)
     proc = subprocess.run(
         ["node", "-r", str(stub), str(ROOT / "hooks" / hook)],
         input=json.dumps(payload), text=True, capture_output=True, cwd=str(ROOT),
-        env={**os.environ, "STUB_LESSONS": json.dumps(lessons), **({"HOME": str(home)} if home else {})},
+        env={**os.environ, "STUB_LESSONS": json.dumps(lessons), **({"HOME": str(home)} if home else {}), **({"STUB_HTTP_BODY": http_body} if http_body else {})},
         timeout=20,
     )
     return json.loads(proc.stdout.strip().splitlines()[0] or "{}")
@@ -170,3 +170,13 @@ def test_user_prompt_lessons_are_once_per_session_and_project_scoped(tmp_path):
     assert "Never force-push this repository" in ctx
     assert "Always force-push after rebasing" not in ctx
     assert second == {}
+
+
+def test_user_prompt_retries_after_fetch_failure_and_normalizes_scope(tmp_path):
+    home = tmp_path / "home"
+    payload = {"session_id": "session-retry", "cwd": "/Users/mz/Dropbox/_CODING/agent-memory", "prompt": "hello"}
+    lessons = [_lesson("canonical project rule", 1, project_name="/Users/mz/_CODING/agent-memory")]
+    failed = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home, http_body='{"status":"error"}')
+    assert failed == {}
+    recovered = _run_full("user-prompt-submit.js", payload, tmp_path, lessons, home)
+    assert "canonical project rule" in recovered["hookSpecificOutput"]["additionalContext"]

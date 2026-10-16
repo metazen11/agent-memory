@@ -220,7 +220,7 @@ function fetchLessons(project, severity, limit) {
   }
   if (severity) params.set('severity', severity);
   return httpGet(`/api/lessons?${params}`, FETCH_TIMEOUT_MS)
-    .then(r => Array.isArray(r) ? r : []);
+    .then(r => ({ ok: Array.isArray(r), lessons: Array.isArray(r) ? r : [] }));
 }
 
 function appliesToProject(lesson, project) {
@@ -261,7 +261,7 @@ async function main() {
 
   const sessionId = input.session_id || '';
   const cwd = input.cwd || process.cwd();
-  const project = cwd;
+  const project = normalizeText(cwd) || cwd;
   const reservation = deliveryReservation(sessionId, project);
   debug(`session=${sessionId} reserved=${!!reservation} project=${project}`);
 
@@ -283,9 +283,17 @@ async function main() {
     //
     // Fetch scoped and global lessons separately so the client can apply the
     // same boundary and precedence rules even against older servers.
-    const projectLessons = (await fetchLessons(project, null, 100)) || [];
-    const globalLessons = (await fetchLessons(null, null, 100)) || [];
+    const projectResult = await fetchLessons(project, null, 100);
+    const globalResult = await fetchLessons(null, null, 100);
     clearTimeout(budgetTimer);
+    if (!projectResult.ok || !globalResult.ok) {
+      finishDelivery(reservation, false);
+      debug('lesson fetch failed — reservation released for retry');
+      allow();
+      return;
+    }
+    const projectLessons = projectResult.lessons;
+    const globalLessons = globalResult.lessons;
 
     const allLessons = [...projectLessons, ...globalLessons]
       .filter(l => l && l.id && l.active !== false && appliesToProject(l, project))
@@ -317,8 +325,14 @@ async function main() {
       },
     };
     const serialized = JSON.stringify(payload) + '\n';
-    process.stdout.once('error', () => { finishDelivery(reservation, false); });
-    process.stdout.write(serialized, () => finishDelivery(reservation, true));
+    let outputFailed = false;
+    process.stdout.once('error', () => {
+      outputFailed = true;
+      finishDelivery(reservation, false);
+    });
+    process.stdout.write(serialized, () => {
+      if (!outputFailed) finishDelivery(reservation, true);
+    });
   } catch (e) {
     clearTimeout(budgetTimer);
     finishDelivery(reservation, false);
