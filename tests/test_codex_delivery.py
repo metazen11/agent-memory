@@ -41,7 +41,8 @@ def hook_host(tmp_path):
                     else []
                 )
             elif parsed.path == "/api/lessons":
-                data = [lesson]
+                query = parse_qs(parsed.query)
+                data = [lesson] if query.get("project") else []
             elif parsed.path.endswith("search"):
                 data = {"observations": []}
             else:
@@ -140,7 +141,9 @@ def test_native_prompt_overview_is_once_per_session(hook_host):
     second = run("user-prompt-submit.js", {**event, "prompt": "second"})
     assert "plugin contract" in first["hookSpecificOutput"]["additionalContext"]
     assert second == {}
-    assert len([p for m, p, b in requests if urlparse(p).path == "/api/lessons"]) == 1
+    assert len([p for m, p, b in requests if urlparse(p).path == "/api/lessons"]) == 2
+    lesson_queries = [parse_qs(urlparse(p).query) for m, p, b in requests if urlparse(p).path == "/api/lessons"]
+    assert any(q.get("strict_scope") == ["true"] for q in lesson_queries)
 
 
 def test_disabled_hints_still_capture_prompt(hook_host):

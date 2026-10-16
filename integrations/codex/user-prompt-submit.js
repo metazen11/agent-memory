@@ -20,11 +20,15 @@ async function main() {
   if (lessonContextSentForSession(event.session_id)) return {};
   let lessons;
   try {
-    // Fetch the bounded overview once per session.  The client applies the
-    // exact project/global filter below; strict PreToolUse matching remains
-    // the only path for tool-specific reminders.
-    const { data } = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100`, null, 1200);
-    lessons = Array.isArray(data) ? data : [];
+    // Keep the scoped response canonical (full_path), then fetch explicit
+    // globals separately. The non-strict response uses short names, which
+    // cannot safely distinguish same-basename repositories.
+    const scoped = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100&strict_scope=true`, null, 1200);
+    const globals = await requestJson('GET', '/api/lessons?active=true&limit=100', null, 1200);
+    lessons = [
+      ...(Array.isArray(scoped.data) ? scoped.data : []),
+      ...(Array.isArray(globals.data) ? globals.data : []),
+    ];
   } catch {
     const snapshot = readJsonFile(LESSONS_FILE, {});
     lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
