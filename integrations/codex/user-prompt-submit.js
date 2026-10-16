@@ -2,7 +2,7 @@
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, selectScopedLessons, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, formatLessons, selectScopedLessons, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -30,14 +30,15 @@ async function main() {
       ...(Array.isArray(globals.data) ? globals.data : []),
     ];
   } catch {
-    const snapshot = readJsonFile(LESSONS_FILE, {});
-    lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
+    // Retrieval errors must remain retryable; a stale snapshot must not mark
+    // this session delivered or turn a transient outage into a silent miss.
+    return {};
   }
-  const overview = selectScopedLessons(lessons, project, 5);
-  const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
-  if (!overview.length) return {};
   const deliveryToken = reserveLessonContextDelivery(event.session_id);
   if (!deliveryToken) return {};
+  const overview = selectScopedLessons(lessons, project, 5);
+  const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
+  if (!overview.length) return { __lessonDelivery: { sessionId: event.session_id, token: deliveryToken } };
   return {
     __lessonDelivery: { sessionId: event.session_id, token: deliveryToken },
     systemMessage: hint,
