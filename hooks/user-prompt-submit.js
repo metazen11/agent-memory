@@ -131,6 +131,10 @@ function deliveryReservation(sessionId, project) {
     try {
       const fd = fs.openSync(pending, 'wx', 0o600);
       fs.closeSync(fd);
+      if (fs.existsSync(done)) {
+        fs.unlinkSync(pending);
+        return null;
+      }
       return { pending, done };
     } catch (e) {
       if (e.code === 'EEXIST') {
@@ -330,8 +334,9 @@ async function main() {
       outputFailed = true;
       finishDelivery(reservation, false);
     });
-    process.stdout.write(serialized, () => {
-      if (!outputFailed) finishDelivery(reservation, true);
+    process.stdout.write(serialized, (error) => {
+      if (error || outputFailed) finishDelivery(reservation, false);
+      else finishDelivery(reservation, true);
     });
   } catch (e) {
     clearTimeout(budgetTimer);
