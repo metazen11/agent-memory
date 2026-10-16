@@ -271,6 +271,101 @@ def test_native_prompt_retries_after_http_failure_without_snapshot(tmp_path):
         server.server_close()
 
 
+def test_native_prompt_empty_success_is_delivered_once(tmp_path):
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        AGENT_MEMORY_SERVER=f"http://127.0.0.1:{server.server_port}",
+        AGENT_MEMORY_CODEX_STATE_DIR=str(tmp_path),
+        AGENT_MEMORY_HINTS_ENABLED="1",
+    )
+
+    def run(prompt):
+        result = subprocess.run(
+            ["node", str(ROOT / "integrations/codex" / "user-prompt-submit.js")],
+            input=json.dumps({"session_id": "empty", "cwd": str(tmp_path), "prompt": prompt}),
+            text=True, capture_output=True, cwd=tmp_path, env=env, check=True, timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    try:
+        assert run("first") == {}
+        assert run("second") == {}
+        assert len([p for p in requests if p.startswith("/api/lessons")]) == 2
+        delivery = json.loads((tmp_path / ".agent-memory-codex" / "lesson-delivery.json").read_text())
+        assert delivery["sessions"]["empty"]["status"] == "completed"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_native_prompt_retrieval_error_does_not_complete_from_snapshot(tmp_path):
+    state = tmp_path / ".agent-memory-codex"
+    state.mkdir()
+    (state / "lessons.snapshot.json").write_text(
+        json.dumps({"project_path": str(tmp_path), "lessons": [{"id": 7, "title": "stale", "rule": "stale"}]}),
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):
+            self.send_response(503)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        AGENT_MEMORY_SERVER=f"http://127.0.0.1:{server.server_port}",
+        AGENT_MEMORY_CODEX_STATE_DIR=str(tmp_path),
+        AGENT_MEMORY_HINTS_ENABLED="1",
+    )
+    try:
+        result = subprocess.run(
+            ["node", str(ROOT / "integrations/codex" / "user-prompt-submit.js")],
+            input=json.dumps({"session_id": "error", "cwd": str(tmp_path), "prompt": "retry"}),
+            text=True, capture_output=True, cwd=tmp_path, env=env, check=True, timeout=10,
+        )
+        assert json.loads(result.stdout) == {}
+        assert not (state / "lesson-delivery.json").exists()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_disabled_hints_still_capture_prompt(hook_host):
     run, requests, tmp = hook_host
     assert (
