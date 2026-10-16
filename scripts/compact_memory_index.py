@@ -46,7 +46,11 @@ def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:
     for suffix in range(100):
         candidate = archive_dir / f"{stamp}-{suffix:02d}-{path.name}"
         try:
-            with candidate.open("xb") as handle:
+            # Start owner-only even if interrupted before source-mode
+            # preservation. ``open('xb')`` can expose 0644 briefly under a
+            # permissive umask.
+            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
                 handle.write(original)
             os.chmod(candidate, path.stat().st_mode & 0o7777)
             archive = candidate

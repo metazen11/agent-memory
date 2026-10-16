@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from app.observation_identity import observation_dedupe_key
@@ -49,6 +50,23 @@ def test_archive_preserves_restrictive_permissions(tmp_path):
     source.chmod(0o600)
     archive = archive_and_compact(source, 256)
     assert archive.stat().st_mode & 0o777 == 0o600
+
+
+def test_archive_starts_owner_only_before_mode_preservation(tmp_path, monkeypatch):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Root\n")
+    source.chmod(0o640)
+    observed = {}
+    real_chmod = os.chmod
+
+    def observe_chmod(path, mode):
+        observed["initial"] = Path(path).stat().st_mode & 0o777
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", observe_chmod)
+    archive = archive_and_compact(source, 256)
+    assert observed["initial"] == 0o600
+    assert archive.stat().st_mode & 0o777 == 0o640
 
 
 def test_http_probe_handles_json_arrays_without_hiding_result(monkeypatch):
