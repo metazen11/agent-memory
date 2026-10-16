@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -45,34 +48,63 @@ def compact_markdown(text: str, max_chars: int = 4000) -> str:
     return _fit_utf8(compacted, max_chars)
 
 
-def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:
-    """Archive ``path`` then replace it; return the archive path."""
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    archive_dir = path.parent / f"{path.name}.archive"
-    archive_dir.mkdir(exist_ok=True)
-    original = path.read_bytes()
-    for suffix in range(100):
-        candidate = archive_dir / f"{stamp}-{suffix:02d}-{path.name}"
+@contextmanager
+def _source_lock(path: Path):
+    """Coordinate compaction with writers using the same adjacent lock."""
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
-            # Start owner-only even if interrupted before source-mode
-            # preservation. ``open('xb')`` can expose 0644 briefly under a
-            # permissive umask.
-            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:
+    """Archive then atomically replace ``path`` under the writer lock."""
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    with _source_lock(path):
+        archive_dir = path.parent / f"{path.name}.archive"
+        archive_dir.mkdir(exist_ok=True)
+        original = path.read_bytes()
+        source_mode = path.stat().st_mode & 0o7777
+        for suffix in range(100):
+            candidate = archive_dir / f"{stamp}-{suffix:02d}-{path.name}"
+            try:
+                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(original)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(candidate, source_mode)
+                archive = candidate
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise FileExistsError(f"could not allocate unique archive name under {archive_dir}")
+        if path.read_bytes() != original:
+            raise RuntimeError(f"source changed while archiving: {path}")
+        compacted = compact_markdown(original.decode("utf-8"), max_chars).encode("utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
             with os.fdopen(fd, "wb") as handle:
-                handle.write(original)
-            os.chmod(candidate, path.stat().st_mode & 0o7777)
-            archive = candidate
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise FileExistsError(f"could not allocate unique archive name under {archive_dir}")
-    current = path.read_bytes()
-    if current != original:
-        raise RuntimeError(f"source changed while archiving: {path}")
-    compacted = compact_markdown(original.decode("utf-8"), max_chars)
-    path.write_text(compacted, encoding="utf-8")
-    return archive
+                os.fchmod(handle.fileno(), source_mode)
+                handle.write(compacted)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if path.read_bytes() != original:
+                raise RuntimeError(f"source changed before publication: {path}")
+            os.replace(temporary, path)
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return archive
 
 
 def main() -> None:

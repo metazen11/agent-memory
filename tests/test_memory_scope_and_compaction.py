@@ -1,10 +1,12 @@
 import os
+import threading
+import time
 from pathlib import Path
 
 from app.observation_identity import observation_dedupe_key
 from app.project import project_path_filter_strict
 from scripts import diagnose_connections
-from scripts.compact_memory_index import archive_and_compact, compact_markdown
+from scripts.compact_memory_index import _source_lock, archive_and_compact, compact_markdown
 
 
 def test_strict_project_filter_never_matches_child_from_parent():
@@ -71,6 +73,38 @@ def test_archive_starts_owner_only_before_mode_preservation(tmp_path, monkeypatc
     archive = archive_and_compact(source, 256)
     assert observed["initial"] == 0o600
     assert archive.stat().st_mode & 0o777 == 0o640
+
+
+def test_compaction_serializes_writers_using_the_source_lock(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Original\n\nold detail\n")
+    writer_holding = threading.Event()
+    release_writer = threading.Event()
+
+    def writer():
+        with _source_lock(source):
+            source.write_text("# Writer update\n\nnew detail\n")
+            writer_holding.set()
+            release_writer.wait(2)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert writer_holding.wait(1)
+    result = {}
+
+    def compact():
+        result["archive"] = archive_and_compact(source, 256)
+
+    compactor = threading.Thread(target=compact)
+    compactor.start()
+    time.sleep(0.05)
+    assert compactor.is_alive()
+    release_writer.set()
+    thread.join(2)
+    compactor.join(2)
+    assert not compactor.is_alive()
+    assert result["archive"].read_text() == "# Writer update\n\nnew detail\n"
+    assert source.read_text().startswith("# Writer update\n")
 
 
 def test_http_probe_handles_json_arrays_without_hiding_result(monkeypatch):
