@@ -2,7 +2,7 @@
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, lessonIsGlobal, lessonContextSentForSession, markLessonContextSent, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, lessonIsGlobal, lessonContextSentForSession, claimLessonContextSent, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -37,12 +37,12 @@ async function main() {
   const overview = scoped
     .sort((a, b) => (a.severity === 'critical' ? 0 : b.severity === 'critical' ? 1 : 0))
     .slice(0, 5);
-  markLessonContextSent(event.session_id);
   const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
-  return overview.length ? {
+  if (!overview.length || !claimLessonContextSent(event.session_id)) return {};
+  return {
     systemMessage: hint,
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: hint },
-  } : {};
+  };
 }
 main().then(out => console.log(JSON.stringify(out))).catch(error => {
   console.error(`[agent-memory:prompt] ${error.message}`);

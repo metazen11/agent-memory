@@ -35,6 +35,8 @@ const SESSION_FILE = path.join(STATE_DIR, 'current-session.json');
 const CONTEXT_FILE = path.join(STATE_DIR, 'session-context.md');
 const SPOOL_DIR = path.join(STATE_DIR, 'spool');
 const LESSONS_FILE = path.join(STATE_DIR, 'lessons.snapshot.json');
+const LESSON_DELIVERY_FILE = path.join(STATE_DIR, 'lesson-delivery.json');
+const LESSON_DELIVERY_LOCK = path.join(STATE_DIR, 'lesson-delivery.lock');
 const RECENT_FILE = path.join(STATE_DIR, 'recent.snapshot.json');
 const WATCHER_PID_FILE = path.join(STATE_DIR, 'host-watch.pid');
 
@@ -131,14 +133,47 @@ function readSessionState() {
   }
 }
 
-function lessonContextSentForSession(sessionId) {
-  const state = readSessionState();
-  return Boolean(sessionId && state?.session_id === sessionId && state.lesson_context_sent);
+function readLessonDeliveryState() {
+  return readJsonFile(LESSON_DELIVERY_FILE, { sessions: {} }) || { sessions: {} };
 }
 
-function markLessonContextSent(sessionId) {
-  if (!sessionId) return;
-  writeSessionState({ ...(readSessionState() || {}), session_id: sessionId, lesson_context_sent: true });
+function lessonContextSentForSession(sessionId) {
+  return Boolean(sessionId && readLessonDeliveryState().sessions?.[sessionId]?.status === 'completed');
+}
+
+function claimLessonContextSent(sessionId) {
+  if (!sessionId) return false;
+  ensureStateDir();
+  let lockFd;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      lockFd = fs.openSync(LESSON_DELIVERY_LOCK, 'wx', 0o600);
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(LESSON_DELIVERY_LOCK).mtimeMs > 10000) {
+          fs.unlinkSync(LESSON_DELIVERY_LOCK);
+          continue;
+        }
+      } catch {}
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  if (lockFd == null) return false;
+  try {
+    const state = readLessonDeliveryState();
+    if (state.sessions?.[sessionId]?.status === 'completed') return false;
+    state.sessions = state.sessions || {};
+    state.sessions[sessionId] = { status: 'completed', completed_at: new Date().toISOString() };
+    const temp = `${LESSON_DELIVERY_FILE}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    fs.renameSync(temp, LESSON_DELIVERY_FILE);
+    return true;
+  } finally {
+    fs.closeSync(lockFd);
+    try { fs.unlinkSync(LESSON_DELIVERY_LOCK); } catch {}
+  }
 }
 
 function writeContext(text) {
@@ -395,6 +430,7 @@ module.exports = {
   CONTEXT_FILE,
   SPOOL_DIR,
   LESSONS_FILE,
+  LESSON_DELIVERY_FILE,
   RECENT_FILE,
   WATCHER_PID_FILE,
   ensureStateDir,
@@ -406,7 +442,7 @@ module.exports = {
   writeSessionState,
   readSessionState,
   lessonContextSentForSession,
-  markLessonContextSent,
+  claimLessonContextSent,
   writeContext,
   writeJsonFile,
   readJsonFile,
