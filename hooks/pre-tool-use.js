@@ -225,8 +225,8 @@ const project = normalizeText(cwd) || cwd;
 function selectScopedMatches(lessons) {
   const severity = { critical: 3, warning: 2, info: 1 };
   const ownerOf = l => String(l.project_name || l.project || '').replace(/\/$/, '');
-  const topicOf = l => /force[- ]push|push after rebasing|rebase.*push/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'force-push' : null;
-  const policyOf = l => /\b(?:never|do not|avoid|without)\b/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'avoid' : /\b(?:always|must|use)\b/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'require' : null;
+  const topicOf = l => /never force-push this repository|always force-push after rebasing/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'force-push' : null;
+  const policyOf = l => /never force-push this repository/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'never-repository' : /always force-push after rebasing/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'always-rebase' : null;
   const seen = new Set(), policies = new Map();
   return lessons.filter(l => {
     const o = ownerOf(l);
@@ -274,6 +274,7 @@ const sessionId = input.session_id || '';
 
   const requests = [
     fetchLessonMatches(toolName, toolInputPreview, project, { triggerOn: 'input' }),
+    fetchLessonMatches(toolName, toolInputPreview, null, { triggerOn: 'input' }),
   ];
   if (modifiedFiles.length) {
     requests.push(

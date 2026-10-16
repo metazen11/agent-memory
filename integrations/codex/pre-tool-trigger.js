@@ -101,12 +101,18 @@ async function main() {
   try {
     const params = new URLSearchParams({ tool_name: tool, tool_input_preview: input || '', project, strict_scope: 'true' });
     const queries = ['input', ...(modifiedFiles.length ? ['file_scope'] : [])];
-    const responses = await Promise.all(lessonTools.flatMap(toolName => queries.map(triggerOn => {
-      const query = new URLSearchParams(params);
-      query.set('tool_name', toolName);
-      query.set('trigger_on', triggerOn);
-      if (triggerOn === 'file_scope') query.set('modified_files', modifiedFiles.join(','));
-      return requestJson('GET', `/api/lessons/match?${query}`, null, 1200);
+    const responses = await Promise.all(lessonTools.flatMap(toolName => queries.flatMap(triggerOn => {
+      const scopedQuery = new URLSearchParams(params);
+      scopedQuery.set('tool_name', toolName);
+      scopedQuery.set('trigger_on', triggerOn);
+      if (triggerOn === 'file_scope') scopedQuery.set('modified_files', modifiedFiles.join(','));
+      const globalQuery = new URLSearchParams(scopedQuery);
+      globalQuery.delete('project');
+      globalQuery.delete('strict_scope');
+      return [
+        requestJson('GET', `/api/lessons/match?${scopedQuery}`, null, 1200),
+        requestJson('GET', `/api/lessons/match?${globalQuery}`, null, 1200),
+      ];
     })));
     matches = [...new Map(responses.flatMap(r => Array.isArray(r.data) ? r.data : []).map(l => [l.id, l])).values()];
   } catch {
