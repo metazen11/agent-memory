@@ -169,6 +169,10 @@ function httpGet(pathAndQuery, timeoutMs) {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
+        if (res.statusCode != null && (res.statusCode < 200 || res.statusCode >= 300)) {
+          resolve(null);
+          return;
+        }
         try { resolve(JSON.parse(data)); }
         catch { resolve(null); }
       });
