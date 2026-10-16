@@ -410,6 +410,69 @@ def test_native_prompt_invalid_success_body_remains_retryable(tmp_path, body):
         server.server_close()
 
 
+@pytest.mark.parametrize("bad_endpoint", ["scoped", "global"])
+@pytest.mark.parametrize("bad_element", [None, {}, 1])
+def test_native_prompt_invalid_lesson_element_retries_when_healthy(
+    tmp_path, bad_endpoint, bad_element,
+):
+    requests = []
+    malformed_seen = {"scoped": False, "global": False}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):
+            scoped = "project=" in self.path
+            endpoint = "scoped" if scoped else "global"
+            requests.append(endpoint)
+            if endpoint == bad_endpoint and not malformed_seen[endpoint]:
+                malformed_seen[endpoint] = True
+                body = json.dumps([bad_element]).encode()
+            else:
+                body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        AGENT_MEMORY_SERVER=f"http://127.0.0.1:{server.server_port}",
+        AGENT_MEMORY_CODEX_STATE_DIR=str(tmp_path),
+        AGENT_MEMORY_HINTS_ENABLED="1",
+    )
+
+    def run(prompt):
+        result = subprocess.run(
+            ["node", str(ROOT / "integrations/codex" / "user-prompt-submit.js")],
+            input=json.dumps({"session_id": "element", "cwd": str(tmp_path), "prompt": prompt}),
+            text=True, capture_output=True, cwd=tmp_path, env=env, check=True, timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    try:
+        assert run("malformed") == {}
+        assert not (tmp_path / ".agent-memory-codex" / "lesson-delivery.json").exists()
+        assert run("healthy") == {}
+        delivery = json.loads((tmp_path / ".agent-memory-codex" / "lesson-delivery.json").read_text())
+        assert delivery["sessions"]["element"]["status"] == "completed"
+        assert requests == ["scoped", "global", "scoped", "global"]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_disabled_hints_still_capture_prompt(hook_host):
     run, requests, tmp = hook_host
     assert (

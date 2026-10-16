@@ -4,6 +4,18 @@ const fs = require('fs');
 const { randomUUID } = require('crypto');
 const { normalizeProjectPath, requestJson, hintsEnabled, formatLessons, selectScopedLessons, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
 
+function isLessonRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Number.isInteger(value.id)
+    && typeof value.title === 'string'
+    && typeof value['rule'] === 'string'
+    && typeof value.severity === 'string';
+}
+
+function isLessonResponse(value) {
+  return Array.isArray(value) && value.every(isLessonRecord);
+}
+
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!event.session_id || typeof event.prompt !== 'string') return {};
@@ -25,7 +37,7 @@ async function main() {
     // cannot safely distinguish same-basename repositories.
     const scoped = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100&strict_scope=true`, null, 1200);
     const globals = await requestJson('GET', '/api/lessons?active=true&limit=100', null, 1200);
-    if (!Array.isArray(scoped.data) || !Array.isArray(globals.data)) {
+    if (!isLessonResponse(scoped.data) || !isLessonResponse(globals.data)) {
       throw new Error('invalid lesson response shape');
     }
     lessons = [
