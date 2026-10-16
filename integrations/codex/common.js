@@ -131,6 +131,16 @@ function readSessionState() {
   }
 }
 
+function lessonContextSentForSession(sessionId) {
+  const state = readSessionState();
+  return Boolean(sessionId && state?.session_id === sessionId && state.lesson_context_sent);
+}
+
+function markLessonContextSent(sessionId) {
+  if (!sessionId) return;
+  writeSessionState({ ...(readSessionState() || {}), session_id: sessionId, lesson_context_sent: true });
+}
+
 function writeContext(text) {
   ensureStateDir();
   fs.writeFileSync(CONTEXT_FILE, text, 'utf8');
@@ -267,6 +277,10 @@ function lessonAppliesToProject(lesson, projectPath) {
   return project === base || project.startsWith(base + '/');
 }
 
+function lessonIsGlobal(lesson) {
+  return Boolean(lesson && !lesson.project_name && lesson.project_id == null);
+}
+
 // Match Python fnmatch: wildcards cross slashes, ? matches one character,
 // [abc], [a-z], [!abc] are sets, and unmatched [ is literal. Backslashes
 // are ordinary characters, rather than escape prefixes.
@@ -391,6 +405,8 @@ module.exports = {
   postQueuePayload,
   writeSessionState,
   readSessionState,
+  lessonContextSentForSession,
+  markLessonContextSent,
   writeContext,
   writeJsonFile,
   readJsonFile,
@@ -402,6 +418,7 @@ module.exports = {
   refreshSnapshots,
   compileLessonMatchesFromSnapshot,
   lessonAppliesToProject,
+  lessonIsGlobal,
   formatRecentObservations,
   formatLessons,
   hintsEnabled,

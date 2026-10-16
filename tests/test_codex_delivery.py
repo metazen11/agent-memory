@@ -133,6 +133,16 @@ def test_native_prompt_capture_and_hints(hook_host):
     )
 
 
+def test_native_prompt_overview_is_once_per_session(hook_host):
+    run, requests, tmp = hook_host
+    event = {"session_id": "once", "cwd": str(tmp), "prompt": "first"}
+    first = run("user-prompt-submit.js", event)
+    second = run("user-prompt-submit.js", {**event, "prompt": "second"})
+    assert "plugin contract" in first["hookSpecificOutput"]["additionalContext"]
+    assert second == {}
+    assert len([p for m, p, b in requests if p == "/api/lessons"]) == 1
+
+
 def test_disabled_hints_still_capture_prompt(hook_host):
     run, requests, tmp = hook_host
     assert (
