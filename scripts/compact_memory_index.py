@@ -85,6 +85,11 @@ def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:
                 continue
         else:
             raise FileExistsError(f"could not allocate unique archive name under {archive_dir}")
+        archive_dir_fd = os.open(archive_dir, os.O_RDONLY)
+        try:
+            os.fsync(archive_dir_fd)
+        finally:
+            os.close(archive_dir_fd)
         if path.read_bytes() != original:
             raise RuntimeError(f"source changed while archiving: {path}")
         compacted = compact_markdown(original.decode("utf-8"), max_chars).encode("utf-8")
