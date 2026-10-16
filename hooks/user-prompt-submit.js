@@ -245,7 +245,12 @@ function lessonRank(lesson, project) {
 
 function lessonTopic(lesson) {
   const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
-  return /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'rebase-force-push' : null;
+  return /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'force-push' : null;
+}
+
+function lessonPolicy(lesson) {
+  const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
+  return /\b(?:never|do not|avoid|without)\b/.test(text) ? 'avoid' : /\b(?:always|must|use)\b/.test(text) ? 'require' : null;
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -310,10 +315,11 @@ async function main() {
         const ar = lessonRank(a, project), br = lessonRank(b, project);
         return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
       })
-      .filter((lesson, index, list) => list.findIndex(other => String(other.title || other.rule) === String(lesson.title || lesson.rule)) === index)
+      .filter((lesson, index, list) => list.findIndex(other => String(other.rule || other.title) === String(lesson.rule || lesson.title)) === index)
       .filter((lesson, index, list) => {
         const topic = lessonTopic(lesson);
-        return !topic || list.findIndex(other => lessonTopic(other) === topic) === index;
+        const policy = lessonPolicy(lesson);
+        return !topic || !policy || !list.slice(0, index).some(other => lessonTopic(other) === topic && lessonPolicy(other) && lessonPolicy(other) !== policy);
       })
       .slice(0, 20);
     const ctx = renderLessonBlock(allLessons);   // sanitise/bound/wrap: lesson-block.js (#89)

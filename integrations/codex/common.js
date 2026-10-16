@@ -362,14 +362,16 @@ function selectScopedLessons(lessons, project, limit = 5) {
       return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
     });
   const seen = new Set();
-  const topics = new Set();
+  const policies = new Map();
   return scoped.filter(lesson => {
-    const key = String(lesson.title || lesson.rule || '');
+    const key = String(lesson.rule || lesson.title || '');
     const text = `${lesson.title || ''} ${lesson.rule || ''}`.toLowerCase();
-    const topic = /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'rebase-force-push' : null;
-    if (seen.has(key) || (topic && topics.has(topic))) return false;
+    const topic = /force[- ]push|push after rebasing|rebase.*push/.test(text) ? 'force-push' : null;
+    const policy = topic && (/\b(?:never|do not|avoid|without)\b/.test(text) ? 'avoid' : /\b(?:always|must|use)\b/.test(text) ? 'require' : null);
+    if (seen.has(key)) return false;
+    if (topic && policy && policies.get(topic) && policies.get(topic) !== policy) return false;
     seen.add(key);
-    if (topic) topics.add(topic);
+    if (topic && policy) policies.set(topic, policy);
     return true;
   }).slice(0, limit);
 }

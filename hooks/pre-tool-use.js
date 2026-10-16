@@ -225,8 +225,9 @@ const project = normalizeText(cwd) || cwd;
 function selectScopedMatches(lessons) {
   const severity = { critical: 3, warning: 2, info: 1 };
   const ownerOf = l => String(l.project_name || l.project || '').replace(/\/$/, '');
-  const topicOf = l => /force[- ]push|push after rebasing|rebase.*push/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'rebase-force-push' : null;
-  const seen = new Set(), topics = new Set();
+  const topicOf = l => /force[- ]push|push after rebasing|rebase.*push/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'force-push' : null;
+  const policyOf = l => /\b(?:never|do not|avoid|without)\b/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'avoid' : /\b(?:always|must|use)\b/i.test(`${l.title || ''} ${l.rule || ''}`) ? 'require' : null;
+  const seen = new Set(), policies = new Map();
   return lessons.filter(l => {
     const o = ownerOf(l);
     return l && (!o || project === o || project.startsWith(`${o}/`));
@@ -235,9 +236,9 @@ function selectScopedMatches(lessons) {
     const ar = rank(a), br = rank(b);
     return br[0] - ar[0] || br[1] - ar[1] || Number(a.id || 0) - Number(b.id || 0);
   }).filter(l => {
-    const key = String(l.title || l.rule || ''), topic = topicOf(l);
-    if (seen.has(key) || (topic && topics.has(topic))) return false;
-    seen.add(key); if (topic) topics.add(topic); return true;
+    const key = String(l.rule || l.title || ''), topic = topicOf(l), policy = policyOf(l);
+    if (seen.has(key) || (topic && policy && policies.get(topic) && policies.get(topic) !== policy)) return false;
+    seen.add(key); if (topic && policy) policies.set(topic, policy); return true;
   });
 }
 
