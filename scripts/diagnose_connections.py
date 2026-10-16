@@ -25,7 +25,7 @@ def http_probe(url: str, timeout: float) -> dict:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         service_status = body.get("status") if isinstance(body, dict) else None
-        if service_status not in {"ok", "degraded", "error"}:
+        if not isinstance(service_status, str) or service_status not in {"ok", "degraded", "error"}:
             service_status = "unknown"
         return {"status": "ok", "http_status": response.status, "service_status": service_status}
     except urllib.error.HTTPError as error:
