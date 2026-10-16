@@ -21,7 +21,8 @@ def _fit_utf8(text: str, max_bytes: int) -> str:
     safe = encoded[:max_bytes].decode("utf-8", "ignore")
     if "\n" in safe:
         safe = safe.rsplit("\n", 1)[0]
-    return safe.rstrip() + "\n"
+    safe = safe.rstrip()
+    return safe + ("\n" if len((safe + "\n").encode("utf-8")) <= max_bytes else "")
 
 
 def compact_markdown(text: str, max_chars: int = 4000) -> str:
