@@ -5,6 +5,7 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const { randomUUID } = require('crypto');
 // Installed codex hooks are symlinks into this repo (scripts/lib/agent-memory-host-wiring.js),
 // so resolve the shared renderer from the real path, not the symlink's directory.
 const { renderLessonBlock } = require(
@@ -141,8 +142,7 @@ function lessonContextSentForSession(sessionId) {
   return Boolean(sessionId && readLessonDeliveryState().sessions?.[sessionId]?.status === 'completed');
 }
 
-function claimLessonContextSent(sessionId) {
-  if (!sessionId) return false;
+function withLessonDeliveryLock(fn) {
   ensureStateDir();
   let lockFd;
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -160,20 +160,55 @@ function claimLessonContextSent(sessionId) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
     }
   }
-  if (lockFd == null) return false;
+  if (lockFd == null) return null;
   try {
-    const state = readLessonDeliveryState();
-    if (state.sessions?.[sessionId]?.status === 'completed') return false;
-    state.sessions = state.sessions || {};
-    state.sessions[sessionId] = { status: 'completed', completed_at: new Date().toISOString() };
-    const temp = `${LESSON_DELIVERY_FILE}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', 'utf8');
-    fs.renameSync(temp, LESSON_DELIVERY_FILE);
-    return true;
+    return fn(readLessonDeliveryState());
   } finally {
     fs.closeSync(lockFd);
     try { fs.unlinkSync(LESSON_DELIVERY_LOCK); } catch {}
   }
+}
+
+function writeLessonDeliveryState(state) {
+  const temp = `${LESSON_DELIVERY_FILE}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  fs.renameSync(temp, LESSON_DELIVERY_FILE);
+}
+
+function reserveLessonContextDelivery(sessionId) {
+  if (!sessionId) return null;
+  return withLessonDeliveryLock((state) => {
+    state.sessions = state.sessions || {};
+    const existing = state.sessions[sessionId];
+    if (existing?.status === 'completed') return null;
+    if (existing?.status === 'pending' && Date.now() - Date.parse(existing.started_at) < 10000) return null;
+    const token = randomUUID();
+    state.sessions[sessionId] = { status: 'pending', token, started_at: new Date().toISOString() };
+    writeLessonDeliveryState(state);
+    return token;
+  });
+}
+
+function completeLessonContextDelivery(sessionId, token) {
+  if (!sessionId || !token) return false;
+  return Boolean(withLessonDeliveryLock((state) => {
+    const existing = state.sessions?.[sessionId];
+    if (!existing || existing.status !== 'pending' || existing.token !== token) return false;
+    state.sessions[sessionId] = { status: 'completed', completed_at: new Date().toISOString() };
+    writeLessonDeliveryState(state);
+    return true;
+  }));
+}
+
+function releaseLessonContextDelivery(sessionId, token) {
+  if (!sessionId || !token) return false;
+  return Boolean(withLessonDeliveryLock((state) => {
+    const existing = state.sessions?.[sessionId];
+    if (!existing || existing.status !== 'pending' || existing.token !== token) return false;
+    delete state.sessions[sessionId];
+    writeLessonDeliveryState(state);
+    return true;
+  }));
 }
 
 function writeContext(text) {
@@ -442,7 +477,9 @@ module.exports = {
   writeSessionState,
   readSessionState,
   lessonContextSentForSession,
-  claimLessonContextSent,
+  reserveLessonContextDelivery,
+  completeLessonContextDelivery,
+  releaseLessonContextDelivery,
   writeContext,
   writeJsonFile,
   readJsonFile,

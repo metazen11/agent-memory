@@ -2,7 +2,7 @@
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, lessonIsGlobal, lessonContextSentForSession, claimLessonContextSent, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, lessonIsGlobal, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -34,17 +34,30 @@ async function main() {
     lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
   }
   const scoped = lessons.filter(l => l.active !== false && (lessonIsGlobal(l) || lessonAppliesToProject(l, project)));
+  const severity = { critical: 0, warning: 1, info: 2 };
   const overview = scoped
-    .sort((a, b) => (a.severity === 'critical' ? 0 : b.severity === 'critical' ? 1 : 0))
+    .sort((a, b) => (severity[a.severity] ?? 3) - (severity[b.severity] ?? 3))
     .slice(0, 5);
   const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
-  if (!overview.length || !claimLessonContextSent(event.session_id)) return {};
+  if (!overview.length) return {};
+  const deliveryToken = reserveLessonContextDelivery(event.session_id);
+  if (!deliveryToken) return {};
   return {
+    __lessonDelivery: { sessionId: event.session_id, token: deliveryToken },
     systemMessage: hint,
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: hint },
   };
 }
-main().then(out => console.log(JSON.stringify(out))).catch(error => {
+main().then(out => {
+  const delivery = out?.__lessonDelivery;
+  if (delivery) delete out.__lessonDelivery;
+  const serialized = JSON.stringify(out) + '\n';
+  process.stdout.write(serialized, (error) => {
+    if (!delivery) return;
+    if (error) releaseLessonContextDelivery(delivery.sessionId, delivery.token);
+    else completeLessonContextDelivery(delivery.sessionId, delivery.token);
+  });
+}).catch(error => {
   console.error(`[agent-memory:prompt] ${error.message}`);
   console.log('{}');
 });
