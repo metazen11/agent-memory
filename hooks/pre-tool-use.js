@@ -26,6 +26,9 @@ const { authHeaders } = require('./auth-header');
 const { renderLessonBlock } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), 'lesson-block')
 );
+const { normalizeText } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '_path-normalize')
+);
 const SERVER_BASE = 'http://localhost:3377';
 const DEBUG = process.env.AGENT_MEMORY_DEBUG === '1';
 
@@ -148,7 +151,10 @@ function fetchLessonMatches(toolName, toolInputPreview, project, opts = {}) {
       tool_name: toolName,
       tool_input_preview: toolInputPreview.slice(0, 1000),
     });
-    if (project) params.set('project', project);
+    if (project) {
+      params.set('project', project);
+      params.set('strict_scope', 'true');
+    }
     // trigger_on defaults to 'input' server-side. file_scope lessons are
     // invisible unless we ask for them explicitly AND send modified_files —
     // that mismatch made every file_scope lesson unreachable from this hook.
@@ -214,7 +220,7 @@ if (!PRE_TOOL_HINTS_ENABLED) {
 const toolName = input.tool_name || '';
 const toolInput = input.tool_input || {};
 const cwd = input.cwd || process.cwd();
-const project = cwd;
+const project = normalizeText(cwd) || cwd;
 
 function selectScopedMatches(lessons) {
   const severity = { critical: 3, warning: 2, info: 1 };
@@ -283,7 +289,7 @@ const sessionId = input.session_id || '';
   // systemMessage budget (same cap the server applies per-query).
   const severityRank = { critical: 0, warning: 1, info: 2 };
   const seen = new Set();
-  const matches = [];
+  let matches = [];
   for (const lesson of results.flat()) {
     if (!lesson || typeof lesson.id === 'undefined' || seen.has(lesson.id)) continue;
     seen.add(lesson.id);
