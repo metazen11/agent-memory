@@ -25,9 +25,12 @@ async function main() {
     // cannot safely distinguish same-basename repositories.
     const scoped = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100&strict_scope=true`, null, 1200);
     const globals = await requestJson('GET', '/api/lessons?active=true&limit=100', null, 1200);
+    if (!Array.isArray(scoped.data) || !Array.isArray(globals.data)) {
+      throw new Error('invalid lesson response shape');
+    }
     lessons = [
-      ...(Array.isArray(scoped.data) ? scoped.data : []),
-      ...(Array.isArray(globals.data) ? globals.data : []),
+      ...scoped.data,
+      ...globals.data,
     ];
   } catch {
     // Retrieval errors must remain retryable; a stale snapshot must not mark

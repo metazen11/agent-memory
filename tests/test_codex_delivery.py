@@ -366,6 +366,50 @@ def test_native_prompt_retrieval_error_does_not_complete_from_snapshot(tmp_path)
         server.server_close()
 
 
+@pytest.mark.parametrize("body", [b'{"not_lessons": true}', b"not-json", b""])
+def test_native_prompt_invalid_success_body_remains_retryable(tmp_path, body):
+    state = tmp_path / ".agent-memory-codex"
+    state.mkdir()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        AGENT_MEMORY_SERVER=f"http://127.0.0.1:{server.server_port}",
+        AGENT_MEMORY_CODEX_STATE_DIR=str(tmp_path),
+        AGENT_MEMORY_HINTS_ENABLED="1",
+    )
+    try:
+        result = subprocess.run(
+            ["node", str(ROOT / "integrations/codex" / "user-prompt-submit.js")],
+            input=json.dumps({"session_id": "invalid", "cwd": str(tmp_path), "prompt": "retry"}),
+            text=True, capture_output=True, cwd=tmp_path, env=env, check=True, timeout=10,
+        )
+        assert json.loads(result.stdout) == {}
+        assert not (state / "lesson-delivery.json").exists()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_disabled_hints_still_capture_prompt(hook_host):
     run, requests, tmp = hook_host
     assert (
