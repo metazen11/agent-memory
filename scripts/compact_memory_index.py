@@ -14,8 +14,18 @@ import os
 from pathlib import Path
 
 
+def _fit_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    safe = encoded[:max_bytes].decode("utf-8", "ignore")
+    if "\n" in safe:
+        safe = safe.rsplit("\n", 1)[0]
+    return safe.rstrip() + "\n"
+
+
 def compact_markdown(text: str, max_chars: int = 4000) -> str:
-    """Return a bounded index while retaining headings until the cap."""
+    """Return a UTF-8-byte-bounded index while retaining headings."""
     lines = text.splitlines()
     out: list[str] = []
     pending_summary: str | None = None
@@ -27,14 +37,11 @@ def compact_markdown(text: str, max_chars: int = 4000) -> str:
         elif stripped and pending_summary is None:
             pending_summary = " ".join(stripped.split())
             out.append(f"> {pending_summary[:240]}")
-        if sum(len(item) + 1 for item in out) >= max_chars:
+        if sum(len(item.encode("utf-8")) + 1 for item in out) >= max_chars:
             break
 
     compacted = "\n".join(out).rstrip() + "\n"
-    if len(compacted) <= max_chars:
-        return compacted
-    bounded = compacted[:max_chars].rsplit("\n", 1)[0].rstrip()
-    return bounded[: max_chars - 1].rstrip() + "\n"
+    return _fit_utf8(compacted, max_chars)
 
 
 def archive_and_compact(path: Path, max_chars: int = 4000) -> Path:

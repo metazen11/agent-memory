@@ -44,6 +44,10 @@ def test_compaction_honors_cap_for_oversized_heading():
     assert len(compact_markdown("# " + ("x" * 500), 256).encode()) <= 256
 
 
+def test_compaction_honors_utf8_byte_cap():
+    assert len(compact_markdown("# " + ("é" * 500), 256).encode()) <= 256
+
+
 def test_archive_preserves_restrictive_permissions(tmp_path):
     source = tmp_path / "MEMORY.md"
     source.write_text("# Root\n")
