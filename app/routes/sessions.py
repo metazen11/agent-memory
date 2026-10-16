@@ -1,11 +1,11 @@
-import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_pool
-from app.models import SessionCreate, SessionUpdate, SessionOut
-from app.project import ensure_project, project_path_filter
+from app.models import SessionCreate, SessionOut, SessionUpdate
+from app.path_normalize import normalize_text
+from app.project import ensure_project, project_path_filter_strict
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ async def update_session(session_id: str, req: SessionUpdate):
             params.append(req.status)
             param_idx += 1
             if req.status == "completed":
-                updates.append(f"completed_at = now()")
+                updates.append("completed_at = now()")
 
         if req.summary:
             updates.append(f"summary = ${param_idx}")
@@ -95,6 +95,7 @@ async def list_sessions(
     limit: int = Query(default=20, le=100),
 ):
     """List sessions with optional filters."""
+    project = normalize_text(project) if project else project
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -102,9 +103,9 @@ async def list_sessions(
         param_idx = 1
 
         if project:
-            clause, param_idx = project_path_filter(param_idx)
+            clause, param_idx = project_path_filter_strict(param_idx)
             conditions.append(clause)
-            params.extend([project, project, project])
+            params.extend([project, project])
 
         if status:
             conditions.append(f"s.status = ${param_idx}")

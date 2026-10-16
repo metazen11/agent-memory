@@ -15,10 +15,10 @@ from typing import Optional
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from app.ingest_receipts import claim_receipt, finish_receipt
 from app.db import get_pool
+from app.ingest_receipts import claim_receipt, finish_receipt
 from app.path_normalize import normalize_text
-from app.project import ensure_project
+from app.project import ensure_project, project_path_filter_strict
 from app.redact import redact_text
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,7 @@ async def list_prompts(
     offset: int = Query(0),
 ):
     """List prompts with optional filters."""
+    project = normalize_text(project) if project else project
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -104,9 +105,14 @@ async def list_prompts(
         idx = 1
 
         if project:
-            conditions.append(f"p.full_path ILIKE ${idx}")
-            args.append(f"%{project}%")
-            idx += 1
+            if "/" in project:
+                clause, idx = project_path_filter_strict(idx)
+                conditions.append(clause)
+                args.extend([project, project])
+            else:
+                conditions.append(f"p.name = ${idx}")
+                args.append(project)
+                idx += 1
         if session_id:
             conditions.append(f"up.session_id = ${idx}")
             args.append(session_id)
@@ -209,6 +215,7 @@ async def create_prompt(request: Request, body: PromptCreate):
 @router.post("/api/prompts/search")
 async def search_prompts(request: Request, body: PromptSearchRequest):
     """Hybrid search over user prompts (FTS + optional vector)."""
+    body.project = normalize_text(body.project) if body.project else body.project
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["up.tsv @@ plainto_tsquery('english', $1)"]
@@ -216,9 +223,14 @@ async def search_prompts(request: Request, body: PromptSearchRequest):
         idx = 2
 
         if body.project:
-            conditions.append(f"p.full_path ILIKE ${idx}")
-            args.append(f"%{body.project}%")
-            idx += 1
+            if "/" in body.project:
+                clause, idx = project_path_filter_strict(idx)
+                conditions.append(clause)
+                args.extend([body.project, body.project])
+            else:
+                conditions.append(f"p.name = ${idx}")
+                args.append(body.project)
+                idx += 1
         if body.agent:
             conditions.append(f"up.agent_name = ${idx}")
             args.append(body.agent)

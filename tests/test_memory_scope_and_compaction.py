@@ -1,0 +1,158 @@
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from app.observation_identity import observation_dedupe_key
+from app.project import project_path_filter_strict
+from scripts import diagnose_connections
+from scripts.compact_memory_index import (
+    _source_lock,
+    archive_and_compact,
+    compact_markdown,
+)
+
+
+def test_strict_project_filter_never_matches_child_from_parent():
+    clause, next_index = project_path_filter_strict(3)
+    assert clause == "(p.full_path = $3 OR starts_with($4, p.full_path || '/'))"
+    assert next_index == 5
+
+
+def test_compaction_is_bounded_and_keeps_archive_friendly_headings():
+    source = "# Root\n\n" + ("detail " * 1000) + "\n\n## Child\n\nmore detail"
+    compacted = compact_markdown(source, 300)
+    assert len(compacted) <= 300
+    assert compacted.startswith("# Root\n")
+    assert "detail detail" in compacted
+
+
+def test_compaction_utility_is_present_and_apply_is_explicit():
+    script = Path(__file__).parents[1] / "scripts" / "compact_memory_index.py"
+    text = script.read_text()
+    assert "archive_and_compact" in text
+    assert "--apply" in text
+
+
+def test_repeated_compaction_keeps_distinct_archives(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    original = "# Root\n\nfull detail\n"
+    source.write_text(original)
+    first = archive_and_compact(source, 256)
+    source.write_text(original)
+    second = archive_and_compact(source, 256)
+    assert first != second
+    assert first.read_text() == original
+    assert second.read_text() == original
+
+
+def test_compaction_honors_cap_for_oversized_heading():
+    assert len(compact_markdown("# " + ("x" * 500), 256).encode()) <= 256
+
+
+def test_compaction_honors_utf8_byte_cap():
+    assert len(compact_markdown("# " + ("é" * 500), 256).encode()) <= 256
+
+
+def test_archive_preserves_restrictive_permissions(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Root\n")
+    source.chmod(0o600)
+    archive = archive_and_compact(source, 256)
+    assert archive.stat().st_mode & 0o777 == 0o600
+
+
+def test_archive_starts_owner_only_before_mode_preservation(tmp_path, monkeypatch):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Root\n")
+    source.chmod(0o640)
+    observed = {}
+    real_chmod = os.chmod
+
+    def observe_chmod(path, mode):
+        observed["initial"] = Path(path).stat().st_mode & 0o777
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(os, "chmod", observe_chmod)
+    archive = archive_and_compact(source, 256)
+    assert observed["initial"] == 0o600
+    assert archive.stat().st_mode & 0o777 == 0o640
+
+
+def test_compaction_serializes_writers_using_the_source_lock(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Original\n\nold detail\n")
+    writer_holding = threading.Event()
+    release_writer = threading.Event()
+
+    def writer():
+        with _source_lock(source):
+            source.write_text("# Writer update\n\nnew detail\n")
+            writer_holding.set()
+            release_writer.wait(2)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert writer_holding.wait(1)
+    result = {}
+
+    def compact():
+        result["archive"] = archive_and_compact(source, 256)
+
+    compactor = threading.Thread(target=compact)
+    compactor.start()
+    time.sleep(0.05)
+    assert compactor.is_alive()
+    release_writer.set()
+    thread.join(2)
+    compactor.join(2)
+    assert not compactor.is_alive()
+    assert result["archive"].read_text() == "# Writer update\n\nnew detail\n"
+    assert source.read_text().startswith("# Writer update\n")
+
+
+def test_http_probe_handles_json_arrays_without_hiding_result(monkeypatch):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    monkeypatch.setattr(diagnose_connections.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    assert diagnose_connections.http_probe("http://127.0.0.1:1", 0.1)["http_status"] == 200
+
+
+def test_diagnostics_redact_endpoint_path_and_validate_status():
+    assert diagnose_connections.safe_endpoint("http://u:secret@127.0.0.1:3377/api/health?token=secret") == "http://127.0.0.1:3377/api/health"
+    assert diagnose_connections.safe_endpoint("http://127.0.0.1:3377/api/health/token") == "http://127.0.0.1:3377/[redacted]"
+
+
+def test_compact_is_idempotent_for_existing_index_summaries():
+    source = "# Heading\n\n> existing summary\n"
+    assert compact_markdown(compact_markdown(source, 256), 256) == compact_markdown(source, 256)
+
+
+def test_compaction_cli_requires_explicit_coordination_for_apply(tmp_path):
+    source = tmp_path / "MEMORY.md"
+    source.write_text("# Heading\n\nold detail\n")
+    result = subprocess.run(
+        [sys.executable, "scripts/compact_memory_index.py", str(source), "--apply"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "requires --coordinated" in result.stderr
+    assert source.read_text() == "# Heading\n\nold detail\n"
+
+
+def test_direct_and_queue_identity_ignores_provenance_text():
+    args = (1, "title", None, "discovery", "narrative", ["f"], [], [], [])
+    assert observation_dedupe_key(*args, "direct") == observation_dedupe_key(*args, "queue provider=local")
