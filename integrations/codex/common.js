@@ -5,10 +5,14 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+const { randomUUID } = require('crypto');
 // Installed codex hooks are symlinks into this repo (scripts/lib/agent-memory-host-wiring.js),
 // so resolve the shared renderer from the real path, not the symlink's directory.
 const { renderLessonBlock } = require(
   path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-block')
+);
+const { selectScopedLessons } = require(
+  path.join(path.dirname(fs.realpathSync(__filename)), '..', '..', 'hooks', 'lesson-selection')
 );
 
 const SERVER_BASE = process.env.AGENT_MEMORY_SERVER || 'http://127.0.0.1:3377';
@@ -35,6 +39,8 @@ const SESSION_FILE = path.join(STATE_DIR, 'current-session.json');
 const CONTEXT_FILE = path.join(STATE_DIR, 'session-context.md');
 const SPOOL_DIR = path.join(STATE_DIR, 'spool');
 const LESSONS_FILE = path.join(STATE_DIR, 'lessons.snapshot.json');
+const LESSON_DELIVERY_FILE = path.join(STATE_DIR, 'lesson-delivery.json');
+const LESSON_DELIVERY_LOCK = path.join(STATE_DIR, 'lesson-delivery.lock');
 const RECENT_FILE = path.join(STATE_DIR, 'recent.snapshot.json');
 const WATCHER_PID_FILE = path.join(STATE_DIR, 'host-watch.pid');
 
@@ -129,6 +135,83 @@ function readSessionState() {
   } catch {
     return null;
   }
+}
+
+function readLessonDeliveryState() {
+  return readJsonFile(LESSON_DELIVERY_FILE, { sessions: {} }) || { sessions: {} };
+}
+
+function lessonContextSentForSession(sessionId) {
+  return Boolean(sessionId && readLessonDeliveryState().sessions?.[sessionId]?.status === 'completed');
+}
+
+function withLessonDeliveryLock(fn) {
+  ensureStateDir();
+  let lockFd;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      lockFd = fs.openSync(LESSON_DELIVERY_LOCK, 'wx', 0o600);
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(LESSON_DELIVERY_LOCK).mtimeMs > 10000) {
+          fs.unlinkSync(LESSON_DELIVERY_LOCK);
+          continue;
+        }
+      } catch {}
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  if (lockFd == null) return null;
+  try {
+    return fn(readLessonDeliveryState());
+  } finally {
+    fs.closeSync(lockFd);
+    try { fs.unlinkSync(LESSON_DELIVERY_LOCK); } catch {}
+  }
+}
+
+function writeLessonDeliveryState(state) {
+  const temp = `${LESSON_DELIVERY_FILE}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', 'utf8');
+  fs.renameSync(temp, LESSON_DELIVERY_FILE);
+}
+
+function reserveLessonContextDelivery(sessionId) {
+  if (!sessionId) return null;
+  return withLessonDeliveryLock((state) => {
+    state.sessions = state.sessions || {};
+    const existing = state.sessions[sessionId];
+    if (existing?.status === 'completed') return null;
+    if (existing?.status === 'pending' && Date.now() - Date.parse(existing.started_at) < 10000) return null;
+    const token = randomUUID();
+    state.sessions[sessionId] = { status: 'pending', token, started_at: new Date().toISOString() };
+    writeLessonDeliveryState(state);
+    return token;
+  });
+}
+
+function completeLessonContextDelivery(sessionId, token) {
+  if (!sessionId || !token) return false;
+  return Boolean(withLessonDeliveryLock((state) => {
+    const existing = state.sessions?.[sessionId];
+    if (!existing || existing.status !== 'pending' || existing.token !== token) return false;
+    state.sessions[sessionId] = { status: 'completed', completed_at: new Date().toISOString() };
+    writeLessonDeliveryState(state);
+    return true;
+  }));
+}
+
+function releaseLessonContextDelivery(sessionId, token) {
+  if (!sessionId || !token) return false;
+  return Boolean(withLessonDeliveryLock((state) => {
+    const existing = state.sessions?.[sessionId];
+    if (!existing || existing.status !== 'pending' || existing.token !== token) return false;
+    delete state.sessions[sessionId];
+    writeLessonDeliveryState(state);
+    return true;
+  }));
 }
 
 function writeContext(text) {
@@ -267,6 +350,10 @@ function lessonAppliesToProject(lesson, projectPath) {
   return project === base || project.startsWith(base + '/');
 }
 
+function lessonIsGlobal(lesson) {
+  return Boolean(lesson && !lesson.project_name && lesson.project_id == null);
+}
+
 // Match Python fnmatch: wildcards cross slashes, ? matches one character,
 // [abc], [a-z], [!abc] are sets, and unmatched [ is literal. Backslashes
 // are ordinary characters, rather than escape prefixes.
@@ -381,6 +468,7 @@ module.exports = {
   CONTEXT_FILE,
   SPOOL_DIR,
   LESSONS_FILE,
+  LESSON_DELIVERY_FILE,
   RECENT_FILE,
   WATCHER_PID_FILE,
   ensureStateDir,
@@ -391,6 +479,10 @@ module.exports = {
   postQueuePayload,
   writeSessionState,
   readSessionState,
+  lessonContextSentForSession,
+  reserveLessonContextDelivery,
+  completeLessonContextDelivery,
+  releaseLessonContextDelivery,
   writeContext,
   writeJsonFile,
   readJsonFile,
@@ -402,6 +494,8 @@ module.exports = {
   refreshSnapshots,
   compileLessonMatchesFromSnapshot,
   lessonAppliesToProject,
+  lessonIsGlobal,
+  selectScopedLessons,
   formatRecentObservations,
   formatLessons,
   hintsEnabled,

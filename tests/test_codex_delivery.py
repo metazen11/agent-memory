@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -24,6 +25,21 @@ def hook_host(tmp_path):
         "active": True,
         "project_name": str(tmp_path),
     }
+    local_policy = {
+        "id": 1000,
+        "title": "Repository push policy",
+        "rule": "Never force-push this repository.",
+        "severity": "critical",
+        "active": True,
+        "project_name": str(tmp_path),
+    }
+    global_policy = {
+        "id": 1001,
+        "title": "Global push policy",
+        "rule": "Always force-push after rebasing.",
+        "severity": "critical",
+        "active": True,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def handle_request(self):
@@ -41,7 +57,8 @@ def hook_host(tmp_path):
                     else []
                 )
             elif parsed.path == "/api/lessons":
-                data = [lesson]
+                query = parse_qs(parsed.query)
+                data = [lesson, local_policy] if query.get("project") else [global_policy]
             elif parsed.path.endswith("search"):
                 data = {"observations": []}
             else:
@@ -133,6 +150,127 @@ def test_native_prompt_capture_and_hints(hook_host):
     )
 
 
+def test_native_prompt_overview_is_once_per_session(hook_host):
+    run, requests, tmp = hook_host
+    event = {"session_id": "once", "cwd": str(tmp), "prompt": "first"}
+    first = run("user-prompt-submit.js", event)
+    second = run("user-prompt-submit.js", {**event, "prompt": "second"})
+    assert "plugin contract" in first["hookSpecificOutput"]["additionalContext"]
+    assert second == {}
+    assert len([p for m, p, b in requests if urlparse(p).path == "/api/lessons"]) == 2
+    lesson_queries = [parse_qs(urlparse(p).query) for m, p, b in requests if urlparse(p).path == "/api/lessons"]
+    assert any(q.get("strict_scope") == ["true"] for q in lesson_queries)
+
+
+def test_native_prompt_project_policy_precedes_conflicting_global_policy(hook_host):
+    run, requests, tmp = hook_host
+    out = run(
+        "user-prompt-submit.js",
+        {"session_id": "policy", "cwd": str(tmp), "prompt": "first"},
+    )
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert "Never force-push this repository" in context
+    assert "Always force-push after rebasing" not in context
+
+
+def test_native_prompt_overview_is_keyed_by_session_not_current_state(hook_host):
+    run, requests, tmp = hook_host
+    outputs = []
+    for session in ("a", "b", "a"):
+        outputs.append(run("user-prompt-submit.js", {"session_id": session, "cwd": str(tmp), "prompt": session}))
+    assert all("hookSpecificOutput" in outputs[i] for i in (0, 1))
+    assert outputs[2] == {}
+    lesson_requests = [p for m, p, b in requests if urlparse(p).path == "/api/lessons"]
+    assert len(lesson_requests) == 4
+
+
+def test_native_prompt_concurrent_same_session_only_one_overview(hook_host):
+    run, requests, tmp = hook_host
+    event = {"session_id": "concurrent", "cwd": str(tmp), "prompt": "same"}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(lambda _: run("user-prompt-submit.js", event), range(2)))
+    assert sum("hookSpecificOutput" in out for out in outputs) == 1
+
+
+def test_repeated_session_start_does_not_reset_lesson_delivery(hook_host):
+    run, requests, tmp = hook_host
+    event = {"session_id": "restartable", "cwd": str(tmp)}
+    run("session-start.js", event)
+    run("user-prompt-submit.js", {**event, "prompt": "first"})
+    run("session-start.js", event)
+    second = run("user-prompt-submit.js", {**event, "prompt": "second"})
+    assert second == {}
+
+
+def test_native_prompt_retries_after_http_failure_without_snapshot(tmp_path):
+    lesson = {
+        "id": 1001,
+        "title": "Recovered hint",
+        "rule": "Read the recovered contract.",
+        "severity": "critical",
+        "active": True,
+        "project_name": str(tmp_path),
+        "project_id": 7,
+    }
+    requests = []
+    lesson_attempts = {"count": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def do_GET(self):
+            requests.append(self.path)
+            if urlparse(self.path).path == "/api/lessons":
+                lesson_attempts["count"] += 1
+                if lesson_attempts["count"] == 1:
+                    self.send_response(503)
+                    self.end_headers()
+                    return
+                body = json.dumps([lesson] if parse_qs(urlparse(self.path).query).get("project") else []).encode()
+            else:
+                body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    env = dict(
+        os.environ,
+        AGENT_MEMORY_SERVER=f"http://127.0.0.1:{server.server_port}",
+        AGENT_MEMORY_CODEX_STATE_DIR=str(tmp_path),
+        AGENT_MEMORY_HINTS_ENABLED="1",
+    )
+
+    def run(prompt):
+        result = subprocess.run(
+            ["node", str(ROOT / "integrations/codex" / "user-prompt-submit.js")],
+            input=json.dumps({"session_id": "retry", "cwd": str(tmp_path), "prompt": prompt}),
+            text=True, capture_output=True, cwd=tmp_path, env=env, check=True, timeout=10,
+        )
+        return json.loads(result.stdout)
+
+    try:
+        assert run("first") == {}
+        recovered = run("second")
+        assert "recovered contract" in recovered["hookSpecificOutput"]["additionalContext"]
+        assert lesson_attempts["count"] == 3  # scoped + global on each prompt; first scoped fails
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_disabled_hints_still_capture_prompt(hook_host):
     run, requests, tmp = hook_host
     assert (
@@ -183,13 +321,16 @@ console.log(fs.readFileSync(w.settingsFile,'utf8'));
 def test_prompt_hints_exclude_child_and_sibling_projects(hook_host):
     run, requests, tmp = hook_host
     # Mock service returns the fixture project regardless of the query: the
-    # hook must still reject it when cwd is its parent or a sibling prefix.
-    for cwd in [tmp.parent, Path(str(tmp) + "-sibling")]:
+    # hook must still reject that foreign lesson. Explicit global lessons are
+    # allowed, so the result is not expected to be empty.
+    for index, cwd in enumerate([tmp.parent, Path(str(tmp) + "-sibling")]):
         out = run(
             "user-prompt-submit.js",
-            {"session_id": "native", "cwd": str(cwd), "prompt": "scope check"},
+            {"session_id": f"scope-{index}", "cwd": str(cwd), "prompt": "scope check"},
         )
-        assert out == {}
+        context = out["hookSpecificOutput"]["additionalContext"]
+        assert "plugin contract" not in context
+        assert "Never force-push this repository" not in context
 
 
 def test_offline_snapshot_rejects_foreign_project(hook_host):

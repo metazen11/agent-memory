@@ -380,8 +380,8 @@ debug(`project=${project} cwd=${cwd}`);
         `# agent-memory online\n` +
         `Project: \`${projectName}\` (cwd: \`${cwd}\`)\n\n` +
         `Pass \`project="${project}"\` on every memory tool call. ` +
-        `Active CRITICAL lessons are injected automatically on every prompt ` +
-        `under \`<agent-memory>\` — you do not need to fetch them.\n\n` +
+        `Active lessons are injected once on the first prompt of each session, ` +
+        `with project scoping and precedence applied under \`<agent-memory>\`.\n\n` +
         `For the full operator manual + live tool inventory + project counts, ` +
         `call \`abilities_memory(project="${project}")\` once per session.`
       )

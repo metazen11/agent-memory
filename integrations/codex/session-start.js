@@ -96,7 +96,7 @@ async function main() {
     notices.length ? `Status: ${notices.join(' ; ')}` : 'Status: online',
     '',
     hintsOn
-      ? formatLessons(lessons)
+      ? '## Active Lessons\n\nThe bounded lesson overview is delivered once on the first user prompt; tool-specific hints appear only for matching operations.\n'
       : '## Active Lessons\n\nSession-start hints disabled (`AGENT_MEMORY_SESSION_HINTS_ENABLED=0`).\n',
     formatRecentObservations(recent),
     '## Workflow Notes',
@@ -114,7 +114,6 @@ async function main() {
 
   if (hookMode) {
     console.log(JSON.stringify({
-      ...(lessons.length ? { systemMessage: `Agent Memory hints — ${cwd}\n${formatLessons(lessons.slice(0, 5))}`.slice(0, 6000) } : {}),
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: context,

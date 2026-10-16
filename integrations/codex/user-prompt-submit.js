@@ -2,7 +2,7 @@
 // Native Codex/Work prompt capture. Hook output is always contract-safe JSON.
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, lessonAppliesToProject, saveSpooledPromptPayload } = require('./common');
+const { normalizeProjectPath, requestJson, hintsEnabled, readJsonFile, LESSONS_FILE, formatLessons, selectScopedLessons, lessonContextSentForSession, reserveLessonContextDelivery, completeLessonContextDelivery, releaseLessonContextDelivery, saveSpooledPromptPayload } = require('./common');
 
 async function main() {
   const event = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -17,22 +17,48 @@ async function main() {
     console.error(`[agent-memory:prompt] spooled: ${error.message}`);
   }
   if (!hintsEnabled()) return {};
+  if (lessonContextSentForSession(event.session_id)) return {};
   let lessons;
   try {
-    const { data } = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100&strict_scope=true`, null, 1200);
-    lessons = Array.isArray(data) ? data : [];
+    // Keep the scoped response canonical (full_path), then fetch explicit
+    // globals separately. The non-strict response uses short names, which
+    // cannot safely distinguish same-basename repositories.
+    const scoped = await requestJson('GET', `/api/lessons?project=${encodeURIComponent(project)}&active=true&limit=100&strict_scope=true`, null, 1200);
+    const globals = await requestJson('GET', '/api/lessons?active=true&limit=100', null, 1200);
+    lessons = [
+      ...(Array.isArray(scoped.data) ? scoped.data : []),
+      ...(Array.isArray(globals.data) ? globals.data : []),
+    ];
   } catch {
     const snapshot = readJsonFile(LESSONS_FILE, {});
     lessons = normalizeProjectPath(snapshot.project_path) === project ? snapshot.lessons || [] : [];
   }
-  const critical = lessons.filter(l => l.active !== false && l.severity === 'critical' && lessonAppliesToProject(l, project)).slice(0, 5);
-  const hint = `Agent Memory hints — ${project}\n${formatLessons(critical)}`.slice(0, 6000);
-  return critical.length ? {
+  const overview = selectScopedLessons(lessons, project, 5);
+  const hint = `Agent Memory lesson overview — ${project}\n${formatLessons(overview)}`.slice(0, 6000);
+  if (!overview.length) return {};
+  const deliveryToken = reserveLessonContextDelivery(event.session_id);
+  if (!deliveryToken) return {};
+  return {
+    __lessonDelivery: { sessionId: event.session_id, token: deliveryToken },
     systemMessage: hint,
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: hint },
-  } : {};
+  };
 }
-main().then(out => console.log(JSON.stringify(out))).catch(error => {
+main().then(out => {
+  const delivery = out?.__lessonDelivery;
+  if (delivery) delete out.__lessonDelivery;
+  const serialized = JSON.stringify(out) + '\n';
+  let settled = false;
+  const finish = (error) => {
+    if (settled) return;
+    settled = true;
+    if (!delivery) return;
+    if (error) releaseLessonContextDelivery(delivery.sessionId, delivery.token);
+    else completeLessonContextDelivery(delivery.sessionId, delivery.token);
+  };
+  process.stdout.once('error', finish);
+  process.stdout.write(serialized, finish);
+}).catch(error => {
   console.error(`[agent-memory:prompt] ${error.message}`);
   console.log('{}');
 });
