@@ -22,7 +22,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  agent-gate:
+  # Job id must NOT equal the status context 'agent-gate': the job's own
+  # check-run would share the required-check name with the evidence status.
+  evaluate:
+    name: evaluate evidence
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     timeout-minutes: 5

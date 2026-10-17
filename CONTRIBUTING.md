@@ -39,6 +39,7 @@ auditor pass. A repo opts into a human gate by requiring approving reviews on
    lines inside fenced code blocks are ignored; only OWNER/MEMBER/COLLABORATOR
    comments count; a new push changes the SHA and so invalidates old evidence.
    PR review bodies are **not** read — only issue comments.
+`agent-gate` is a commit *status*; the workflow job that posts it is named `evaluate` on purpose. Never name a job `agent-gate`, or its check-run would satisfy the required context without any evidence.
 
    **Bootstrap:** `agent-gate` runs from `main`, so it is added to the required
    checks only AFTER the PR that introduces it merges; `protection-drift` reads
