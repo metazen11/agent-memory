@@ -3,6 +3,17 @@
 Operating guide for agents (Claude Code, Anvil, Codex, etc.) working in this
 repository. Read this before editing.
 
+## Agent coordination
+
+Use the shared [Agent coordination issue #110](https://github.com/metazen11/agent-memory/issues/110)
+for ownership proposals, handoffs, blockers, and exact-head evidence. Before claiming
+work, check its latest comments and linked task, verify current main and active
+worktrees, and record one implementer, branch/worktree, affected files, and next
+action. Use one isolated worktree per overlapping task and require explicit owner
+and receiver acknowledgment. Record exact SHA, state, evidence, remaining work,
+and blockers. Issue comments are coordination records, not atomic locks or approval
+overrides.
+
 ## What this repo is
 
 A local-first memory store + API for agent conversations. FastAPI app on
